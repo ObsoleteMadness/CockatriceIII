@@ -8,11 +8,11 @@ bindir = ${exec_prefix}/bin
 datadir = ${prefix}/share
 mandir = ${prefix}/man
 
-CC ?= gcc
-CXX ?= g++
+CC ?= cc
+CXX ?= c++
 WINDRES ?= windres
-CC_FOR_BUILD ?= gcc
-CXX_FOR_BUILD ?= g++
+CC_FOR_BUILD ?= cc
+CXX_FOR_BUILD ?= c++
 
 SDL_CFLAGS := $(shell sdl-config --cflags 2>/dev/null || echo "-ISDL -Ipcap")
 SDL_LIBS := $(shell sdl-config --libs 2>/dev/null || echo "-Llibs -lSDLmain -lSDL")
