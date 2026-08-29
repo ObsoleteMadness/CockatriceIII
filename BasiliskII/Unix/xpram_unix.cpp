@@ -26,7 +26,7 @@
 
 
 // XPRAM file name and path
-const char XPRAM_FILE_NAME[] = ".basilisk_ii_xpram";
+const char XPRAM_FILE_NAME[] = ".cockatrice_xpram";
 static char xpram_path[1024];
 
 
@@ -34,16 +34,21 @@ static char xpram_path[1024];
  *  Load XPRAM from settings file
  */
 
+static void construct_xpram_path(void)
+{
+	if (xpram_path[0] == 0) {
+		char *home = getenv("HOME");
+		if (home != NULL && strlen(home) < 1000) {
+			strncpy(xpram_path, home, 1000);
+			strcat(xpram_path, "/");
+		}
+		strcat(xpram_path, XPRAM_FILE_NAME);
+	}
+}
+
 void LoadXPRAM(void)
 {
-	// Construct XPRAM path
-	xpram_path[0] = 0;
-	char *home = getenv("HOME");
-	if (home != NULL && strlen(home) < 1000) {
-		strncpy(xpram_path, home, 1000);
-		strcat(xpram_path, "/");
-	}
-	strcat(xpram_path, XPRAM_FILE_NAME);
+	construct_xpram_path();
 
 	// Load XPRAM from settings file
 	int fd;
@@ -60,8 +65,10 @@ void LoadXPRAM(void)
 
 void SaveXPRAM(void)
 {
+	construct_xpram_path();
+
 	int fd;
-	if ((fd = open(xpram_path, O_WRONLY | O_CREAT, 0666)) >= 0) {
+	if ((fd = open(xpram_path, O_WRONLY | O_CREAT | O_TRUNC, 0666)) >= 0) {
 		write(fd, XPRAM, 256);
 		close(fd);
 	}
@@ -74,14 +81,7 @@ void SaveXPRAM(void)
 
 void ZapPRAM(void)
 {
-	// Construct PRAM path
-	xpram_path[0] = 0;
-	char *home = getenv("HOME");
-	if (home != NULL && strlen(home) < 1000) {
-		strncpy(xpram_path, home, 1000);
-		strcat(xpram_path, "/");
-	}
-	strcat(xpram_path, XPRAM_FILE_NAME);
+	construct_xpram_path();
 
 	// Delete file
 	unlink(xpram_path);

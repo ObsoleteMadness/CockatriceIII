@@ -33,6 +33,7 @@
 #include "macos_util.h"
 #include "serial.h"
 #include "serial_defs.h"
+#include "prefs.h"
 
 #include "emul_op.h"
 
@@ -50,64 +51,11 @@ SERDPort *the_serd_port[2];
 
 int16 SerialOpen(uint32 pb, uint32 dce, int port)
 {
-	D(bug("SerialOpen port %d, pb %08lx, dce %08lx\n", port, pb, dce));
-return openErr;	//KEEP THIS CODE close... I was getting some weird virtual function failure @ runtime.
-
-	if (port == 0 || port == 2) {
-
-		// Do nothing for input side
-		return noErr;
-
-	} else {
-
-		// Do nothing if port is already open
-		SERDPort *the_port = the_serd_port[port >> 1];
-		if (the_port->is_open)
-			return noErr;
-
-		// Init variables
-		the_port->read_pending = the_port->write_pending = false;
-		the_port->read_done = the_port->write_done = false;
-		the_port->cum_errors = 0;
-
-		// Open port
-		int16 res = the_port->open(ReadMacInt16(0x1fc + (port & 2)));
-		if (res)
-			return res;
-
-		// Allocate Deferred Task structures
-		M68kRegisters r;
-		r.d[0] = SIZEOF_serdt * 2;
-		Execute68kTrap(0xa71e, &r);		// NewPtrSysClear()
-		if (r.a[0] == 0) {
-			the_port->close();
-			return openErr;
-		}
-		uint32 input_dt = the_port->input_dt = r.a[0];
-		uint32 output_dt = the_port->output_dt = r.a[0] + SIZEOF_serdt;
-		D(bug(" input_dt %08lx, output_dt %08lx\n", input_dt, output_dt));
-
-		WriteMacInt16(input_dt + qType, dtQType);
-		WriteMacInt32(input_dt + dtAddr, input_dt + serdtCode);
-		WriteMacInt32(input_dt + dtParam, input_dt + serdtResult);
-															// Deferred function for signalling that Prime is complete (pointer to mydtResult in a1)
-		WriteMacInt16(input_dt + serdtCode, 0x2019);			// move.l	(a1)+,d0	(result)
-		WriteMacInt16(input_dt + serdtCode + 2, 0x2251);		// move.l	(a1),a1		(dce)
-		WriteMacInt32(input_dt + serdtCode + 4, 0x207808fc);	// move.l	JIODone,a0
-		WriteMacInt16(input_dt + serdtCode + 8, 0x4ed0);		// jmp		(a0)
-
-		WriteMacInt16(output_dt + qType, dtQType);
-		WriteMacInt32(output_dt + dtAddr, output_dt + serdtCode);
-		WriteMacInt32(output_dt + dtParam, output_dt + serdtResult);
-															// Deferred function for signalling that Prime is complete (pointer to mydtResult in a1)
-		WriteMacInt16(output_dt + serdtCode, 0x2019);			// move.l	(a1)+,d0	(result)
-		WriteMacInt16(output_dt + serdtCode + 2, 0x2251);		// move.l	(a1),a1		(dce)
-		WriteMacInt32(output_dt + serdtCode + 4, 0x207808fc);	// move.l	JIODone,a0
-		WriteMacInt16(output_dt + serdtCode + 8, 0x4ed0);		// jmp		(a0)
-
-		the_port->is_open = true;
+	printf("SerialOpen port=%d, pb=%08x, dce=%08x\n", port, pb, dce);
+	if (port == 2 || port == 3 || PrefsFindBool("ltoudp")) {
 		return noErr;
 	}
+	return openErr;
 }
 
 
@@ -117,27 +65,11 @@ return openErr;	//KEEP THIS CODE close... I was getting some weird virtual funct
 
 int16 SerialPrime(uint32 pb, uint32 dce, int port)
 {
-	D(bug("SerialPrime port %d, pb %08lx, dce %08lx\n", port, pb, dce));
-return readErr;	//KEEP THIS CODE close... I was getting some weird virtual function failure @ runtime.
-
-	// Error if port is not open
-	SERDPort *the_port = the_serd_port[port >> 1];
-	if (!the_port->is_open)
-		return notOpenErr;
-
-	if (port == 0 || port == 2) {
-		if (the_port->read_pending) {
-			printf("FATAL: SerialPrimeIn() called while request is pending\n");
-			return readErr;
-		} else
-			return the_port->prime_in(pb, dce);
-	} else {
-		if (the_port->write_pending) {
-			printf("FATAL: SerialPrimeOut() called while request is pending\n");
-			return readErr;
-		} else
-			return the_port->prime_out(pb, dce);
+	printf("SerialPrime port=%d, pb=%08x, dce=%08x\n", port, pb, dce);
+	if (port == 2 || port == 3 || PrefsFindBool("ltoudp")) {
+		return noErr;
 	}
+	return readErr;
 }
 
 
@@ -148,21 +80,11 @@ return readErr;	//KEEP THIS CODE close... I was getting some weird virtual funct
 int16 SerialControl(uint32 pb, uint32 dce, int port)
 {
 	uint16 code = ReadMacInt16(pb + csCode);
-	D(bug("SerialControl %d, port %d, pb %08lx, dce %08lx\n", code, port, pb, dce));
-return notOpenErr;	//KEEP THIS CODE close... I was getting some weird virtual function failure @ runtime.
-
-	// Error if port is not open
-	SERDPort *the_port = the_serd_port[port >> 1];
-	if (!the_port->is_open)
-		return notOpenErr;
-
-	switch (code) {
-		case kSERDSetPollWrite:
-			return noErr;
-
-		default:
-			return the_port->control(pb, dce, code);
+	printf("SerialControl code=%d, port=%d, pb=%08x, dce=%08x\n", code, port, pb, dce);
+	if (port == 2 || port == 3 || PrefsFindBool("ltoudp")) {
+		return noErr;
 	}
+	return notOpenErr;
 }
 
 
@@ -173,28 +95,24 @@ return notOpenErr;	//KEEP THIS CODE close... I was getting some weird virtual fu
 int16 SerialStatus(uint32 pb, uint32 dce, int port)
 {
 	uint16 code = ReadMacInt16(pb + csCode);
-	D(bug("SerialStatus %d, port %d, pb %08lx, dce %08lx\n", code, port, pb, dce));
-return notOpenErr;	//KEEP THIS CODE close... I was getting some weird virtual function failure @ runtime.
+	printf("SerialStatus code=%d, port=%d, pb=%08x, dce=%08x\n", code, port, pb, dce);
+	if (port == 2 || port == 3 || PrefsFindBool("ltoudp")) {
+		switch (code) {
+			case kSERDVersion:
+				WriteMacInt8(pb + csParam, 9);		// Second-generation SerialDMA driver
+				return noErr;
 
-	// Error if port is not open
-	SERDPort *the_port = the_serd_port[port >> 1];
-	if (!the_port->is_open)
-		return notOpenErr;
+			case 0x8000:
+				WriteMacInt8(pb + csParam, 9);		// Second-generation SerialDMA driver
+				WriteMacInt16(pb + csParam + 4, 0x1997);	// Date of serial driver
+				WriteMacInt16(pb + csParam + 6, 0x0616);
+				return noErr;
 
-	switch (code) {
-		case kSERDVersion:
-			WriteMacInt8(pb + csParam, 9);		// Second-generation SerialDMA driver
-			return noErr;
-
-		case 0x8000:
-			WriteMacInt8(pb + csParam, 9);		// Second-generation SerialDMA driver
-			WriteMacInt16(pb + csParam + 4, 0x1997);	// Date of serial driver
-			WriteMacInt16(pb + csParam + 6, 0x0616);
-			return noErr;
-
-		default:
-			return the_port->status(pb, dce, code);
+			default:
+				return noErr;
+		}
 	}
+	return notOpenErr;
 }
 
 
@@ -205,27 +123,7 @@ return notOpenErr;	//KEEP THIS CODE close... I was getting some weird virtual fu
 int16 SerialClose(uint32 pb, uint32 dce, int port)
 {
 	D(bug("SerialClose port %d, pb %08lx, dce %08lx\n", port, pb, dce));
-return noErr;	//KEEP THIS CODE close... I was getting some weird virtual function failure @ runtime.
-
-	if (port == 0 || port == 2) {
-
-		// Do nothing for input side
-		return noErr;
-
-	} else {
-
-		// Close port if open
-		SERDPort *the_port = the_serd_port[port >> 1];
-		if (the_port->is_open) {
-			int16 res = the_port->close();
-			M68kRegisters r;				// Free Deferred Task structures
-			r.a[0] = the_port->input_dt;
-			Execute68kTrap(0xa01f, &r);		// DisposePtr()
-			the_port->is_open = false;
-			return res;
-		} else
-			return noErr;
-	}
+	return noErr;
 }
 
 

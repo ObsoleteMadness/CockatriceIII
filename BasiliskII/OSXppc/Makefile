@@ -35,7 +35,7 @@ INSTALL_DATA = ${INSTALL} -m 644
 SRCS = ../main.cpp main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../sdl/sys_unix_sdl.cpp \
     ../rom_patches.cpp ../slot_rom.cpp ../rsrc_patches.cpp ../emul_op.cpp \
     ../macos_util.cpp ../xpram.cpp ../dummy/xpram_dummy.cpp ../timer.cpp timer_unix.cpp \
-    ../dummy/clip_dummy.cpp ../adb.cpp ../serial.cpp ../dummy/serial_dummy.cpp ../ether.cpp ../sony.cpp \
+    ../dummy/clip_dummy.cpp ../adb.cpp ../serial.cpp ../dummy/serial_dummy.cpp ../scc.cpp ../ether.cpp ../sony.cpp \
     ../disk.cpp ../cdrom.cpp ../scsi.cpp ../video.cpp ../sdl/video_sdl.cpp ../audio.cpp \
     ../extfs.cpp ../user_strings.cpp user_strings_sdl.cpp \
     $(SYSSRCS) $(CPUSRCS)

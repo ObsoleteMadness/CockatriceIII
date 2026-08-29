@@ -624,14 +624,15 @@ void CheckLoad(uint32 type, int16 id, uint8 *p, uint32 size)
 		}
 
 	} else if (type == 'ltlk' && id == 0) {
-		D(bug(" ltlk 0 found\n"));
+		printf("rsrc_patches: ltlk 0 found, %s\n", PrefsFindBool("ltoudp") ? "leaving enabled for LToUDP" : "disabling");
 
-		// Disable LocalTalk (7.0.1, 7.5, 7.6, 7.6.1, 8.0)
-		p16 = (uint16 *)p;
-		*p16++ = htons(M68K_JMP_A0);
-		*p16++ = htons(0x7000);
-		*p16 = htons(M68K_RTS);
-		FlushCodeCache(p, 6);
-		D(bug("  patch 1 applied\n"));
+		// Disable LocalTalk (7.0.1, 7.5, 7.6, 7.6.1, 8.0) unless ltoudp is enabled
+		if (!PrefsFindBool("ltoudp")) {
+			p16 = (uint16 *)p;
+			*p16++ = htons(M68K_JMP_A0);
+			*p16++ = htons(0x7000);
+			*p16 = htons(M68K_RTS);
+			FlushCodeCache(p, 6);
+		}
 	}
 }

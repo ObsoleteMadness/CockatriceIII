@@ -37,6 +37,7 @@
 #include "user_strings.h"
 #include "version.h"
 #include "main.h"
+#include "scc.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -284,6 +285,7 @@ static void one_tickbbbb(...)
 		SetInterruptFlag(INTFLAG_60HZ);
 		TriggerInterrupt();
 		slirp_tic();
+		LocalTalkTick();
 	}
 }
 
@@ -317,7 +319,7 @@ int xpram_func(void *arg)
 	memcpy(last_xpram, XPRAM, 256);
 
 	while (!xpram_thread_cancel) {
-		for (int i=0; i<60 && !xpram_thread_cancel; i++) {
+		for (int i=0; i<2 && !xpram_thread_cancel; i++) {
 #ifdef HAVE_NANOSLEEP
 			struct timespec req = {1, 0};
 			nanosleep(&req, NULL);
