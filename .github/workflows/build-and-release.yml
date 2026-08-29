@@ -73,7 +73,7 @@ jobs:
 
           # Windows ARM (ARM64)
           - target: win32-arm
-            os: windows-latest
+            os: windows-11-arm
             platform: windows
             arch: arm64
             msystem: CLANGARM64
