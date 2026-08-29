@@ -29,7 +29,7 @@
 
 // Supported sample rates, sizes and channels
 int audio_num_sample_rates = 1;
-uint32 audio_sample_rates[] = {44100 << 16};
+int32 audio_sample_rates[] = {44100 << 16};
 int audio_num_sample_sizes = 1;
 uint16 audio_sample_sizes[] = {16};
 int audio_num_channel_counts = 1;

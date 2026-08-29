@@ -235,7 +235,7 @@ if(skip_count++>frame_skip){
 				{
 				for(lx=0;lx<VideoMonitor.x*bytes_per_pixel;lx+=bytes_per_pixel)
 					{
-					memcpy(SDLscreen->pixels+(ly*VideoMonitor.y+lx),the_buffer+(ly*VideoMonitor.y+lx)+1,bytes_per_pixel);
+					memcpy((uint8 *)SDLscreen->pixels+(ly*VideoMonitor.y+lx),the_buffer+(ly*VideoMonitor.y+lx)+1,bytes_per_pixel);
 					count+=bytes_per_pixel;
 					}
 				}

@@ -171,12 +171,25 @@ int16 EtherControl(uint32 pb, uint32 dce)
  *  Ethernet ReadPacket routine
  */
 
+static const uint8 *ether_packet_data = NULL;
+
+void EtherSetPacketData(const uint8 *ptr)
+{
+	ether_packet_data = ptr;
+}
+
 void EtherReadPacket(uint8 **src, uint32 &dest, uint32 &len, uint32 &remaining)
 {
-	D(bug("EtherReadPacket src %08lx, dest %08lx, len %08lx, remaining %08lx\n", *src, dest, len, remaining));
+	const uint8 *p = ether_packet_data ? ether_packet_data : (src ? *src : NULL);
+	D(bug("EtherReadPacket src %p, dest %08x, len %d, remaining %d\n", p, dest, len, remaining));
 	uint32 todo = len > remaining ? remaining : len;
-	Host2Mac_memcpy(dest, *src, todo);
-	*src += todo;
+	if (p) {
+		Host2Mac_memcpy(dest, p, todo);
+		if (ether_packet_data)
+			ether_packet_data += todo;
+		if (src && *src)
+			*src += todo;
+	}
 	dest += todo;
 	len -= todo;
 	remaining -= todo;
