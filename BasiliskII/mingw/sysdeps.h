@@ -60,9 +60,8 @@
 # endif
 #endif
 
-//this should be pulled in elsewhere for memory.cpp no doubt...
-typedef unsigned int uintptr; 	//JASON
-//typedef unsigned int x86_status_word;
+#include <stdint.h>
+typedef uintptr_t uintptr;
 
 /* Are the Mac and the host address space the same? */
 #define REAL_ADDRESSING 0
@@ -133,7 +132,7 @@ typedef struct timeval tm_time_t;
 typedef uae_u32 uaecptr;
 
 /* Alignment restrictions */
-#if defined(__i386__) || defined(__powerpc__) || defined(__m68k__)
+#if defined(__i386__) || defined(__powerpc__) || defined(__m68k__) || defined(__x86_64__) || defined(__aarch64__) || defined(_M_ARM64) || defined(_M_X64)
 # define CPU_CAN_ACCESS_UNALIGNED
 #endif
 
@@ -198,11 +197,11 @@ static inline void do_put_mem_word(uae_u16 *a, uae_u32 v) {__asm__ ("rolw $8,%0"
 
 #elif defined(CPU_CAN_ACCESS_UNALIGNED)
 
-/* Other little-endian CPUs which can do unaligned accesses */
-static inline uae_u32 do_get_mem_long(uae_u32 *a) {uint32 x = *a; return (x >> 24) | (x >> 8) & 0xff00 | (x << 8) & 0xff0000 | (x << 24);}
-static inline uae_u32 do_get_mem_word(uae_u16 *a) {uint16 x = *a; return (x >> 8) | (x << 8);}
-static inline void do_put_mem_long(uae_u32 *a, uae_u32 v) {*a = (v >> 24) | (v >> 8) & 0xff00 | (v << 8) & 0xff0000 | (v << 24);}
-static inline void do_put_mem_word(uae_u16 *a, uae_u32 v) {*a = (v >> 8) | (v << 8);}
+/* Other little-endian CPUs which can do unaligned accesses (x86_64, aarch64, etc.) */
+static inline uae_u32 do_get_mem_long(uae_u32 *a) { return __builtin_bswap32(*a); }
+static inline uae_u32 do_get_mem_word(uae_u16 *a) { return __builtin_bswap16(*a); }
+static inline void do_put_mem_long(uae_u32 *a, uae_u32 v) { *a = __builtin_bswap32(v); }
+static inline void do_put_mem_word(uae_u16 *a, uae_u32 v) { *a = __builtin_bswap16(v); }
 
 #else /* CPU_CAN_ACCESS_UNALIGNED */
 

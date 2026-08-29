@@ -581,5 +581,16 @@ void map_banks(addrbank *bank, int start, int size)
 	    put_mem_bank((bnr + hioffs) << 16, bank);
 }
 
+uae_u32 get_virtual_address(uae_u8 *addr)
+{
+	if (addr >= RAMBaseHost && addr < RAMBaseHost + RAMSize)
+		return RAMBaseMac + (uae_u32)((uintptr)addr - (uintptr)RAMBaseHost);
+	if (addr >= ROMBaseHost && addr < ROMBaseHost + ROMSize)
+		return ROMBaseMac + (uae_u32)((uintptr)addr - (uintptr)ROMBaseHost);
+	if (addr >= MacFrameBaseHost && addr < MacFrameBaseHost + MacFrameSize)
+		return MacFrameBaseMac + (uae_u32)((uintptr)addr - (uintptr)MacFrameBaseHost);
+	return 0;
+}
+
 #endif /* !REAL_ADDRESSING && !DIRECT_ADDRESSING */
 

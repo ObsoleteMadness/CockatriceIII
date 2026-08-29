@@ -1,5 +1,5 @@
 /*
- *  user_strings_dummy.cpp - Localizable strings, dummy implementation
+ *  user_strings_unix.h - Unix-specific localizable strings
  *
  *  Basilisk II (C) 1997-1999 Christian Bauer
  *
@@ -18,36 +18,39 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#include "sysdeps.h"
-#include "user_strings.h"
+#ifndef USER_STRINGS_UNIX_H
+#define USER_STRINGS_UNIX_H
 
+enum {
+	STR_NO_XSERVER_ERR = 10000,
+	STR_NO_XVISUAL_ERR,
+	STR_UNSUPP_DEPTH_ERR,
+	STR_NO_FBDEVICE_FILE_ERR,
+	STR_FBDEV_NAME_ERR,
+	STR_FBDEV_MMAP_ERR,
 
-// Platform-specific string definitions
-user_string_def platform_strings[] = {
-	{-1, NULL}	// End marker
+	STR_NO_SHEEP_NET_DRIVER_WARN,
+	STR_SHEEP_NET_ATTACH_WARN,
+	STR_SCSI_DEVICE_OPEN_WARN,
+	STR_SCSI_DEVICE_NOT_SCSI_WARN,
+	STR_NO_AUDIO_DEV_WARN,
+	STR_NO_ESD_WARN,
+	STR_AUDIO_FORMAT_WARN,
+	STR_KEYCODE_FILE_WARN,
+	STR_KEYCODE_VENDOR_WARN,
+
+	STR_PREFS_MENU_FILE_GTK,
+	STR_PREFS_ITEM_START_GTK,
+	STR_PREFS_ITEM_ZAP_PRAM_GTK,
+	STR_PREFS_ITEM_SEPL_GTK,
+	STR_PREFS_ITEM_QUIT_GTK,
+	STR_HELP_MENU_GTK,
+	STR_HELP_ITEM_ABOUT_GTK,
+
+	STR_KEYCODES_CTRL,
+	STR_KEYCODE_FILE_CTRL,
+	STR_FBDEV_NAME_CTRL,
+	STR_FBDEVICE_FILE_CTRL
 };
 
-
-/*
- *  Fetch pointer to string, given the string number
- */
-
-const char *GetString(int num)
-{
-	// First search for platform-specific string
-	int i = 0;
-	while (platform_strings[i].num >= 0) {
-		if (platform_strings[i].num == num)
-			return platform_strings[i].str;
-		i++;
-	}
-
-	// Not found, search for common string
-	i = 0;
-	while (common_strings[i].num >= 0) {
-		if (common_strings[i].num == num)
-			return common_strings[i].str;
-		i++;
-	}
-	return NULL;
-}
+#endif

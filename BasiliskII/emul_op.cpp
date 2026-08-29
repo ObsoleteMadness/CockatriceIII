@@ -344,9 +344,11 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 			r->d[0] = EtherControl(r->a[0], r->a[1]);
 			break;
 
-		case M68K_EMUL_OP_ETHER_READ_PACKET:
-			EtherReadPacket((uint8 **)&r->a[0], r->a[3], r->d[3], r->d[1]);
+		case M68K_EMUL_OP_ETHER_READ_PACKET: {
+			uint8 *dummy = NULL;
+			EtherReadPacket(&dummy, r->a[3], r->d[3], r->d[1]);
 			break;
+		}
 
 		case M68K_EMUL_OP_SCSI_DISPATCH: {	// SCSIDispatch() replacement
 			uint32 ret = ReadMacInt32(r->a[7]);		// Get return address

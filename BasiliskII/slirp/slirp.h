@@ -68,9 +68,16 @@ typedef int ioctlsockopt_t;
 # define ioctlsocket ioctl
 # define closesocket(s) close(s)
 # define O_BINARY 0
+typedef char *SLIRPcaddr_t;
 #endif
 
 #include <sys/types.h>
+#ifndef _WIN32
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
 #ifdef HAVE_SYS_BITYPES_H
 # include <sys/bitypes.h>
 #endif
@@ -331,13 +338,8 @@ extern int do_echo;
 #define inline
 #endif
 
-#if SIZEOF_CHAR_P == 4
-# define insque_32 insque
-# define remque_32 remque
-#else
-extern inline void insque_32 _P((void *, void *));
-extern inline void remque_32 _P((void *));
-#endif
+#define insque_32 insque
+#define remque_32 remque
 
 #ifndef _WIN32
 #include <netdb.h>

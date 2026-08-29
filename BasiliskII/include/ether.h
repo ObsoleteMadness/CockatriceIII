@@ -23,6 +23,7 @@
 
 extern int16 EtherOpen(uint32 pb, uint32 dce);
 extern int16 EtherControl(uint32 pb, uint32 dce);
+extern void EtherSetPacketData(const uint8 *ptr);
 extern void EtherReadPacket(uint8 **src, uint32 &dest, uint32 &len, uint32 &remaining);
 
 // System specific and internal functions/data

@@ -49,6 +49,14 @@
 /* The number of bytes in a short.  */
 #define SIZEOF_SHORT 2
 
+#if defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
+#define SIZEOF_VOID_P 8
+#define SIZEOF_CHAR_P 8
+#else
+#define SIZEOF_VOID_P 4
+#define SIZEOF_CHAR_P 4
+#endif
+
 /* Define if you have the cfmakeraw function.  */
 #define HAVE_CFMAKERAW 1
 

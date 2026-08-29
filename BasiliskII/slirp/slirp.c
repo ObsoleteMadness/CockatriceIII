@@ -225,7 +225,7 @@ int slirp_select_fill(int *pnfds,
 			/*
 			 * See if we need a tcp_fasttimo
 			 */
-			if(&so->so_tcpcb->t_flags!=0x0){		//This is to prevent a common lockup.
+			if (so->so_tcpcb != NULL) {		//This is to prevent a common lockup.
 			if (time_fasttimo == 0 && so->so_tcpcb->t_flags & TF_DELACK)
 				time_fasttimo = curtime; }/* Flag when we want a fasttimo */
 			
@@ -436,7 +436,7 @@ void slirp_select_poll(fd_set *readfds, fd_set *writefds, fd_set *xfds)
 			    //winsock2.h:549:32: note: expected 'const char *' but argument is of type 'int *'
 			    //WINSOCK_API_LINKAGE int PASCAL send(SOCKET,const char*,int,int);		JASON
 			    //ret = send(so->s, "a", 1, 0);		WHY THE HELL WAS THIS HERE?!
-			    ret = send(so->s, (const char *)ret, 0, 0);		//This is what it should be.
+			    ret = send(so->s, (const char *)&ret, 0, 0);		//This is what it should be.
 			    if (ret < 0) {
 			      /* XXXXX Must fix, zero bytes is a NOP */
 			      if (errno == EAGAIN || errno == EWOULDBLOCK ||
@@ -466,7 +466,7 @@ void slirp_select_poll(fd_set *readfds, fd_set *writefds, fd_set *xfds)
 			/*
 			 * Probe a still-connecting, non-blocking socket
 			 * to check if it's still alive
-	 	 	 */
+			 	 */
 #ifdef PROBE_CONN
 			if (so->so_state & SS_ISFCONNECTING) {
 			  ret = recv(so->s, (char *)&ret, 0,0);
@@ -482,7 +482,7 @@ void slirp_select_poll(fd_set *readfds, fd_set *writefds, fd_set *xfds)
 			    
 			    /* tcp_input will take care of it */
 			  } else {
-			    ret = send(so->s, (const char *)ret, 0,0);
+			    ret = send(so->s, (const char *)&ret, 0,0);
 			    if (ret < 0) {
 			      /* XXX */
 			      if (errno == EAGAIN || errno == EWOULDBLOCK ||

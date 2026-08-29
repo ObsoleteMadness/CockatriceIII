@@ -347,7 +347,7 @@ PRIVATE inline void FFPU make_extended_no_normalize(
 )
 {
 	// is it zero?
-	if ((wrd1 && 0x7fff0000) == 0 && wrd2 == 0 && wrd3 == 0) {
+	if ((wrd1 & 0x7fff0000) == 0 && wrd2 == 0 && wrd3 == 0) {
 		make_zero_positive(result);
 		return;
 	}

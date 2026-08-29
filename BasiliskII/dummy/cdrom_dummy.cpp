@@ -10,37 +10,37 @@ void SysAllowRemoval(void *arg)
 
 bool SysCDReadTOC(void *arg, uint8 *toc)
 {
-return FALSE;
+	return false;
 }
 
 bool SysCDGetPosition(void *arg, uint8 *pos)
 {
-return FALSE;
+	return false;
 }
 
 bool SysCDPlay(void *arg, uint8 start_m, uint8 start_s, uint8 start_f, uint8 end_m, uint8 end_s, uint8 end_f)
 {
-return FALSE;
+	return false;
 }
 
 bool SysCDPause(void *arg)
 {
-	return FALSE;
+	return false;
 }
 
 bool SysCDResume(void *arg)
 {
-	return FALSE;
+	return false;
 }
 
 bool SysCDStop(void *arg, uint8 lead_out_m, uint8 lead_out_s, uint8 lead_out_f)
 {
-	return FALSE;
+	return false;
 }
 
 bool SysCDScan(void *arg, uint8 start_m, uint8 start_s, uint8 start_f, bool reverse)
 {
-	return FALSE;
+	return false;
 }
 
 void SysCDSetVolume(void *arg, uint8 left, uint8 right)

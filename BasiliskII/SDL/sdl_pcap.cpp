@@ -695,14 +695,16 @@ if((!is_slirp)&&(!is_pcap))
 		D(bug(" header %08lx%04lx %08lx%04lx %04lx\n", ReadMacInt32(ether_data + ed_RHA), ReadMacInt16(ether_data + ed_RHA + 4), ReadMacInt32(ether_data + ed_RHA + 6), ReadMacInt16(ether_data + ed_RHA + 10), ReadMacInt16(ether_data + ed_RHA + 12)));
 
 		// Call protocol handler
+		EtherSetPacketData(p + 14);
 		M68kRegisters r;
 		r.d[0] = type;									// Packet type
 		r.d[1] = qp->len - 14;							// Remaining packet length (without header, for ReadPacket)
-		r.a[0] = (uint32)p + 14;						// Pointer to packet (host address, for ReadPacket)
+		r.a[0] = 0;										// Pointer to packet (handled by EtherSetPacketData)
 		r.a[3] = ether_data + ed_RHA + 14;				// Pointer behind header in RHA
 		r.a[4] = ether_data + ed_ReadPacket;			// Pointer to ReadPacket/ReadRest routines
 		D(bug(" calling protocol handler %08lx, type %08lx, length %08lx, data %08lx, rha %08lx, read_packet %08lx\n", prot->handler, r.d[0], r.d[1], r.a[0], r.a[3], r.a[4]));
 		Execute68k(prot->handler, &r);
+		EtherSetPacketData(NULL);
 		free(qp);
 	} 
 

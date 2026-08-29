@@ -199,23 +199,11 @@ struct	ip_timestamp {
 
 #define	IP_MSS		576		/* default maximum segment size */
 
-#ifdef HAVE_SYS_TYPES32_H  /* Overcome some Solaris 2.x junk */
-#include <sys/types32.h>
-#else
-#if SIZEOF_CHAR_P == 4
 typedef SLIRPcaddr_t caddr32_t;
-#else
-typedef u_int32_t caddr32_t;
-#endif
-#endif
-
-#if SIZEOF_CHAR_P == 4
+struct ipq;
+struct ipasfrag;
 typedef struct ipq *ipqp_32;
 typedef struct ipasfrag *ipasfragp_32;
-#else
-typedef caddr32_t ipqp_32;
-typedef caddr32_t ipasfragp_32;
-#endif
 
 /*
  * Overlay for ip header used by other protocols (tcp, udp).

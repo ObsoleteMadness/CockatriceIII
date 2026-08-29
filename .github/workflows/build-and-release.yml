@@ -1,0 +1,274 @@
+name: Build and Release Cockatrice III
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release version tag (e.g. v0.6.0)'
+        required: false
+        default: ''
+      create_release:
+        description: 'Create GitHub Release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS ARM64 (Apple Silicon) — native on macos-latest
+          - target: osx-arm
+            os: macos-latest
+            platform: osx
+            arch: arm64
+            build_dir: BasiliskII/OSX64
+            artifact_name: CockatriceIII-osx-arm.dmg
+            package_ext: dmg
+
+          # macOS AMD64 (Intel x86_64) — cross-compiled from Apple Silicon
+          # (macos-13 Intel runners are deprecated / chronically queued)
+          - target: osx-amd64
+            os: macos-latest
+            platform: osx
+            arch: amd64
+            build_dir: BasiliskII/OSX64
+            artifact_name: CockatriceIII-osx-amd64.dmg
+            package_ext: dmg
+
+          # macOS universal (arm64 + x86_64 fat binary via lipo)
+          - target: osx-universal
+            os: macos-latest
+            platform: osx
+            arch: universal
+            build_dir: BasiliskII/OSX64
+            artifact_name: CockatriceIII-osx-universal.dmg
+            package_ext: dmg
+
+          # Windows x64
+          - target: win32-x64
+            os: windows-latest
+            platform: windows
+            arch: x64
+            msystem: MINGW64
+            pacman_packages: mingw-w64-x86_64-toolchain mingw-w64-x86_64-sdl12-compat make p7zip
+            build_dir: BasiliskII/mingw
+            artifact_name: CockatriceIII-win32-x64.zip
+            package_ext: zip
+
+          # Windows x86 (32-bit)
+          - target: win32-x86
+            os: windows-latest
+            platform: windows
+            arch: x86
+            msystem: MINGW32
+            pacman_packages: mingw-w64-i686-toolchain mingw-w64-i686-sdl12-compat make p7zip
+            build_dir: BasiliskII/mingw
+            artifact_name: CockatriceIII-win32-x86.zip
+            package_ext: zip
+
+          # Windows ARM (ARM64)
+          - target: win32-arm
+            os: windows-11-arm
+            platform: windows
+            arch: arm64
+            msystem: CLANGARM64
+            pacman_packages: mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-sdl12-compat make p7zip
+            build_dir: BasiliskII/mingw
+            artifact_name: CockatriceIII-win32-arm.zip
+            package_ext: zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            VER="${{ github.event.inputs.tag_name }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER="dev-${GITHUB_SHA::7}"
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "Building Cockatrice III version: ${VER} for ${{ matrix.target }}"
+
+      # --- macOS Setup & Build ---
+      - name: Set up macOS dependencies
+        if: matrix.platform == 'osx'
+        run: |
+          if [ "${{ matrix.arch }}" != "amd64" ]; then
+            brew install sdl12-compat
+          fi
+          if [ "${{ matrix.arch }}" = "amd64" ] || [ "${{ matrix.arch }}" = "universal" ]; then
+            # x86_64 SDL lives under Intel Homebrew (/usr/local). The ARM
+            # brew at /opt/homebrew cannot supply a linkable x86_64 libSDL.
+            sudo softwareupdate --install-rosetta --agree-to-license || true
+            if [ ! -x /usr/local/bin/brew ]; then
+              NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            fi
+            arch -x86_64 /usr/local/bin/brew install sdl12-compat
+          fi
+
+      - name: Build macOS (${{ matrix.target }})
+        if: matrix.platform == 'osx'
+        run: |
+          if [ "${{ matrix.arch }}" = "universal" ]; then
+            make -C ${{ matrix.build_dir }} universal -j$(sysctl -n hw.ncpu)
+            file "${{ matrix.build_dir }}/CockatriceIII"
+            lipo -info "${{ matrix.build_dir }}/CockatriceIII"
+            lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q x86_64
+            lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q arm64
+          else
+            make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} -j$(sysctl -n hw.ncpu)
+            file "${{ matrix.build_dir }}/CockatriceIII"
+            lipo -info "${{ matrix.build_dir }}/CockatriceIII"
+            if [ "${{ matrix.arch }}" = "amd64" ]; then
+              lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q x86_64
+            else
+              lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q arm64
+            fi
+          fi
+
+      - name: Package macOS Distribution (.dmg)
+        if: matrix.platform == 'osx'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PKG_NAME="CockatriceIII-${VERSION}-${{ matrix.target }}"
+          STAGING_DIR="dist_staging"
+          rm -rf "${STAGING_DIR}" "${PKG_NAME}.dmg"
+          mkdir -p "${STAGING_DIR}"
+
+          # Copy built binary
+          cp "${{ matrix.build_dir }}/CockatriceIII" "${STAGING_DIR}/"
+          chmod +x "${STAGING_DIR}/CockatriceIII"
+
+          # Copy root of ./dist (prefs, rom, xpram, archive)
+          cp dist/CockatriceIII_Prefs "${STAGING_DIR}/"
+          [ -f dist/CockatriceIII_XPRAM ] && cp dist/CockatriceIII_XPRAM "${STAGING_DIR}/"
+          [ -f dist/Quadra800.rom ] && cp dist/Quadra800.rom "${STAGING_DIR}/"
+          [ -d dist/archive ] && cp -r dist/archive "${STAGING_DIR}/"
+
+          # Copy root documentation
+          cp ChangeLog COPYING INSTALL README roms.txt TECH TODO "${STAGING_DIR}/"
+
+          # Create DMG
+          hdiutil create -volname "CockatriceIII" -srcfolder "${STAGING_DIR}" -ov -format UDZO "${PKG_NAME}.dmg"
+          echo "PACKAGE_FILE=${PKG_NAME}.dmg" >> "$GITHUB_ENV"
+
+      # --- Windows Setup & Build (MSYS2) ---
+      - name: Set up MSYS2 (${{ matrix.msystem }})
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: ${{ matrix.pacman_packages }}
+
+      - name: Build Windows (${{ matrix.target }})
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: |
+          make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} CC=cc CXX=c++ -j${NUMBER_OF_PROCESSORS}
+
+      - name: Package Windows Distribution (.zip)
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PKG_NAME="CockatriceIII-${VERSION}-${{ matrix.target }}"
+          STAGING_DIR="dist_staging"
+          rm -rf "${STAGING_DIR}" "${PKG_NAME}.zip"
+          mkdir -p "${STAGING_DIR}"
+
+          # Copy built executable
+          cp "${{ matrix.build_dir }}/CockatriceIII.exe" "${STAGING_DIR}/"
+
+          # Copy root of ./dist
+          cp dist/CockatriceIII_Prefs "${STAGING_DIR}/"
+          [ -f dist/CockatriceIII_XPRAM ] && cp dist/CockatriceIII_XPRAM "${STAGING_DIR}/"
+          [ -f dist/Quadra800.rom ] && cp dist/Quadra800.rom "${STAGING_DIR}/"
+          [ -d dist/archive ] && cp -r dist/archive "${STAGING_DIR}/"
+
+          # Copy win32 support content (SDL.dll, dbghelp.dll, ethlist.exe, etc.) to root
+          if [ -d dist/win32 ]; then
+            cp -r dist/win32/* "${STAGING_DIR}/"
+          elif [ -d dist/windows ]; then
+            cp -r dist/windows/* "${STAGING_DIR}/"
+          fi
+
+          # Copy root documentation
+          cp ChangeLog COPYING INSTALL README roms.txt TECH TODO "${STAGING_DIR}/"
+
+          # Create ZIP archive
+          cd "${STAGING_DIR}"
+          7z a "../${PKG_NAME}.zip" ./*
+          cd ..
+          echo "PACKAGE_FILE=${PKG_NAME}.zip" >> "$GITHUB_ENV"
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CockatriceIII-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.package_ext }}
+          path: ${{ env.PACKAGE_FILE }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.create_release == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine tag name
+        id: release_tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v${GITHUB_SHA::7}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_artifacts
+          merge-multiple: true
+
+      - name: List downloaded release assets
+        run: |
+          ls -la release_artifacts/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: Cockatrice III ${{ steps.release_tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release_artifacts/*.dmg
+            release_artifacts/*.zip
