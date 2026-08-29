@@ -150,7 +150,7 @@ jobs:
         if: matrix.platform == 'windows'
         shell: msys2 {0}
         run: |
-          make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} -j${NUMBER_OF_PROCESSORS}
+          make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} CC=cc CXX=c++ -j${NUMBER_OF_PROCESSORS}
 
       - name: Package Windows Distribution (.zip)
         if: matrix.platform == 'windows'

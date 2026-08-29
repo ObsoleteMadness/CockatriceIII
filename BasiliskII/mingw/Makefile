@@ -8,11 +8,19 @@ bindir = ${exec_prefix}/bin
 datadir = ${prefix}/share
 mandir = ${prefix}/man
 
-CC ?= cc
-CXX ?= c++
+# GNU Make predefines CC=cc and CXX=g++. `?=` therefore cannot replace CXX,
+# which breaks CLANGARM64 (clang++ / c++ only — no g++ binary). Override
+# Make's defaults; command-line and environment CC/CXX still win because
+# their origin is not "default".
+ifeq ($(origin CC),default)
+CC = cc
+endif
+ifeq ($(origin CXX),default)
+CXX = c++
+endif
 WINDRES ?= windres
-CC_FOR_BUILD ?= cc
-CXX_FOR_BUILD ?= c++
+CC_FOR_BUILD ?= $(CC)
+CXX_FOR_BUILD ?= $(CXX)
 
 SDL_CFLAGS := $(shell sdl-config --cflags 2>/dev/null || echo "-ISDL -Ipcap")
 SDL_LIBS := $(shell sdl-config --libs 2>/dev/null || echo "-Llibs -lSDLmain -lSDL")
