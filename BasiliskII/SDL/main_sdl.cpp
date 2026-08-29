@@ -1,11 +1,13 @@
 #include "sysdeps.h"
 #ifdef WIN32
-#include <SDL\SDL.h>
-#include <SDL\SDL_main.h>
-#include <SDL\SDL_thread.h>
+#include <SDL/SDL.h>
+#include <SDL/SDL_main.h>
+#include <SDL/SDL_thread.h>
 #include <io.h>
 #include <direct.h>		//for _chdir
-#include "..\drmingw-0.7.7-win32\include\exchndl.h"
+#if defined(USE_EXCHNDL) || (defined(__i386__) && !defined(__x86_64__))
+#include "../drmingw-0.7.7-win32/include/exchndl.h"
+#endif
 #else
 #include <SDL/SDL.h>
 #include <SDL/SDL_main.h>
@@ -87,7 +89,7 @@ int main(int argc, char *argv[])
 
 	//	_chdir("c:\\test\\");
 	// Initialize variables
-#ifdef WIN32
+#if defined(WIN32) && (defined(USE_EXCHNDL) || (defined(__i386__) && !defined(__x86_64__)))
 	//Setup DrMinGW
 	ExcHndlInit();
 #endif

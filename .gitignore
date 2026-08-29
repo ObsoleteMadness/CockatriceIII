@@ -78,8 +78,9 @@ Testing/
 *.toast
 
 
-.DS_Store
-BasiliskII/OSXarm/CockatriceIII_Prefs
-BasiliskII/OSXarm/BasiliskII
-BasiliskII/OSXarm/CockatriceIII_XPRAM
+BasiliskII/OSX64/CockatriceIII_Prefs
+BasiliskII/OSX64/CockatriceIII
+BasiliskII/OSX64/BasiliskII
+BasiliskII/OSX64/CockatriceIII_XPRAM
 **/obj/ 
+**/.DS_Store
