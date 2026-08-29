@@ -3,7 +3,7 @@ name: Build and Release Cockatrice III
 on:
   push:
     branches:
-      - main
+      - '**'
     tags:
       - 'v*'
   pull_request:
