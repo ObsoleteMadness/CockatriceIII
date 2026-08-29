@@ -31,18 +31,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS ARM64 (Apple Silicon)
+          # macOS ARM64 (Apple Silicon) — native on macos-latest
           - target: osx-arm
-            os: macos-14
+            os: macos-latest
             platform: osx
             arch: arm64
             build_dir: BasiliskII/OSX64
             artifact_name: CockatriceIII-osx-arm.dmg
             package_ext: dmg
 
-          # macOS AMD64 (Intel x86_64)
+          # macOS AMD64 (Intel x86_64) — cross-compiled from Apple Silicon
+          # (macos-13 Intel runners are deprecated / chronically queued)
           - target: osx-amd64
-            os: macos-13
+            os: macos-latest
             platform: osx
             arch: amd64
             build_dir: BasiliskII/OSX64
@@ -104,12 +105,29 @@ jobs:
       - name: Set up macOS dependencies
         if: matrix.platform == 'osx'
         run: |
-          brew install sdl12-compat
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            # x86_64 SDL lives under Intel Homebrew (/usr/local). The ARM
+            # brew at /opt/homebrew cannot supply a linkable x86_64 libSDL.
+            sudo softwareupdate --install-rosetta --agree-to-license || true
+            if [ ! -x /usr/local/bin/brew ]; then
+              NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            fi
+            arch -x86_64 /usr/local/bin/brew install sdl12-compat
+          else
+            brew install sdl12-compat
+          fi
 
       - name: Build macOS (${{ matrix.target }})
         if: matrix.platform == 'osx'
         run: |
           make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} -j$(sysctl -n hw.ncpu)
+          file "${{ matrix.build_dir }}/CockatriceIII"
+          lipo -info "${{ matrix.build_dir }}/CockatriceIII"
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q x86_64
+          else
+            lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q arm64
+          fi
 
       - name: Package macOS Distribution (.dmg)
         if: matrix.platform == 'osx'

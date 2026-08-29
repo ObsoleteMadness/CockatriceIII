@@ -95,8 +95,8 @@ builds all five targets on every push, on pull requests into `main`, and on
 
 | Target       | Runner          | Build dir             |
 |--------------|-----------------|------------------------|
-| osx-arm      | macos-14        | `BasiliskII/OSX64`     |
-| osx-amd64    | macos-13        | `BasiliskII/OSX64`     |
+| osx-arm      | macos-latest (native arm64) | `BasiliskII/OSX64` |
+| osx-amd64    | macos-latest (cross x86_64) | `BasiliskII/OSX64` |
 | win32-x64    | windows-latest (MINGW64)    | `BasiliskII/mingw` |
 | win32-x86    | windows-latest (MINGW32)    | `BasiliskII/mingw` |
 | win32-arm    | windows-latest (CLANGARM64) | `BasiliskII/mingw` |

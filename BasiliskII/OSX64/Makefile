@@ -18,25 +18,31 @@ APP = CockatriceIII
 ARCH ?= $(shell uname -m)
 ifeq ($(ARCH),x86_64)
   TARGET_ARCH = -arch x86_64
-  SDL_DEFAULT_INC = -I/usr/local/include/SDL -D_THREAD_SAFE
-  SDL_DEFAULT_LIB = -L/usr/local/lib -lSDL -Wl,-framework,Cocoa
+  SDL_PREFIX ?= /usr/local
 else ifeq ($(ARCH),amd64)
   TARGET_ARCH = -arch x86_64
-  SDL_DEFAULT_INC = -I/usr/local/include/SDL -D_THREAD_SAFE
-  SDL_DEFAULT_LIB = -L/usr/local/lib -lSDL -Wl,-framework,Cocoa
+  SDL_PREFIX ?= /usr/local
 else
   TARGET_ARCH = -arch arm64
-  SDL_DEFAULT_INC = -I/opt/homebrew/include/SDL -D_THREAD_SAFE
-  SDL_DEFAULT_LIB = -L/opt/homebrew/lib -lSDL -Wl,-framework,Cocoa
+  SDL_PREFIX ?= /opt/homebrew
 endif
 
 CFLAGS += $(TARGET_ARCH)
 CXXFLAGS += $(TARGET_ARCH)
 LDFLAGS += $(TARGET_ARCH)
-SDL_CFLAGS := $(shell sdl-config --cflags 2>/dev/null || echo "$(SDL_DEFAULT_INC)")
-SDL_LIBS := $(shell sdl-config --libs 2>/dev/null || echo "$(SDL_DEFAULT_LIB)")
+
+# Use the SDL matching TARGET_ARCH, not whatever sdl-config is first on PATH.
+# Native Homebrew on Apple Silicon would otherwise poison an x86_64 link.
+SDL_CFLAGS := $(shell $(SDL_PREFIX)/bin/sdl-config --cflags 2>/dev/null || echo "-I$(SDL_PREFIX)/include/SDL -D_THREAD_SAFE")
+SDL_LIBS := $(shell $(SDL_PREFIX)/bin/sdl-config --libs 2>/dev/null || echo "-L$(SDL_PREFIX)/lib -lSDL -Wl,-framework,Cocoa")
 
 CPPFLAGS = -I../include -I. -I../uae_cpu -I../Unix -I../SDL -I/opt/homebrew/include -I/usr/local/include $(SDL_CFLAGS)
+
+# Code generators must run on the build machine. Compile them without
+# TARGET_ARCH so ARCH=x86_64/amd64 works on Apple Silicon without Rosetta.
+HOST_CPPFLAGS = -I../include -I. -I../uae_cpu -I../Unix -I../SDL
+HOST_CFLAGS = -O2 -Wall -Wno-unused -Wno-deprecated-non-prototype
+HOST_CXXFLAGS = -O2 -Wall -Wno-unused -Wno-writable-strings -Wno-multichar -Wno-deprecated-declarations -Wno-format -Wno-c++11-narrowing
 DEFS = -DHAVE_CONFIG_H -D_REENTRANT -DFPU_IEEE
 
 LIBS = ../slirp/libslirp.a -lpthread $(SDL_LIBS) -framework Cocoa -framework IOKit
@@ -99,11 +105,23 @@ $(OBJ_DIR)/%.o : %.cpp
 $(OBJ_DIR)/%.o : %.s
 	$(CC) -c $< -o $@
 
-$(OBJ_DIR)/build68k: $(OBJ_DIR)/build68k.o
-	$(CC) $(LDFLAGS) -o $(OBJ_DIR)/build68k $(OBJ_DIR)/build68k.o
+$(OBJ_DIR)/build68k.o: ../uae_cpu/build68k.c
+	$(CC) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/gencpu: $(OBJ_DIR)/gencpu.o $(OBJ_DIR)/readcpu.o $(OBJ_DIR)/cpudefs.o
-	$(CXX) $(LDFLAGS) -o $(OBJ_DIR)/gencpu $(OBJ_DIR)/gencpu.o $(OBJ_DIR)/readcpu.o $(OBJ_DIR)/cpudefs.o
+$(OBJ_DIR)/gencpu.o: ../uae_cpu/gencpu.c
+	$(CC) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/readcpu_host.o: ../uae_cpu/readcpu.cpp
+	$(CXX) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CXXFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/cpudefs_host.o: cpudefs.cpp
+	$(CXX) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CXXFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/build68k: $(OBJ_DIR)/build68k.o
+	$(CC) -o $(OBJ_DIR)/build68k $(OBJ_DIR)/build68k.o
+
+$(OBJ_DIR)/gencpu: $(OBJ_DIR)/gencpu.o $(OBJ_DIR)/readcpu_host.o $(OBJ_DIR)/cpudefs_host.o
+	$(CXX) -o $(OBJ_DIR)/gencpu $(OBJ_DIR)/gencpu.o $(OBJ_DIR)/readcpu_host.o $(OBJ_DIR)/cpudefs_host.o
 
 cpudefs.cpp: $(OBJ_DIR)/build68k ../uae_cpu/table68k
 	$(OBJ_DIR)/build68k <../uae_cpu/table68k >cpudefs.cpp
