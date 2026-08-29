@@ -82,6 +82,8 @@ it always does).
   Macs from one tree via an `ARCH` variable (`arm64` by default, or `x86_64`/
   `amd64`), selecting the right Homebrew SDL prefix
   (`/opt/homebrew` vs `/usr/local`) and `-arch` flag automatically.
+  `make universal` in that directory builds both slices and `lipo`s them
+  into a fat `CockatriceIII` (needs both Homebrew prefixes).
 - `BasiliskII/mingw/Makefile` was rewritten to build Windows x86, x64, or
   ARM64 from the same tree using whatever MSYS2 toolchain/MSYSTEM
   (`MINGW32`/`MINGW64`/`CLANGARM64`) invokes it, using `sdl-config` when
@@ -90,13 +92,14 @@ it always does).
 ## CI: GitHub Actions
 
 [.github/workflows/build-and-release.yml](.github/workflows/build-and-release.yml)
-builds all five targets on every push, on pull requests into `main`, and on
+builds all six targets on every push, on pull requests into `main`, and on
 `v*` tags (which also cuts a GitHub Release):
 
-| Target       | Runner          | Build dir             |
-|--------------|-----------------|------------------------|
-| osx-arm      | macos-latest (native arm64) | `BasiliskII/OSX64` |
-| osx-amd64    | macos-latest (cross x86_64) | `BasiliskII/OSX64` |
+| Target         | Runner          | Build dir             |
+|----------------|-----------------|------------------------|
+| osx-arm        | macos-latest (native arm64) | `BasiliskII/OSX64` |
+| osx-amd64      | macos-latest (cross x86_64) | `BasiliskII/OSX64` |
+| osx-universal  | macos-latest (lipo fat)     | `BasiliskII/OSX64` |
 | win32-x64    | windows-latest (MINGW64)    | `BasiliskII/mingw` |
 | win32-x86    | windows-latest (MINGW32)    | `BasiliskII/mingw` |
 | win32-arm    | windows-latest (CLANGARM64) | `BasiliskII/mingw` |

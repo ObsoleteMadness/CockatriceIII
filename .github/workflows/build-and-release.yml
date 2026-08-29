@@ -50,6 +50,15 @@ jobs:
             artifact_name: CockatriceIII-osx-amd64.dmg
             package_ext: dmg
 
+          # macOS universal (arm64 + x86_64 fat binary via lipo)
+          - target: osx-universal
+            os: macos-latest
+            platform: osx
+            arch: universal
+            build_dir: BasiliskII/OSX64
+            artifact_name: CockatriceIII-osx-universal.dmg
+            package_ext: dmg
+
           # Windows x64
           - target: win32-x64
             os: windows-latest
@@ -105,7 +114,10 @@ jobs:
       - name: Set up macOS dependencies
         if: matrix.platform == 'osx'
         run: |
-          if [ "${{ matrix.arch }}" = "amd64" ]; then
+          if [ "${{ matrix.arch }}" != "amd64" ]; then
+            brew install sdl12-compat
+          fi
+          if [ "${{ matrix.arch }}" = "amd64" ] || [ "${{ matrix.arch }}" = "universal" ]; then
             # x86_64 SDL lives under Intel Homebrew (/usr/local). The ARM
             # brew at /opt/homebrew cannot supply a linkable x86_64 libSDL.
             sudo softwareupdate --install-rosetta --agree-to-license || true
@@ -113,20 +125,26 @@ jobs:
               NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
             fi
             arch -x86_64 /usr/local/bin/brew install sdl12-compat
-          else
-            brew install sdl12-compat
           fi
 
       - name: Build macOS (${{ matrix.target }})
         if: matrix.platform == 'osx'
         run: |
-          make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} -j$(sysctl -n hw.ncpu)
-          file "${{ matrix.build_dir }}/CockatriceIII"
-          lipo -info "${{ matrix.build_dir }}/CockatriceIII"
-          if [ "${{ matrix.arch }}" = "amd64" ]; then
+          if [ "${{ matrix.arch }}" = "universal" ]; then
+            make -C ${{ matrix.build_dir }} universal -j$(sysctl -n hw.ncpu)
+            file "${{ matrix.build_dir }}/CockatriceIII"
+            lipo -info "${{ matrix.build_dir }}/CockatriceIII"
             lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q x86_64
-          else
             lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q arm64
+          else
+            make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} -j$(sysctl -n hw.ncpu)
+            file "${{ matrix.build_dir }}/CockatriceIII"
+            lipo -info "${{ matrix.build_dir }}/CockatriceIII"
+            if [ "${{ matrix.arch }}" = "amd64" ]; then
+              lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q x86_64
+            else
+              lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q arm64
+            fi
           fi
 
       - name: Package macOS Distribution (.dmg)

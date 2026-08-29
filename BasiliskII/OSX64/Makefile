@@ -60,11 +60,24 @@ SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../
     $(SYSSRCS) $(CPUSRCS)
 
 ## Rules
-.PHONY: all clean mostlyclean slirp_lib
+.PHONY: all clean mostlyclean clean-objects slirp_lib universal
 .SUFFIXES:
 .SUFFIXES: .c .cpp .m .s .o .h
 
 all: $(APP)
+
+# Thin arm64 + x86_64 slices, then lipo into a universal Mach-O.
+# Host tools stay native; only the final executable is fat. Requires both
+# Homebrew SDLs (/opt/homebrew for arm64, /usr/local for x86_64).
+# clean-objects must not delete the saved slices between the two builds.
+universal:
+	$(MAKE) clean-objects
+	$(MAKE) ARCH=arm64
+	cp $(APP) $(APP)-arm64
+	$(MAKE) clean-objects
+	$(MAKE) ARCH=amd64
+	cp $(APP) $(APP)-x86_64
+	lipo -create $(APP)-arm64 $(APP)-x86_64 -output $(APP)
 
 OBJ_DIR = obj
 $(OBJ_DIR)::
@@ -86,12 +99,15 @@ $(APP): $(OBJ_DIR) ../slirp/libslirp.a $(OBJS)
 ../slirp/libslirp.a:
 	$(MAKE) -C ../slirp CC="$(CC)" CFLAGS="-I. -O2 -Wall -Wno-unused $(TARGET_ARCH)"
 
-mostlyclean:
+clean-objects:
 	rm -f $(APP) $(OBJ_DIR)/* core* *.core *~ *.bak
+	$(MAKE) -C ../slirp clean
+
+mostlyclean: clean-objects
+	rm -f $(APP)-arm64 $(APP)-x86_64
 
 clean: mostlyclean
 	rm -f cpuemu.cpp cpudefs.cpp cputmp*.s cpufast*.s cpustbl.cpp cputbl.h
-	$(MAKE) -C ../slirp clean
 
 $(OBJ_DIR)/%.o : %.c
 	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
