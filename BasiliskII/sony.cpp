@@ -198,6 +198,21 @@ void SonyExit(void)
 
 
 /*
+ *  Reset
+ */
+
+void SonyReset(void)
+{
+	for (DriveInfo *info = first_drive_info; info != NULL; info = info->next) {
+		info->status = 0;
+		info->to_be_mounted = false;
+		info->tag_buffer = 0;
+	}
+	acc_run_called = false;
+}
+
+
+/*
  *  Disk was inserted, flag for mounting
  */
 
@@ -215,6 +230,102 @@ bool SonyMountVolume(void *fh)
 		return true;
 	} else
 		return false;
+}
+
+
+/*
+ *  Dynamically insert/add a floppy disk image
+ */
+
+bool SonyInsertFloppy(const char *path)
+{
+	if (!path || !path[0])
+		return false;
+
+	void *fh = Sys_open(path, false);
+	if (!fh)
+		return false;
+
+	// Check if there is an existing floppy drive that has no disk inserted (or was ejected)
+	DriveInfo *info = first_drive_info;
+	DriveInfo *empty_drive = NULL;
+	while (info != NULL) {
+		if (info->status != 0 && ReadMacInt8(info->status + dsDiskInPlace) == 0) {
+			empty_drive = info;
+			break;
+		}
+		info = info->next;
+	}
+
+	if (empty_drive) {
+		if (empty_drive->fh)
+			Sys_close(empty_drive->fh);
+		empty_drive->fh = fh;
+		empty_drive->read_only = SysIsReadOnly(fh);
+		WriteMacInt8(empty_drive->status + dsDiskInPlace, 1);
+		WriteMacInt8(empty_drive->status + dsWriteProt, empty_drive->read_only ? 0xff : 0);
+		empty_drive->to_be_mounted = true;
+		if (HasMacStarted()) {
+			M68kRegisters r;
+			r.d[0] = empty_drive->num;
+			r.a[0] = 7; // diskEvent
+			Execute68kTrap(0xa02f, &r); // PostEvent()
+			empty_drive->to_be_mounted = false;
+		}
+		return true;
+	}
+
+	// No empty drive found, create a new one
+	DriveInfo *new_info = new DriveInfo;
+	new_info->fh = fh;
+	new_info->read_only = SysIsReadOnly(fh);
+	new_info->num = FindFreeDriveNumber(1);
+	new_info->to_be_mounted = false;
+	new_info->tag_buffer = 0;
+
+	// Append to list of drives
+	if (first_drive_info == NULL) {
+		first_drive_info = new_info;
+	} else {
+		DriveInfo *p = first_drive_info;
+		while (p->next != NULL)
+			p = p->next;
+		p->next = new_info;
+	}
+
+	if (HasMacStarted()) {
+		// Allocate drive status record in Mac memory
+		M68kRegisters r;
+		r.d[0] = SIZEOF_DrvSts;
+		Execute68kTrap(0xa71e, &r); // NewPtrSysClear()
+		if (r.a[0] != 0) {
+			new_info->status = r.a[0];
+			WriteMacInt16(new_info->status + dsQType, sony);
+			WriteMacInt8(new_info->status + dsInstalled, 1);
+			WriteMacInt8(new_info->status + dsSides, 0xff);
+			WriteMacInt8(new_info->status + dsTwoSideFmt, 0xff);
+			WriteMacInt8(new_info->status + dsNewIntf, 0xff);
+			WriteMacInt8(new_info->status + dsMFMDrive, 0xff);
+			WriteMacInt8(new_info->status + dsMFMDisk, 0xff);
+			WriteMacInt8(new_info->status + dsTwoMegFmt, 0xff);
+			WriteMacInt8(new_info->status + dsDiskInPlace, 1);
+			WriteMacInt8(new_info->status + dsWriteProt, new_info->read_only ? 0xff : 0);
+
+			// Add drive to drive queue
+			r.d[0] = (new_info->num << 16) | (SonyRefNum & 0xffff);
+			r.a[0] = new_info->status + dsQLink;
+			Execute68kTrap(0xa04e, &r); // AddDrive()
+
+			// Post diskEvent to mount it
+			r.d[0] = new_info->num;
+			r.a[0] = 7; // diskEvent
+			Execute68kTrap(0xa02f, &r); // PostEvent()
+		}
+	} else {
+		new_info->to_be_mounted = true;
+	}
+
+	return true;
 }
 
 

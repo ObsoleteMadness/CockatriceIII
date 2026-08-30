@@ -43,6 +43,7 @@
 #include "extfs.h"
 #include "prefs.h"
 #include "emul_op.h"
+#include "menu_bar.h"
 
 #if ENABLE_MON
 #include "mon.h"
@@ -417,6 +418,11 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 
 		case M68K_EMUL_OP_IRQ:			// Level 1 interrupt
 			r->d[0] = 0;
+
+			// Drain all pending menu commands (posted from UI thread) safely here
+			// on the CPU thread, where it is safe to touch 68k state.
+			MenuQueue_Drain();
+
 			if (InterruptFlags & INTFLAG_60HZ) {
 				ClearInterruptFlag(INTFLAG_60HZ);
 
@@ -442,7 +448,7 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 						Execute68kTrap(0xa072, &r2);
 					}
 
-					r->d[0] = 1;			// Flag: 68k interrupt routine executes VBLTasks etc.
+					r->d[0] = 1;		// Flag: 68k interrupt routine executes VBLTasks etc.
 				}
 			}
 			if (InterruptFlags & INTFLAG_SERIAL) {

@@ -153,7 +153,7 @@ static NetProtocol *prot_list = NULL;
 
 // Global variables
 
-static bool thread_active = false;			// Flag: Packet reception thread installed
+static volatile bool thread_active = false;	// Flag: Packet reception thread installed
 static SDL_Thread *ether_thread = NULL;
 //static sem_t int_ack;						// Interrupt acknowledge semaphore
 SDL_sem *int_ack=NULL;
@@ -391,10 +391,16 @@ void EtherInit(void)
 open_error:
 	if (thread_active) {
 		thread_active = false;
-		if (ether_thread)
-			SDL_KillThread(ether_thread);
 		if (int_ack)
+			SDL_SemPost(int_ack);
+		if (ether_thread) {
+			SDL_WaitThread(ether_thread, NULL);
+			ether_thread = NULL;
+		}
+		if (int_ack) {
 			SDL_DestroySemaphore(int_ack);
+			int_ack = NULL;
+		}
 	}
 }
 
@@ -409,15 +415,45 @@ printf("EtherExit called\n");
 	// Stop reception thread
 	if (thread_active) {
 		thread_active = false;
-		if (ether_thread)
-			SDL_KillThread(ether_thread);
 		if (int_ack)
+			SDL_SemPost(int_ack);
+		if (ether_thread) {
+			SDL_WaitThread(ether_thread, NULL);
+			ether_thread = NULL;
+		}
+		if (int_ack) {
 			SDL_DestroySemaphore(int_ack);
+			int_ack = NULL;
+		}
 		//DO NICE SHUTDOWN STUFF...
 		if(is_slirp)
 			{slirp_exit(0);}
 		if(is_pcap && pcap)
 			{_pcap_close(pcap); pcap = NULL;}
+		if (slirp_queue_mutex) {
+			SDL_DestroyMutex(slirp_queue_mutex);
+			slirp_queue_mutex = NULL;
+		}
+		if (slirp_mutex) {
+			SDL_DestroyMutex(slirp_mutex);
+			slirp_mutex = NULL;
+		}
+		if (slirp_select_fill_mutex) {
+			SDL_DestroyMutex(slirp_select_fill_mutex);
+			slirp_select_fill_mutex = NULL;
+		}
+		if (slirp_select_poll_mutex) {
+			SDL_DestroyMutex(slirp_select_poll_mutex);
+			slirp_select_poll_mutex = NULL;
+		}
+		if (slirpq) {
+			while (QueuePeek(slirpq) > 0) {
+				struct queuepacket *qp = QueueDelete(slirpq);
+				if (qp) free(qp);
+			}
+			QueueDestroy(slirpq);
+			slirpq = NULL;
+		}
 	}
 
 	// Remove all protocols
@@ -569,63 +605,72 @@ int receive_func(void *arg)
 	const unsigned char *data;
 	struct pcap_pkthdr h;
 
-	for (;;) {
-	if(is_slirp){
-
-		if(QueuePeek(slirpq)>0){
-		SetInterruptFlag(INTFLAG_ETHER);
-		TriggerInterrupt();
-		// Wait for interrupt acknowledge by EtherInterrupt()
-		SDL_SemWait(int_ack);
-		}//endpeek
-
-	}//end slirp
-	if(is_pcap){
-		SDL_LockMutex(slirp_queue_mutex);
-		data=_pcap_next(pcap,&h);
-		SDL_UnlockMutex(slirp_queue_mutex);
-		if(data==0x0){goto WTF;}	//dont know why this is happening!
-//printf("pcap_next just got a packet!\t%d long\t\r",h.caplen);
-	if(h.caplen>0)
-		{
-		if(h.caplen>1516)
-			h.caplen=1516;
-		if((memcmp(data+6,ether_addr,6))==0)
-			{D(bug("ether: we just saw ourselves\n"));}
-		else
-			{
-			struct queuepacket *p;
-			p=(struct queuepacket *)malloc(sizeof(struct queuepacket));
-			p->len=h.caplen;
-			memcpy(p->data,data,h.caplen);
-			SDL_LockMutex(slirp_queue_mutex);
-			QueueEnter(slirpq,p);
-			SDL_UnlockMutex(slirp_queue_mutex);
-
-			SetInterruptFlag(INTFLAG_ETHER);
-			TriggerInterrupt();
-			// Wait for interrupt acknowledge by EtherInterrupt()
-			SDL_SemWait(int_ack);
-
+	while (thread_active) {
+		if (is_slirp) {
+			if (slirpq && QueuePeek(slirpq) > 0) {
+				SetInterruptFlag(INTFLAG_ETHER);
+				TriggerInterrupt();
+				// Wait for interrupt acknowledge by EtherInterrupt()
+				if (int_ack)
+					SDL_SemWait(int_ack);
 			}
 		}
-	}
+		if (!thread_active)
+			break;
+
+		if (is_pcap && pcap) {
+			SDL_LockMutex(slirp_queue_mutex);
+			data = (thread_active && pcap) ? _pcap_next(pcap, &h) : NULL;
+			SDL_UnlockMutex(slirp_queue_mutex);
+			if (data == NULL || !thread_active) {
+				goto WTF;
+			}
+			if (h.caplen > 0) {
+				if (h.caplen > 1516)
+					h.caplen = 1516;
+				if ((memcmp(data + 6, ether_addr, 6)) == 0) {
+					D(bug("ether: we just saw ourselves\n"));
+				} else {
+					struct queuepacket *p;
+					p = (struct queuepacket *)malloc(sizeof(struct queuepacket));
+					if (p) {
+						p->len = h.caplen;
+						memcpy(p->data, data, h.caplen);
+						SDL_LockMutex(slirp_queue_mutex);
+						if (slirpq)
+							QueueEnter(slirpq, p);
+						else
+							free(p);
+						SDL_UnlockMutex(slirp_queue_mutex);
+
+						if (thread_active) {
+							SetInterruptFlag(INTFLAG_ETHER);
+							TriggerInterrupt();
+							// Wait for interrupt acknowledge by EtherInterrupt()
+							if (int_ack)
+								SDL_SemWait(int_ack);
+						}
+					}
+				}
+			}
+		}
 #if 1
 #ifdef UNIX
-	if(is_slirp)
-	usleep(1);	//this value feels too magical.  1 for pcap
+		if (is_slirp)
+			usleep(1); // this value feels too magical. 1 for pcap
 #else
-	if(is_slirp)
-	Sleep(1);
+		if (is_slirp)
+			Sleep(1);
 #endif
 #endif
 	WTF:
-	#ifdef UNIX
-	usleep(1);	//this value feels too magical.
-	#else
-	Sleep(1);
-	#endif
-    }//end for
+#ifdef UNIX
+		usleep(1); // this value feels too magical.
+#else
+		Sleep(1);
+#endif
+	} // end while (thread_active)
+	return 0;
 }
 
 

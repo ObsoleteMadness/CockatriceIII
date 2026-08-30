@@ -1186,6 +1186,7 @@ static int m68k_execute_depth = 0;
 
 void m68k_reset (void)
 {
+    m68k_execute_depth = 0;
     m68k_areg (regs, 7) = 0x2000;
     m68k_setpc (ROMBaseMac + 0x2a);
     fill_prefetch_0 ();

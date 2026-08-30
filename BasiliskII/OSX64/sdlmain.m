@@ -4,6 +4,8 @@
 
 #import <SDL/SDL.h>
 #import "sdlmain.h"
+#import "menu_bar.h"
+#import "scsi.h"
 #import <sys/param.h>
 #import <unistd.h>
 
@@ -39,22 +41,64 @@ static NSString *getApplicationName(void)
 }
 @end
 
-@implementation SDLMain
+@interface CocoaMenuHandler : NSObject
+- (void)menuSaveConfig:(id)sender;
+- (void)menuZapPRAM:(id)sender;
+- (void)menuResetMachine:(id)sender;
+- (void)menuShutdown:(id)sender;
+- (void)menuForcePoweroff:(id)sender;
+- (void)menuAddFloppy:(id)sender;
+- (void)menuAttachSCSI:(id)sender;
+- (void)menuDetachSCSI:(id)sender;
+@end
 
-- (void) setupWorkingDirectory:(BOOL)shouldChdir
+@implementation CocoaMenuHandler
+- (void)menuSaveConfig:(id)sender
 {
-    if (shouldChdir)
-    {
-        char appdir[MAXPATHLEN];
-        CFURLRef url = CFBundleCopyBundleURL(CFBundleGetMainBundle());
-        if (url) {
-            if (CFURLGetFileSystemRepresentation(url, true, (UInt8 *)appdir, MAXPATHLEN)) {
-                assert(chdir(appdir) == 0);
-            }
-            CFRelease(url);
-        }
-    }
+    MenuAction_SaveConfig();
 }
+
+- (void)menuZapPRAM:(id)sender
+{
+    MenuAction_ZapPRAM();
+}
+
+- (void)menuResetMachine:(id)sender
+{
+    MenuAction_ResetMachine();
+}
+
+- (void)menuShutdown:(id)sender
+{
+    MenuAction_Shutdown();
+}
+
+- (void)menuForcePoweroff:(id)sender
+{
+    MenuAction_ForcePoweroff();
+}
+
+- (void)menuAddFloppy:(id)sender
+{
+    MenuAction_AddFloppy();
+}
+
+- (void)menuAttachSCSI:(id)sender
+{
+    int scsiId = (int)[sender tag];
+    MenuAction_AttachSCSI(scsiId);
+}
+
+- (void)menuDetachSCSI:(id)sender
+{
+    int scsiId = (int)[sender tag];
+    MenuAction_DetachSCSI(scsiId);
+}
+@end
+
+static CocoaMenuHandler *g_menuHandler = nil;
+static NSMenuItem *g_scsiMenuItems[7] = {nil};
+static NSMenuItem *g_scsiDetachItems[7] = {nil};
 
 static void setApplicationMenu(void)
 {
@@ -92,6 +136,93 @@ static void setApplicationMenu(void)
     [menuItem release];
 }
 
+static void setupFileMenu(void)
+{
+    NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
+    NSMenuItem *item;
+
+    item = [[NSMenuItem alloc] initWithTitle:@"Save Configuration" action:@selector(menuSaveConfig:) keyEquivalent:@"s"];
+    [item setTarget:g_menuHandler];
+    [fileMenu addItem:item];
+    [item release];
+
+    [fileMenu addItem:[NSMenuItem separatorItem]];
+
+    item = [[NSMenuItem alloc] initWithTitle:@"Zap PRAM" action:@selector(menuZapPRAM:) keyEquivalent:@""];
+    [item setTarget:g_menuHandler];
+    [fileMenu addItem:item];
+    [item release];
+
+    [fileMenu addItem:[NSMenuItem separatorItem]];
+
+    item = [[NSMenuItem alloc] initWithTitle:@"Reset Machine" action:@selector(menuResetMachine:) keyEquivalent:@"r"];
+    [item setTarget:g_menuHandler];
+    [fileMenu addItem:item];
+    [item release];
+
+    item = [[NSMenuItem alloc] initWithTitle:@"Shutdown" action:@selector(menuShutdown:) keyEquivalent:@""];
+    [item setTarget:g_menuHandler];
+    [fileMenu addItem:item];
+    [item release];
+
+    item = [[NSMenuItem alloc] initWithTitle:@"Forced Poweroff and Exit" action:@selector(menuForcePoweroff:) keyEquivalent:@""];
+    [item setTarget:g_menuHandler];
+    [fileMenu addItem:item];
+    [item release];
+
+    NSMenuItem *fileMenuItem = [[NSMenuItem alloc] initWithTitle:@"File" action:nil keyEquivalent:@""];
+    [fileMenuItem setSubmenu:fileMenu];
+    [[NSApp mainMenu] addItem:fileMenuItem];
+
+    [fileMenu release];
+    [fileMenuItem release];
+}
+
+static void setupDiskMenu(void)
+{
+    NSMenu *diskMenu = [[NSMenu alloc] initWithTitle:@"Disk"];
+    NSMenuItem *item;
+
+    item = [[NSMenuItem alloc] initWithTitle:@"Add Floppy..." action:@selector(menuAddFloppy:) keyEquivalent:@""];
+    [item setTarget:g_menuHandler];
+    [diskMenu addItem:item];
+    [item release];
+
+    [diskMenu addItem:[NSMenuItem separatorItem]];
+
+    for (int i = 0; i < 7; i++) {
+        NSString *scsiTitle = [NSString stringWithFormat:@"SCSI %d", i];
+        NSMenu *scsiSubmenu = [[NSMenu alloc] initWithTitle:scsiTitle];
+
+        NSMenuItem *attachItem = [[NSMenuItem alloc] initWithTitle:@"Attach..." action:@selector(menuAttachSCSI:) keyEquivalent:@""];
+        [attachItem setTarget:g_menuHandler];
+        [attachItem setTag:i];
+        [scsiSubmenu addItem:attachItem];
+        [attachItem release];
+
+        NSMenuItem *detachItem = [[NSMenuItem alloc] initWithTitle:@"Detach" action:@selector(menuDetachSCSI:) keyEquivalent:@""];
+        [detachItem setTarget:g_menuHandler];
+        [detachItem setTag:i];
+        [scsiSubmenu addItem:detachItem];
+        g_scsiDetachItems[i] = detachItem;
+
+        NSMenuItem *scsiMenuItem = [[NSMenuItem alloc] initWithTitle:scsiTitle action:nil keyEquivalent:@""];
+        [scsiMenuItem setSubmenu:scsiSubmenu];
+        [diskMenu addItem:scsiMenuItem];
+        g_scsiMenuItems[i] = scsiMenuItem;
+
+        [scsiSubmenu release];
+        [scsiMenuItem release];
+    }
+
+    NSMenuItem *diskMenuItem = [[NSMenuItem alloc] initWithTitle:@"Disk" action:nil keyEquivalent:@""];
+    [diskMenuItem setSubmenu:diskMenu];
+    [[NSApp mainMenu] addItem:diskMenuItem];
+
+    [diskMenu release];
+    [diskMenuItem release];
+}
+
 static void setupWindowMenu(void)
 {
     NSMenu      *windowMenu;
@@ -114,6 +245,88 @@ static void setupWindowMenu(void)
     [windowMenuItem release];
 }
 
+void MenuBar_UpdateAll(void)
+{
+    void (^updateBlock)(void) = ^{
+        for (int i = 0; i < 7; i++) {
+            if (g_scsiMenuItems[i]) {
+                bool present = false, cdrom = false;
+                char path[1024] = {0};
+                SCSI_GetDeviceInfo(i, &present, &cdrom, path, sizeof(path));
+                if (present && path[0] != '\0') {
+                    const char *filename = strrchr(path, '/');
+                    filename = filename ? filename + 1 : path;
+                    NSString *title = [NSString stringWithFormat:@"SCSI %d: %s (%s)", i, filename, cdrom ? "CD-ROM" : "HDD"];
+                    [g_scsiMenuItems[i] setTitle:title];
+                    if (g_scsiDetachItems[i]) {
+                        [g_scsiDetachItems[i] setEnabled:YES];
+                    }
+                } else {
+                    NSString *title = [NSString stringWithFormat:@"SCSI %d (Empty)", i];
+                    [g_scsiMenuItems[i] setTitle:title];
+                    if (g_scsiDetachItems[i]) {
+                        [g_scsiDetachItems[i] setEnabled:NO];
+                    }
+                }
+            }
+        }
+    };
+
+    if ([NSThread isMainThread]) {
+        updateBlock();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), updateBlock);
+    }
+}
+
+void MenuBar_Init(void *native_window_handle)
+{
+    MenuBar_UpdateAll();
+}
+
+bool MenuBar_ShowOpenFileDialog(const char *title, const char *filter_desc, const char *filter_exts, char *out_path, size_t max_len)
+{
+    @autoreleasepool {
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        [panel setCanChooseFiles:YES];
+        [panel setCanChooseDirectories:NO];
+        [panel setAllowsMultipleSelection:NO];
+        if (title) {
+            [panel setMessage:[NSString stringWithUTF8String:title]];
+            [panel setTitle:[NSString stringWithUTF8String:title]];
+        }
+        if ([panel runModal] == NSModalResponseOK) {
+            NSURL *url = [[panel URLs] firstObject];
+            if (url && [url path]) {
+                const char *cpath = [[url path] UTF8String];
+                if (cpath && out_path && max_len > 0) {
+                    strncpy(out_path, cpath, max_len - 1);
+                    out_path[max_len - 1] = '\0';
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+@implementation SDLMain
+
+- (void) setupWorkingDirectory:(BOOL)shouldChdir
+{
+    if (shouldChdir)
+    {
+        char appdir[MAXPATHLEN];
+        CFURLRef url = CFBundleCopyBundleURL(CFBundleGetMainBundle());
+        if (url) {
+            if (CFURLGetFileSystemRepresentation(url, true, (UInt8 *)appdir, MAXPATHLEN)) {
+                assert(chdir(appdir) == 0);
+            }
+            CFRelease(url);
+        }
+    }
+}
+
 static void CustomApplicationMain (int argc, char **argv)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -126,8 +339,12 @@ static void CustomApplicationMain (int argc, char **argv)
     }
 
     [NSApp setMainMenu:[[NSMenu alloc] init]];
+    g_menuHandler = [[CocoaMenuHandler alloc] init];
     setApplicationMenu();
+    setupFileMenu();
+    setupDiskMenu();
     setupWindowMenu();
+    MenuBar_UpdateAll();
 
     sdlMain = [[SDLMain alloc] init];
     [NSApp setDelegate:sdlMain];

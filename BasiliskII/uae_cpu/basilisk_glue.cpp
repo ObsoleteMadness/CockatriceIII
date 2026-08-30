@@ -18,6 +18,8 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include <setjmp.h>
+
 #include "sysdeps.h"
 
 #include "cpu_emulation.h"
@@ -27,6 +29,12 @@
 #include "emul_op.h"
 #include "rom_patches.h"
 #include "timer.h"
+#include "ether.h"
+#include "scsi.h"
+#include "sony.h"
+#include "disk.h"
+#include "audio.h"
+#include "menu_bar.h"
 #include "m68k.h"
 #include "memory-uae.h"
 #include "readcpu.h"
@@ -132,19 +140,55 @@ void InitFrameBufferMapping(void)
 #endif
 }
 
-/*
- *  Reset and start 680x0 emulation (doesn't return)
- */
+static jmp_buf s_cpu_reset_jmp;
+static volatile bool s_cpu_reset_valid = false;
 
 void Start680x0(void)
 {
-	m68k_reset();
+	for (;;) {
+		if (setjmp(s_cpu_reset_jmp) == 0) {
+			s_cpu_reset_valid = true;
+			m68k_reset();
 #if USE_JIT
-    if (UseJIT)
-	m68k_compile_execute();
-    else
+			if (UseJIT)
+				m68k_compile_execute();
+			else
 #endif
-	m68k_execute();
+				m68k_execute();
+			break;
+		} else {
+			// Arrived here via longjmp from Reset680x0()
+			printf("Reset680x0: Resetting machine subsystems...\n");
+			fflush(stdout);
+
+			MenuQueue_Reset();
+			InterruptFlags = 0;
+			TimerReset();
+			EtherReset();
+			SCC_Reset();
+			SCSIReset();
+			SonyReset();
+			DiskReset();
+			AudioReset();
+
+			Mac_memset(RAMBaseMac, 0, RAMSize);
+
+#if USE_JIT
+			if (UseJIT)
+				compiler_init();
+#endif
+			quit_program = false;
+			MenuBar_UpdateAll();
+		}
+	}
+	s_cpu_reset_valid = false;
+}
+
+void Reset680x0(void)
+{
+	if (s_cpu_reset_valid) {
+		longjmp(s_cpu_reset_jmp, 1);
+	}
 }
 
 

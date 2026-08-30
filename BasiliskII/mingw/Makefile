@@ -31,7 +31,7 @@ CPPFLAGS = -I../include -I. -I../uae_cpu -I../SDL -ISDL -Ipcap $(SDL_CFLAGS)
 DEFS = -DHAVE_CONFIG_H -DENABLE_MON=0 -D_REENTRANT -DFPU_IEEE -D_FILE_OFFSET_BITS=64
 
 LDFLAGS = 
-LIBS = ../slirp/libslirp.a $(SDL_LIBS) -lws2_32 -liphlpapi -static-libgcc -static-libstdc++
+LIBS = ../slirp/libslirp.a $(SDL_LIBS) -lws2_32 -liphlpapi -lcomdlg32 -luser32 -static-libgcc -static-libstdc++
 
 # Conditionally link DrMinGW for 32-bit x86 if available
 ifeq ($(ARCH),x86)
@@ -50,7 +50,7 @@ SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../
     ../macos_util.cpp ../xpram.cpp ../dummy/xpram_dummy.cpp ../timer.cpp ../SDL/timer_common.cpp \
     ../dummy/clip_dummy.cpp ../adb.cpp ../serial.cpp ../dummy/serial_dummy.cpp ../scc.cpp ../ether.cpp ../sony.cpp \
     ../disk.cpp ../cdrom.cpp ../scsi.cpp ../video.cpp ../SDL/video_sdl.cpp ../audio.cpp \
-    ../extfs.cpp ../user_strings.cpp user_strings_unix.cpp \
+    ../extfs.cpp ../user_strings.cpp user_strings_unix.cpp ../SDL/menu_bar.cpp ../windows/menu_bar_win32.cpp \
     $(SYSSRCS) $(CPUSRCS) $(FPUSRCS)
 
 APP = CockatriceIII.exe
