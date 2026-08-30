@@ -101,7 +101,31 @@ printf("Offsetting the year by %d billion ticks\n",yearoffset);
 			TwentyFourBitAddressing = false;
 			break;
 	}
-	printf("Setting up for a 680%d0, %s and %sbit addressing\n",CPUType,FPUType ? "With FPU":"Without FPU",TwentyFourBitAddressing ? "24":"32");
+	const char *engine_name = "Musashi";
+	const char *req_engine = PrefsFindString("cpu_emulator");
+	if (req_engine && strcmp(req_engine, "uae") == 0) {
+		engine_name = "WinUAE";
+	} else if (req_engine && strcmp(req_engine, "emu68") == 0) {
+		engine_name = "Emu68";
+	} else {
+		engine_name = "Musashi";
+	}
+
+	printf("Setting up for a 680%d0, %s and %sbit addressing via %s\n",
+	       CPUType, FPUType ? "With FPU" : "Without FPU",
+	       TwentyFourBitAddressing ? "24" : "32", engine_name);
+
+	bool jit_enabled = false;
+	if (strcmp(engine_name, "Emu68") == 0) {
+		jit_enabled = true;
+	} else if (strcmp(engine_name, "WinUAE") == 0 && PrefsFindBool("jit")) {
+		jit_enabled = true;
+	}
+
+	if (jit_enabled) {
+		printf("JIT enabled\n");
+	}
+	fflush(stdout);
 	CPUIs68060 = false;
 #endif
 

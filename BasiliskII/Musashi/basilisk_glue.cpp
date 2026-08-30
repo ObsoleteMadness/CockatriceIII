@@ -96,10 +96,12 @@ extern "C" int musashi_illg_callback(int opcode)
 	return 0;
 }
 
+#include "cpu_engine.h"
+
 /*
  * Initialize 680x0 emulation
  */
-bool Init680x0(void)
+static bool musashi_init(void)
 {
 	RAMBaseMac = 0;
 	switch (ROMVersion) {
@@ -146,7 +148,7 @@ bool Init680x0(void)
 /*
  * Deinitialize 680x0 emulation
  */
-void Exit680x0(void)
+static void musashi_exit(void)
 {
 	s_quit_requested = true;
 	m68k_end_timeslice();
@@ -163,7 +165,7 @@ void InitFrameBufferMapping(void)
 /*
  * Start 680x0 CPU
  */
-void Start680x0(void)
+static void musashi_start(void)
 {
 	s_quit_requested = false;
 	for (;;) {
@@ -207,28 +209,14 @@ void Start680x0(void)
 /*
  * Reset running 680x0 CPU
  */
-void Reset680x0(void)
+static void musashi_reset(void)
 {
 	if (s_cpu_reset_valid) {
 		longjmp(s_cpu_reset_jmp, 1);
 	}
 }
 
-/*
- * Trigger interrupt
- */
-void TriggerInterrupt(void)
-{
-	int level = intlev();
-	m68k_set_irq(level);
-}
-
-void TriggerNMI(void)
-{
-	m68k_set_irq(7);
-}
-
-int intlev(void)
+static int musashi_intlev(void)
 {
 	if (SCCInterruptRequest) {
 		return TwentyFourBitAddressing ? 2 : 4;
@@ -237,9 +225,23 @@ int intlev(void)
 }
 
 /*
+ * Trigger interrupt
+ */
+static void musashi_trigger_interrupt(void)
+{
+	int level = musashi_intlev();
+	m68k_set_irq(level);
+}
+
+static void musashi_trigger_nmi(void)
+{
+	m68k_set_irq(7);
+}
+
+/*
  * Execute MacOS 68k trap from EMUL_OP routine
  */
-extern "C" void Execute68kTrap(uint16 trap, struct M68kRegisters *r)
+static void musashi_execute_68k_trap(uint16 trap, struct M68kRegisters *r)
 {
 	uint32 oldpc = m68k_get_reg(NULL, M68K_REG_PC);
 
@@ -249,6 +251,8 @@ extern "C" void Execute68kTrap(uint16 trap, struct M68kRegisters *r)
 		m68k_set_reg((m68k_register_t)(M68K_REG_A0 + i), r->a[i]);
 
 	uint32 sp = m68k_get_reg(NULL, M68K_REG_A7);
+	if (sp < 0x1000 || sp >= RAMSize)
+		sp = 0x10000;
 	sp -= 2;
 	WriteMacInt16(sp, (uint16)M68K_EXEC_RETURN);
 	sp -= 2;
@@ -285,7 +289,7 @@ extern "C" void Execute68kTrap(uint16 trap, struct M68kRegisters *r)
 /*
  * Execute 68k subroutine from EMUL_OP routine
  */
-extern "C" void Execute68k(uint32 addr, struct M68kRegisters *r)
+static void musashi_execute_68k(uint32 addr, struct M68kRegisters *r)
 {
 	uint32 oldpc = m68k_get_reg(NULL, M68K_REG_PC);
 
@@ -295,6 +299,8 @@ extern "C" void Execute68k(uint32 addr, struct M68kRegisters *r)
 		m68k_set_reg((m68k_register_t)(M68K_REG_A0 + i), r->a[i]);
 
 	uint32 sp = m68k_get_reg(NULL, M68K_REG_A7);
+	if (sp < 0x1000 || sp >= RAMSize)
+		sp = 0x10000;
 	sp -= 2;
 	WriteMacInt16(sp, (uint16)M68K_EXEC_RETURN);
 	sp -= 4;
@@ -327,3 +333,18 @@ extern "C" void Execute68k(uint32 addr, struct M68kRegisters *r)
 	r->a[7] = sp;
 	r->sr = (uint16)m68k_get_reg(NULL, M68K_REG_SR);
 }
+
+extern const CPUEngine musashi_cpu_engine = {
+	"musashi",
+	"Musashi 680x0 C Core (Version 4.5+)",
+	false,
+	musashi_init,
+	musashi_exit,
+	musashi_start,
+	musashi_reset,
+	musashi_execute_68k,
+	musashi_execute_68k_trap,
+	musashi_trigger_interrupt,
+	musashi_trigger_nmi,
+	musashi_intlev
+};

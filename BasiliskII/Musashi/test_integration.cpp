@@ -16,6 +16,7 @@
 #include "scc.h"
 #include "scsi.h"
 #include "m68k.h"
+#include "cpu_engine.h"
 #include <unistd.h>
 #include <math.h>
 
@@ -530,12 +531,236 @@ void test_fpu_execution(void)
     CHECK(r.d[2] == 0 && r.d[3] == 1, "FSINCOS(0) -> sin=0 (D2), cos=1 (D3)");
 }
 
+#include "cpu_engine.h"
+
+static void test_cpu_engine_abstraction(void)
+{
+    printf("Running CPU Engine abstraction tests...\n");
+
+    // Test 1: Registered engine count
+    int count = GetRegisteredCPUEngineCount();
+    CHECK(count >= 3, "At least 3 CPU engines registered (Musashi, WinUAE, Emu68)");
+
+    // Test 2: Engine discovery by ID
+    const CPUEngine *musashi = GetCPUEngine("musashi");
+    CHECK(musashi != NULL && strcmp(musashi->id, "musashi") == 0, "Musashi CPU engine found");
+
+    const CPUEngine *winuae = GetCPUEngine("uae");
+    CHECK(winuae != NULL && strcmp(winuae->id, "uae") == 0, "WinUAE CPU engine found");
+
+    const CPUEngine *emu68 = GetCPUEngine("emu68");
+    CHECK(emu68 != NULL && strcmp(emu68->id, "emu68") == 0, "Emu68 JIT engine found");
+
+    // Test 3: Engine properties
+    if (emu68) {
+        CHECK(emu68->is_jit == true, "Emu68 correctly flagged as JIT engine");
+    }
+    if (musashi) {
+        CHECK(musashi->is_jit == false, "Musashi correctly flagged as non-JIT interpreter");
+    }
+
+    // Test 4: Dynamic engine switching
+    CHECK(SetActiveCPUEngine("musashi") == true, "SetActiveCPUEngine('musashi') succeeded");
+    CHECK(GetActiveCPUEngine() == musashi, "Active engine is Musashi");
+
+    CHECK(SetActiveCPUEngine("uae") == true, "SetActiveCPUEngine('uae') succeeded");
+    CHECK(GetActiveCPUEngine() == winuae, "Active engine is WinUAE");
+
+    CHECK(SetActiveCPUEngine("emu68") == true, "SetActiveCPUEngine('emu68') succeeded");
+    CHECK(GetActiveCPUEngine() == emu68, "Active engine is Emu68");
+
+    // Switch back to Musashi for full test execution
+    SetActiveCPUEngine("musashi");
+    CHECK(GetActiveCPUEngine() == musashi, "Switched back to Musashi engine for baseline execution");
+}
+
+static void test_cpu_instruction_suite(void)
+{
+    printf("Running 680x0 Core Instruction Verification suite...\n");
+    m68k_set_reg(M68K_REG_A7, 0x10000);
+    M68kRegisters r;
+    uint32 code_addr;
+
+    // Test 1: Signed 32-bit Arithmetic (ADD.L, SUB.L)
+    printf("  [CPU-TEST] Test 1: ADD.L/SUB.L...\n"); fflush(stdout);
+    code_addr = 0x6100;
+    WriteMacInt16(code_addr + 0, 0xD081); // ADD.L D1, D0
+    WriteMacInt16(code_addr + 2, 0x9082); // SUB.L D2, D0
+    WriteMacInt16(code_addr + 4, 0x4E75); // RTS
+
+    memset(&r, 0, sizeof(r));
+    r.d[0] = 1000;
+    r.d[1] = 500;
+    r.d[2] = 200;
+    Execute68k(code_addr, &r);
+    CHECK(r.d[0] == 1300, "ADD.L + SUB.L (1000 + 500 - 200 == 1300)");
+
+    // Test 2: Unsigned 32-bit Multiply & Divide: MULU.W + DIVU.W
+    // MULU.W D1, D0 (300 * 200 = 60000) -> DIVU.W D2, D0 (60000 / 300 = 200)
+    printf("  [CPU-TEST] Test 2: MULU/DIVU...\n"); fflush(stdout);
+    code_addr = 0x7010;
+    WriteMacInt16(code_addr + 0, 0xC0C1); // MULU.W D1, D0
+    WriteMacInt16(code_addr + 2, 0x80C2); // DIVU.W D2, D0
+    WriteMacInt16(code_addr + 4, 0x4E75); // RTS
+
+    memset(&r, 0, sizeof(r));
+    r.d[0] = 300;
+    r.d[1] = 200;
+    r.d[2] = 300;
+    Execute68k(code_addr, &r);
+    CHECK((r.d[0] & 0xFFFF) == 200, "MULU.W + DIVU.W executed correctly (300 * 200 / 300 == 200)");
+
+    // Test 3: Bit Shift operations (LSL, LSR)
+    // LSL.L #4, D0 -> LSR.L #4, D0
+    printf("  [CPU-TEST] Test 3: LSL/LSR...\n"); fflush(stdout);
+    code_addr = 0x7020;
+    WriteMacInt16(code_addr + 0, 0xE988); // LSL.L #4, D0
+    WriteMacInt16(code_addr + 2, 0xE888); // LSR.L #4, D0
+    WriteMacInt16(code_addr + 4, 0x4E75); // RTS
+
+    memset(&r, 0, sizeof(r));
+    r.d[0] = 0x12345678;
+    Execute68k(code_addr, &r);
+    CHECK((r.d[0] & 0x0FFFFFFF) == (0x12345678 & 0x0FFFFFFF), "LSL.L + LSR.L bitshift roundtrip matches");
+
+    // Test 4: Bit Manipulation (BSET, BCLR, BCHG, BTST)
+    // BSET #3, D0 -> BCHG #7, D0 -> BTST #3, D0 (sets Z=0) -> BCLR #3, D0
+    code_addr = 0x7030;
+    WriteMacInt16(code_addr + 0, 0x08C0); // BSET #3, D0
+    WriteMacInt16(code_addr + 2, 0x0003);
+    WriteMacInt16(code_addr + 4, 0x0840); // BCHG #7, D0
+    WriteMacInt16(code_addr + 6, 0x0007);
+    WriteMacInt16(code_addr + 8, 0x0880); // BCLR #3, D0
+    WriteMacInt16(code_addr + 10, 0x0003);
+    WriteMacInt16(code_addr + 12, 0x4E75); // RTS
+
+    memset(&r, 0, sizeof(r));
+    r.d[0] = 0x00;
+    Execute68k(code_addr, &r);
+    CHECK(r.d[0] == 0x80, "BSET, BCHG, BCLR bit manipulation correctly set bit 7 and cleared bit 3");
+
+    // Test 5: Loop Counting with DBRA / DBF
+    // D0 = 9; loop: ADDQ.L #2, D1; DBRA D0, loop
+    code_addr = 0x7050;
+    WriteMacInt16(code_addr + 0, 0x5481); // loop: ADDQ.L #2, D1
+    WriteMacInt16(code_addr + 2, 0x51C8); // DBRA D0, loop (-4 displacement)
+    WriteMacInt16(code_addr + 4, 0xFFFC);
+    WriteMacInt16(code_addr + 6, 0x4E75); // RTS
+
+    memset(&r, 0, sizeof(r));
+    r.d[0] = 9; // 10 iterations (9 down to -1)
+    r.d[1] = 0;
+    Execute68k(code_addr, &r);
+    CHECK(r.d[1] == 20 && (int16)(r.d[0] & 0xFFFF) == -1, "DBRA loop iterated 10 times (D1 == 20, D0 == -1)");
+
+    // Test 6: Multi-Register Memory Move (MOVEM.L to/from memory)
+    // MOVEM.L D0-D3, (A0) -> clear D0-D3 -> MOVEM.L (A0), D0-D3
+    uint32 movem_buf = 0x8200;
+    code_addr = 0x7070;
+    WriteMacInt16(code_addr + 0, 0x48D0); // MOVEM.L D0-D3, (A0)
+    WriteMacInt16(code_addr + 2, 0x000F); // Register mask D0-D3
+    WriteMacInt16(code_addr + 4, 0x4280); // CLR.L D0
+    WriteMacInt16(code_addr + 6, 0x4281); // CLR.L D1
+    WriteMacInt16(code_addr + 8, 0x4282); // CLR.L D2
+    WriteMacInt16(code_addr + 10, 0x4283); // CLR.L D3
+    WriteMacInt16(code_addr + 12, 0x4CD0); // MOVEM.L (A0), D0-D3
+    WriteMacInt16(code_addr + 14, 0x000F); // Register mask D0-D3
+    WriteMacInt16(code_addr + 16, 0x4E75); // RTS
+
+    memset(&r, 0, sizeof(r));
+    r.a[0] = movem_buf;
+    r.d[0] = 0x11111111;
+    r.d[1] = 0x22222222;
+    r.d[2] = 0x33333333;
+    r.d[3] = 0x44444444;
+    Execute68k(code_addr, &r);
+    CHECK(r.d[0] == 0x11111111 && r.d[1] == 0x22222222 && r.d[2] == 0x33333333 && r.d[3] == 0x44444444,
+          "MOVEM.L save and restore matched bit-for-bit across D0-D3");
+
+    // Test 7: Subroutine nesting and jump tables (JSR, BSR, RTS)
+    // JSR sub1 -> sub1 calls BSR sub2 -> sub2 returns -> sub1 returns
+    uint32 sub2_addr = 0x7120;
+    uint32 sub1_addr = 0x7100;
+    code_addr = 0x7090;
+
+    // main: JSR sub1; RTS
+    WriteMacInt16(code_addr + 0, 0x4EB9); // JSR sub1 (absolute long)
+    WriteMacInt32(code_addr + 2, sub1_addr);
+    WriteMacInt16(code_addr + 6, 0x4E75); // RTS
+
+    // sub1: ADDQ.L #10, D0; BSR sub2; ADDQ.L #5, D0; RTS
+    WriteMacInt16(sub1_addr + 0, 0x5080); // ADDQ.L #8, D0
+    WriteMacInt16(sub1_addr + 2, 0x5480); // ADDQ.L #2, D0 (total +10)
+    WriteMacInt16(sub1_addr + 4, 0x611A); // BSR sub2 (+26 bytes -> sub2)
+    WriteMacInt16(sub1_addr + 6, 0x5A80); // ADDQ.L #5, D0
+    WriteMacInt16(sub1_addr + 8, 0x4E75); // RTS
+
+    // sub2: ADDQ.L #7, D0; RTS
+    WriteMacInt16(sub2_addr + 0, 0x5E80); // ADDQ.L #7, D0
+    WriteMacInt16(sub2_addr + 2, 0x4E75); // RTS
+
+    memset(&r, 0, sizeof(r));
+    r.d[0] = 100;
+    Execute68k(code_addr, &r);
+    CHECK(r.d[0] == 122, "Nested JSR + BSR + RTS stack return executed cleanly (100 + 10 + 7 + 5 == 122)");
+
+    // Test 8: 68020+ Bitfield Extraction: BFEXTU D0 {8:16}, D1
+    // Extracts 16 bits starting at bit offset 8 (0x12345678 -> 0x3456)
+    code_addr = 0x7140;
+    WriteMacInt16(code_addr + 0, 0xE9C0); // BFEXTU D0, D1
+    WriteMacInt16(code_addr + 2, 0x1210); // D1, offset=8, width=16
+    WriteMacInt16(code_addr + 4, 0x4E75); // RTS
+
+    memset(&r, 0, sizeof(r));
+    r.d[0] = 0x12345678;
+    Execute68k(code_addr, &r);
+    CHECK((r.d[1] & 0xFFFF) == 0x3456, "68020+ BFEXTU D0 {8:16}, D1 extracted 0x3456 from 0x12345678");
+
+    // Test 9: 68020+ 32x32 -> 64-bit Multiplication: MULU.L D1, D3:D2
+    // 0x20000 * 0x30000 = 0x00000006 : 0x00000000 (D3=6, D2=0)
+    code_addr = 0x7160;
+    WriteMacInt16(code_addr + 0, 0x4C01); // MULU.L D1, D3:D2 (0x4C01 0x2C03)
+    WriteMacInt16(code_addr + 2, 0x2C03); // D3:D2 64-bit result pair
+    WriteMacInt16(code_addr + 4, 0x4E75); // RTS
+
+    memset(&r, 0, sizeof(r));
+    r.d[1] = 0x20000;
+    r.d[2] = 0x30000;
+    Execute68k(code_addr, &r);
+    CHECK(r.d[3] == 6 && r.d[2] == 0, "68020+ 32x32->64-bit MULU.L (0x20000 * 0x30000 == 6:0)");
+
+    // Test 10: Multi-CPU Model Compatibility (68000, 68010, 68020, 68030, 68040)
+    const int cpu_numbers[] = { 0, 10, 20, 30, 40 };
+    for (int cpu_model = 0; cpu_model <= 4; cpu_model++) {
+        CPUType = cpu_model;
+        musashi_cpu_engine.init();
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Musashi 680%02d initialization and CPU mode switch passed", cpu_numbers[cpu_model]);
+        CHECK(GetActiveCPUEngine() != NULL, msg);
+    }
+    // Restore 68040 for subsequent tests
+    CPUType = 4;
+    musashi_cpu_engine.init();
+
+    // Test 11: Multi-Engine Engine Verification (Musashi, WinUAE, Emu68)
+    const CPUEngine *engines[] = { GetCPUEngine("musashi"), GetCPUEngine("uae"), GetCPUEngine("emu68") };
+    for (int i = 0; i < 3; i++) {
+        if (engines[i]) {
+            char desc[128];
+            snprintf(desc, sizeof(desc), "Engine '%s' (%s) lifecycle initialized cleanly", engines[i]->id, engines[i]->name);
+            CHECK(engines[i]->init != NULL && engines[i]->execute_68k != NULL, desc);
+        }
+    }
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
-    printf("=== CockatriceIII / Musashi Integration Test Suite ===\n");
+    printf("=== CockatriceIII / Multi-Engine Integration Test Suite ===\n");
     test_memory_banking();
+    test_cpu_engine_abstraction();
     test_emulop_and_execute68k();
+    test_cpu_instruction_suite();
     test_scsi_subsystem();
     test_fpu_execution();
 

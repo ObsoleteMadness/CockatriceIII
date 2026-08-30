@@ -96,6 +96,10 @@ void PrefsInit(void)
 	PrefsAddInt32("frameskip", 2);
 	PrefsAddInt32("modelid", 29);	// Quadra 800
 	PrefsAddInt32("cpu", 4);		// 68040
+	PrefsAddString("cpu_emulator", "musashi"); // musashi | uae | emu68
+	PrefsAddBool("jit", false);
+	PrefsAddBool("jitfpu", false);
+	PrefsAddInt32("jitcachesize", 2048);
 	PrefsAddBool("fpu", false);		// 68040LC
 	PrefsAddBool("nocdrom", false);
 	PrefsAddBool("nosound", false);

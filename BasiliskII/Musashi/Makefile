@@ -40,8 +40,8 @@ test_driver$(EXE): test/test_driver.c $(.OFILES)
 test_fpu$(EXE): test_fpu.c softfloat/softfloat.c $(MUSASHIGENHFILES)
 	$(CC) $(CFLAGS) -I. -Isoftfloat test_fpu.c softfloat/softfloat.c -o test_fpu$(EXE) -lm
 
-test_integration$(EXE): test_integration.cpp memory_musashi.cpp basilisk_glue.cpp ../emul_op.cpp ../scsi.cpp ../dummy/scsi_dummy.cpp $(.OFILES)
-	$(CXX) $(CXXFLAGS) -DHAVE_CONFIG_H -I../OSX64 -I../include -I. -Isoftfloat -I../Unix -I../dummy test_integration.cpp memory_musashi.cpp basilisk_glue.cpp ../emul_op.cpp ../scsi.cpp ../dummy/scsi_dummy.cpp $(.OFILES) -o test_integration$(EXE) -lm
+test_integration$(EXE): test_integration.cpp memory_musashi.cpp basilisk_glue.cpp ../cpu_engine.cpp ../WinUAE/winuae_glue.cpp ../Emu68/emu68_glue.cpp ../emul_op.cpp ../scsi.cpp ../dummy/scsi_dummy.cpp $(.OFILES)
+	$(CXX) $(CXXFLAGS) -DHAVE_CONFIG_H -I../OSX64 -I../include -I. -Isoftfloat -I../Unix -I../dummy test_integration.cpp memory_musashi.cpp basilisk_glue.cpp ../cpu_engine.cpp ../WinUAE/winuae_glue.cpp ../Emu68/emu68_glue.cpp ../emul_op.cpp ../scsi.cpp ../dummy/scsi_dummy.cpp $(.OFILES) -o test_integration$(EXE) -lm
 
 TESTS_68000 = abcd adda add_i addq add addx andi_to_ccr andi_to_sr and \
                bcc bchg bclr bool_i bset bsr btst \

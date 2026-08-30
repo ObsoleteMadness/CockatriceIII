@@ -93,9 +93,9 @@ static inline void *Mac2Mac_memcpy(uint32 dest, uint32 src, size_t n) {return me
 // Initialization
 extern bool Init680x0(void);
 extern void Exit680x0(void);
-extern void InitFrameBufferMapping(void);
-
-const bool UseJIT = false;
+extern bool UseJIT;
+extern bool UseJITFPU;
+extern uint32 JITCacheSize;
 
 // 680x0 emulation functions
 struct M68kRegisters;

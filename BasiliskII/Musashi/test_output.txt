@@ -1,0 +1,34 @@
+=== CockatriceIII / Multi-Engine Integration Test Suite ===
+Running memory banking tests...
+  [PASS] 32-bit RAM Write/Read
+  [PASS] 16-bit RAM Read Big-Endian High
+  [PASS] 16-bit RAM Read Big-Endian Low
+  [PASS] 8-bit RAM Read Byte 0
+  [PASS] 8-bit RAM Read Byte 3
+  [PASS] 32-bit ROM Read
+  [PASS] ROM Write Protection
+  [PASS] Unmapped memory returns 0
+  [PASS] Unmapped memory write ignored
+  [PASS] 24-bit addressing mirror read
+[CPU-ENGINE] Active 680x0 CPU Engine: Musashi 680x0 C Core (Version 4.5+) (musashi)
+Running CPU Engine abstraction tests...
+  [PASS] At least 3 CPU engines registered (Musashi, WinUAE, Emu68)
+  [PASS] Musashi CPU engine found
+  [PASS] WinUAE CPU engine found
+  [PASS] Emu68 JIT engine found
+  [PASS] Emu68 correctly flagged as JIT engine
+  [PASS] Musashi correctly flagged as non-JIT interpreter
+[CPU-ENGINE] Active 680x0 CPU Engine: Musashi 680x0 C Core (Version 4.5+) (musashi)
+  [PASS] SetActiveCPUEngine('musashi') succeeded
+  [PASS] Active engine is Musashi
+[CPU-ENGINE] Active 680x0 CPU Engine: WinUAE 680x0 Engine (with SoftFloat 68882/68040 FPU) (uae)
+  [PASS] SetActiveCPUEngine('uae') succeeded
+  [PASS] Active engine is WinUAE
+[CPU-ENGINE] Active 680x0 CPU Engine: Emu68 AArch64 Dynamic Binary Translation / JIT (emu68)
+  [PASS] SetActiveCPUEngine('emu68') succeeded
+  [PASS] Active engine is Emu68
+[CPU-ENGINE] Active 680x0 CPU Engine: Musashi 680x0 C Core (Version 4.5+) (musashi)
+  [PASS] Switched back to Musashi engine for baseline execution
+Running 680x0 Core Instruction Verification suite...
+  [CPU-TEST] Test 1: ADD.L/SUB.L...
+  [DEBUG-EXEC] addr=0x00006100 sp=0x0000FFFA return_stack_top=1

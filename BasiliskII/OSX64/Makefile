@@ -45,7 +45,7 @@ DEFS = -DHAVE_CONFIG_H -D_REENTRANT
 LIBS = ../slirp/libslirp.a -lpthread $(SDL_LIBS) -framework Cocoa -framework IOKit
 
 SYSSRCS = sdlmain.m ../SDL/sdl_pcap.cpp ../SDL/audio_sdl.cpp ../dummy/scsi_dummy.cpp ../dummy/prefs_editor_dummy.cpp
-CPUSRCS = ../Musashi/basilisk_glue.cpp ../Musashi/memory_musashi.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c
+CPUSRCS = ../cpu_engine.cpp ../Musashi/basilisk_glue.cpp ../Musashi/memory_musashi.cpp ../WinUAE/winuae_glue.cpp ../Emu68/emu68_glue.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c
 
 ## Files
 SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../SDL/sys_unix_sdl.cpp \
