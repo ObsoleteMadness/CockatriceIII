@@ -1,4 +1,4 @@
-# Makefile for Cockatrice III (MinGW / MSYS2 - Win32 x86, x64, ARM64)
+# Makefile for CockatriceIII Windows MinGW (x86_64, i686, aarch64) with Musashi CPU Core
 
 SHELL = /bin/sh
 
@@ -8,39 +8,32 @@ bindir = ${exec_prefix}/bin
 datadir = ${prefix}/share
 mandir = ${prefix}/man
 
-# GNU Make predefines CC=cc and CXX=g++. `?=` therefore cannot replace CXX,
-# which breaks CLANGARM64 (clang++ / c++ only — no g++ binary). Override
-# Make's defaults; command-line and environment CC/CXX still win because
-# their origin is not "default".
-ifeq ($(origin CC),default)
-CC = cc
-endif
-ifeq ($(origin CXX),default)
-CXX = c++
-endif
+CC ?= gcc
+CXX ?= g++
 WINDRES ?= windres
 AR ?= ar
 RANLIB ?= ranlib
+
 CC_FOR_BUILD ?= $(CC)
 CXX_FOR_BUILD ?= $(CXX)
 
-# Auto-detect a MinGW cross compiler running on a non-MinGW host (e.g. macOS).
-ifeq ($(CROSS),)
-  ifneq ($(findstring mingw,$(CC)),)
-    UNAME_S := $(shell uname -s 2>/dev/null)
-    ifeq ($(findstring MINGW,$(UNAME_S))$(findstring MSYS,$(UNAME_S)),)
-      CROSS := 1
-    endif
-  endif
-endif
-CROSS ?= 0
+MUSASHIDIR = ../Musashi
 
+# Cross-compilation settings
 ifeq ($(CROSS),1)
-  # Host sdl-config is macOS/Linux SDL and must not leak into a Windows link.
+  CC = $(TARGET)-gcc
+  CXX = $(TARGET)-g++
+  WINDRES = $(TARGET)-windres
+  AR = $(TARGET)-ar
+  RANLIB = $(TARGET)-ranlib
+  CC_FOR_BUILD = cc
+  CXX_FOR_BUILD = c++
+
+  # Prefer local per-target SDL prefix over any system SDL
   SDL_PREFIX ?= $(CURDIR)/.cross-prefix
   SDL_CFLAGS = -ISDL -Ipcap -I$(SDL_PREFIX)/include/SDL -I$(SDL_PREFIX)/include
   SDL_LIBS = -L$(SDL_PREFIX)/lib -L$(SDL_PREFIX)/bin -lmingw32 -lSDLmain -lSDL -mwindows
-  HOST_CPPFLAGS = -I../OSX64 -I../include -I../uae_cpu
+  HOST_CPPFLAGS = -I../OSX64 -I../include -I$(MUSASHIDIR) -I$(MUSASHIDIR)/softfloat
   HOST_CFLAGS = -O2 -Wall -Wno-unused
   HOST_CXXFLAGS = -O2 -Wall -Wno-unused
 else
@@ -53,15 +46,10 @@ endif
 
 CFLAGS ?= -O2 -Wall -Wno-unused
 CXXFLAGS ?= -O2 -Wall -Wno-unused -Wno-deprecated-declarations -Wno-c++11-narrowing
-CPPFLAGS = -I../include -I. -I../uae_cpu -I../SDL -ISDL -Ipcap $(SDL_CFLAGS)
-DEFS = -DHAVE_CONFIG_H -DENABLE_MON=0 -D_REENTRANT -DFPU_IEEE -D_FILE_OFFSET_BITS=64
+CPPFLAGS = -I../include -I. -I$(MUSASHIDIR) -I$(MUSASHIDIR)/softfloat -I../SDL -ISDL -Ipcap $(SDL_CFLAGS)
+DEFS = -DHAVE_CONFIG_H -DENABLE_MON=0 -D_REENTRANT -D_FILE_OFFSET_BITS=64
 
 LDFLAGS =
-# SDL stays dynamic (SDL.dll / sdl12-compat). Statically absorb the MinGW
-# C++ runtime and winpthread so the exe does not depend on
-# libwinpthread-1.dll. Use -l:libwinpthread.a rather than --whole-archive:
-# the latter also pulls winpthread's VERSIONINFO resource, which lld rejects
-# as a duplicate of cockatrice.rc (ARM64/CLANGARM64).
 LIBS = ../slirp/libslirp.a $(SDL_LIBS) -lws2_32 -liphlpapi -lcomdlg32 -luser32 \
 	-static-libgcc -static-libstdc++ -l:libwinpthread.a
 
@@ -73,8 +61,7 @@ ifeq ($(ARCH),x86)
 endif
 
 SYSSRCS = ../SDL/sdl_pcap.cpp ../dummy/scsi_dummy.cpp ../SDL/audio_sdl.cpp ../dummy/prefs_editor_dummy.cpp 
-CPUSRCS = ../uae_cpu/basilisk_glue.cpp ../uae_cpu/memory.cpp ../uae_cpu/newcpu.cpp ../uae_cpu/readcpu.cpp cpustbl.cpp cpudefs.cpp cpuemu.cpp
-FPUSRCS = ../uae_cpu/fpu/fpu_ieee.cpp
+CPUSRCS = $(MUSASHIDIR)/basilisk_glue.cpp $(MUSASHIDIR)/memory_musashi.cpp $(MUSASHIDIR)/m68kcpu.c $(MUSASHIDIR)/m68kops.c $(MUSASHIDIR)/m68kdasm.c $(MUSASHIDIR)/softfloat/softfloat.c
 
 ## Files
 SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../SDL/sys_unix_sdl.cpp \
@@ -83,20 +70,16 @@ SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../
     ../dummy/clip_dummy.cpp ../adb.cpp ../serial.cpp ../dummy/serial_dummy.cpp ../scc.cpp ../ether.cpp ../sony.cpp \
     ../disk.cpp ../cdrom.cpp ../scsi.cpp ../video.cpp ../SDL/video_sdl.cpp ../audio.cpp \
     ../extfs.cpp ../user_strings.cpp user_strings_unix.cpp ../SDL/menu_bar.cpp \
-    $(SYSSRCS) $(CPUSRCS) $(FPUSRCS)
+    $(SYSSRCS) $(CPUSRCS)
 
 APP = CockatriceIII.exe
 
 ## Rules
-.PHONY: all clean mostlyclean slirp_lib cross-from-macos
+.PHONY: all clean mostlyclean slirp_lib
 .SUFFIXES:
-.SUFFIXES: .c .cpp .s .o .h .rc
+.SUFFIXES: .c .cpp .s .o .h
 
 all: $(APP)
-
-# macOS → Windows cross build (see cross-from-macos.sh)
-cross-from-macos:
-	./cross-from-macos.sh $(or $(TARGET),x64)
 
 OBJ_DIR = obj
 $(OBJ_DIR)::
@@ -106,20 +89,15 @@ define SRCS_LIST_TO_OBJS
 	$(addprefix $(OBJ_DIR)/, $(addsuffix .o, $(foreach file, $(SRCS), \
 	$(basename $(notdir $(file))))))
 endef
-# Compile menu_bar_win32.cpp by explicit path. Putting ../windows/ on VPATH
-# makes parallel builds pick up that directory's stale MSVC cpustbl.cpp /
-# cpudefs.cpp instead of the tables generated here by gencpu.
-OBJS = $(SRCS_LIST_TO_OBJS) $(OBJ_DIR)/menu_bar_win32.o
+OBJS = $(SRCS_LIST_TO_OBJS)
 
 SRC_PATHS += $(sort $(foreach file, $(SRCS), $(dir $(file))))
 VPATH :=
 VPATH += $(addprefix :, $(subst  ,:, $(filter-out $($(subst, :, ,$(VPATH))), $(SRC_PATHS))))
 
-$(APP): $(OBJ_DIR) slirp_lib $(OBJS) cockatricerc.o
+$(APP): $(OBJ_DIR) slirp_lib cockatricerc.o $(OBJS)
 	$(CXX) -o $(APP) $(LDFLAGS) $(OBJS) cockatricerc.o $(LIBS)
 
-# Always re-enter slirp's Makefile. On CROSS, wipe a host (macOS) archive
-# and objects first so we do not link Darwin libslirp.a into a MinGW exe.
 slirp_lib:
 ifeq ($(CROSS),1)
 	$(MAKE) -C ../slirp clean
@@ -127,10 +105,10 @@ endif
 	$(MAKE) -C ../slirp CC="$(CC)" AR="$(AR)" RANLIB="$(RANLIB)" CFLAGS="-I. -O2 -Wall -Wno-unused"
 
 mostlyclean:
-	rm -f $(APP) $(OBJ_DIR)/*.o $(OBJ_DIR)/*.exe $(OBJ_DIR)/build68k $(OBJ_DIR)/gencpu core* *.core *~ *.bak cockatricerc.o
+	rm -f $(APP) $(OBJ_DIR)/*.o $(OBJ_DIR)/*.exe $(OBJ_DIR)/m68kmake core* *.core *~ *.bak cockatricerc.o
 
 clean: mostlyclean
-	rm -f cpuemu.cpp cpudefs.cpp cputmp*.s cpufast*.s cpustbl.cpp cputbl.h
+	rm -f $(MUSASHIDIR)/m68kops.c $(MUSASHIDIR)/m68kops.h
 	$(MAKE) -C ../slirp clean
 
 cockatricerc.o: cockatrice.rc
@@ -148,35 +126,17 @@ $(OBJ_DIR)/menu_bar_win32.o: ../windows/menu_bar_win32.cpp
 $(OBJ_DIR)/%.o : %.s
 	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/build68k.o: ../uae_cpu/build68k.c
-	$(CC_FOR_BUILD) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CFLAGS) -c $< -o $@
+$(OBJ_DIR)/m68kmake: $(MUSASHIDIR)/m68kmake.c
+	$(CC_FOR_BUILD) $(HOST_CPPFLAGS) $(HOST_CFLAGS) -o $@ $<
 
-$(OBJ_DIR)/gencpu.o: ../uae_cpu/gencpu.c
-	$(CC_FOR_BUILD) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CFLAGS) -c $< -o $@
+$(MUSASHIDIR)/m68kops.c $(MUSASHIDIR)/m68kops.h: $(OBJ_DIR)/m68kmake
+	cd $(MUSASHIDIR) && ../mingw/$(OBJ_DIR)/m68kmake
 
-$(OBJ_DIR)/readcpu_host.o: ../uae_cpu/readcpu.cpp
-	$(CXX_FOR_BUILD) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CXXFLAGS) -c $< -o $@
+$(OBJ_DIR)/m68kcpu.o: $(MUSASHIDIR)/m68kcpu.c $(MUSASHIDIR)/m68kops.h $(MUSASHIDIR)/m68kcpu.h $(MUSASHIDIR)/m68kfpu.c $(MUSASHIDIR)/m68kmmu.h
+	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/cpudefs_host.cpp: cpudefs.cpp
-	cp $< $@
+$(OBJ_DIR)/m68kops.o: $(MUSASHIDIR)/m68kops.c $(MUSASHIDIR)/m68kops.h
+	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
 
-# Compile the copy from obj/ so "sysdeps.h" is not resolved to mingw/sysdeps.h
-# (cpudefs.cpp lives next to that Windows header).
-$(OBJ_DIR)/cpudefs_host.o: $(OBJ_DIR)/cpudefs_host.cpp
-	$(CXX_FOR_BUILD) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CXXFLAGS) -c $< -o $@
-
-$(OBJ_DIR)/build68k: $(OBJ_DIR)/build68k.o
-	$(CC_FOR_BUILD) -o $(OBJ_DIR)/build68k $(OBJ_DIR)/build68k.o
-
-$(OBJ_DIR)/gencpu: $(OBJ_DIR)/gencpu.o $(OBJ_DIR)/readcpu_host.o $(OBJ_DIR)/cpudefs_host.o
-	$(CXX_FOR_BUILD) -o $(OBJ_DIR)/gencpu $(OBJ_DIR)/gencpu.o $(OBJ_DIR)/readcpu_host.o $(OBJ_DIR)/cpudefs_host.o
-
-cpudefs.cpp: $(OBJ_DIR)/build68k ../uae_cpu/table68k
-	$(OBJ_DIR)/build68k < ../uae_cpu/table68k > cpudefs.cpp
-
-cpustbl.cpp: cpuemu.cpp
-cputbl.h: cpuemu.cpp
-
-cpuemu.cpp: $(OBJ_DIR)/gencpu
-	$(OBJ_DIR)/gencpu
-
+$(OBJ_DIR)/softfloat.o: $(MUSASHIDIR)/softfloat/softfloat.c
+	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@

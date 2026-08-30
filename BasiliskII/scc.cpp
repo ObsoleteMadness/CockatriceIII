@@ -14,9 +14,6 @@
 #include "prefs.h"
 #include "scc.h"
 
-#include "m68k.h"
-#include "newcpu.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

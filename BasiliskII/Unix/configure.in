@@ -291,9 +291,9 @@ elif [[ "x$HAVE_GCC27" = "xyes" -a "x$HAVE_SPARC" = "xyes" -a "x$HAVE_GAS" = "xy
   esac
 fi
 
-dnl UAE CPU sources for all architectures.
-CPUINCLUDES="-I../uae_cpu"
-CPUSRCS="../uae_cpu/basilisk_glue.cpp ../uae_cpu/memory.cpp ../uae_cpu/newcpu.cpp ../uae_cpu/readcpu.cpp ../uae_cpu/fpp.cpp cpustbl.cpp cpudefs.cpp $CPUSRCS"
+dnl Musashi 680x0 CPU sources.
+CPUINCLUDES="-I../Musashi -I../Musashi/softfloat"
+CPUSRCS="../Musashi/basilisk_glue.cpp ../Musashi/memory_musashi.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c"
 
 dnl Generate Makefile.
 AC_SUBST(DEFINES)

@@ -1,7 +1,8 @@
 /*
- *  cpu_emulation.h - Definitions for Basilisk II CPU emulation module (UAE 0.8.10 version)
+ *  cpu_emulation.h - Definitions for Basilisk II CPU emulation module (Musashi version)
  *
- *  Basilisk II (C) 1997-2001 Christian Bauer
+ *  Basilisk II (C) 1997-2008 Christian Bauer
+ *  CockatriceIII Musashi Core Migration (C) 2026
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -12,17 +13,13 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #ifndef CPU_EMULATION_H
 #define CPU_EMULATION_H
 
 #include <string.h>
-
+#include "sysdeps.h"
 
 /*
  *  Memory system
@@ -37,14 +34,9 @@ extern uint32 ROMBaseMac;		// ROM base (Mac address space)
 extern uint8 *ROMBaseHost;		// ROM base (host address space)
 extern uint32 ROMSize;			// Size of ROM
 
-#if !REAL_ADDRESSING
-// If we are not using real addressing, the Mac frame buffer gets mapped to this location
-// The memory must be allocated by VideoInit(). If multiple monitors are used, they must
-// share the frame buffer
 const uint32 MacFrameBaseMac = 0xa0000000;
 extern uint8 *MacFrameBaseHost;	// Frame buffer base (host address space)
 extern uint32 MacFrameSize;		// Size of frame buffer
-#endif
 extern int MacFrameLayout;		// Frame buffer layout (see defines below)
 
 // Possible frame buffer layouts
@@ -56,14 +48,35 @@ enum {
 	FLAYOUT_HOST_888			// 32 bit, RGB 888, host byte order
 };
 
-// Mac memory access functions
-#include "memory.h"
-static inline uint32 ReadMacInt32(uint32 addr) {return get_long(addr);}
-static inline uint32 ReadMacInt16(uint32 addr) {return get_word(addr);}
-static inline uint32 ReadMacInt8(uint32 addr) {return get_byte(addr);}
-static inline void WriteMacInt32(uint32 addr, uint32 l) {put_long(addr, l);}
-static inline void WriteMacInt16(uint32 addr, uint32 w) {put_word(addr, w);}
-static inline void WriteMacInt8(uint32 addr, uint32 b) {put_byte(addr, b);}
+// Banked Memory Definitions
+typedef uint32 (*mem_get_func)(uint32 addr);
+typedef void (*mem_put_func)(uint32 addr, uint32 val);
+typedef uint8 *(*xlate_func)(uint32 addr);
+typedef int (*check_func)(uint32 addr, uint32 size);
+
+typedef struct {
+	mem_get_func lget, wget, bget;
+	mem_put_func lput, wput, bput;
+	xlate_func xlateaddr;
+	check_func check;
+} addrbank;
+
+extern addrbank *mem_banks[65536];
+#define bankindex(addr) (((uint32)(addr)) >> 16)
+#define get_mem_bank(addr) (*mem_banks[bankindex(addr)])
+#define put_mem_bank(addr, b) (mem_banks[bankindex(addr)] = (b))
+
+extern void memory_init(void);
+extern void map_banks(addrbank *bank, int first, int count);
+extern uint8 *get_real_address(uint32 addr);
+extern uint32 get_virtual_address(uint8 *addr);
+
+static inline uint32 ReadMacInt32(uint32 addr) {return get_mem_bank(addr).lget(addr);}
+static inline uint32 ReadMacInt16(uint32 addr) {return get_mem_bank(addr).wget(addr);}
+static inline uint32 ReadMacInt8(uint32 addr) {return get_mem_bank(addr).bget(addr);}
+static inline void WriteMacInt32(uint32 addr, uint32 l) {get_mem_bank(addr).lput(addr, l);}
+static inline void WriteMacInt16(uint32 addr, uint32 w) {get_mem_bank(addr).wput(addr, w);}
+static inline void WriteMacInt8(uint32 addr, uint32 b) {get_mem_bank(addr).bput(addr, b);}
 static inline uint8 *Mac2HostAddr(uint32 addr) {return get_real_address(addr);}
 static inline uint32 Host2MacAddr(uint8 *addr) {return get_virtual_address(addr);}
 
@@ -78,17 +91,22 @@ static inline void *Mac2Mac_memcpy(uint32 dest, uint32 src, size_t n) {return me
  */
 
 // Initialization
-extern bool Init680x0(void);	// This routine may want to look at CPUType/FPUType to set up the apropriate emulation
+extern bool Init680x0(void);
 extern void Exit680x0(void);
+extern void InitFrameBufferMapping(void);
+
+const bool UseJIT = false;
 
 // 680x0 emulation functions
 struct M68kRegisters;
 extern void Start680x0(void);									// Reset and start 680x0
+extern void Reset680x0(void);									// Reset running 680x0
 extern "C" void Execute68k(uint32 addr, M68kRegisters *r);		// Execute 68k code from EMUL_OP routine
 extern "C" void Execute68kTrap(uint16 trap, M68kRegisters *r);	// Execute MacOS 68k trap from EMUL_OP routine
 
 // Interrupt functions
 extern void TriggerInterrupt(void);								// Trigger interrupt level 1 (InterruptFlag must be set first)
 extern void TriggerNMI(void);									// Trigger interrupt level 7
+extern int intlev(void);
 
 #endif

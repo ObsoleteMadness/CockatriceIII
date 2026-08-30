@@ -1,4 +1,4 @@
-# Makefile for CockatriceIII macOS 64-bit (ARM64 & AMD64)
+# Makefile for CockatriceIII macOS 64-bit (ARM64 & AMD64) with Musashi CPU Core
 
 SHELL = /bin/sh
 
@@ -32,23 +32,20 @@ CXXFLAGS += $(TARGET_ARCH)
 LDFLAGS += $(TARGET_ARCH)
 
 # Use the SDL matching TARGET_ARCH, not whatever sdl-config is first on PATH.
-# Native Homebrew on Apple Silicon would otherwise poison an x86_64 link.
 SDL_CFLAGS := $(shell $(SDL_PREFIX)/bin/sdl-config --cflags 2>/dev/null || echo "-I$(SDL_PREFIX)/include/SDL -D_THREAD_SAFE")
 SDL_LIBS := $(shell $(SDL_PREFIX)/bin/sdl-config --libs 2>/dev/null || echo "-L$(SDL_PREFIX)/lib -lSDL -Wl,-framework,Cocoa")
 
-CPPFLAGS = -I../include -I. -I../uae_cpu -I../Unix -I../SDL -I/opt/homebrew/include -I/usr/local/include $(SDL_CFLAGS)
+CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I/opt/homebrew/include -I/usr/local/include $(SDL_CFLAGS)
 
-# Code generators must run on the build machine. Compile them without
-# TARGET_ARCH so ARCH=x86_64/amd64 works on Apple Silicon without Rosetta.
-HOST_CPPFLAGS = -I../include -I. -I../uae_cpu -I../Unix -I../SDL
+HOST_CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL
 HOST_CFLAGS = -O2 -Wall -Wno-unused -Wno-deprecated-non-prototype
 HOST_CXXFLAGS = -O2 -Wall -Wno-unused -Wno-writable-strings -Wno-multichar -Wno-deprecated-declarations -Wno-format -Wno-c++11-narrowing
-DEFS = -DHAVE_CONFIG_H -D_REENTRANT -DFPU_IEEE
+DEFS = -DHAVE_CONFIG_H -D_REENTRANT
 
 LIBS = ../slirp/libslirp.a -lpthread $(SDL_LIBS) -framework Cocoa -framework IOKit
 
 SYSSRCS = sdlmain.m ../SDL/sdl_pcap.cpp ../SDL/audio_sdl.cpp ../dummy/scsi_dummy.cpp ../dummy/prefs_editor_dummy.cpp
-CPUSRCS = ../uae_cpu/basilisk_glue.cpp ../uae_cpu/memory.cpp ../uae_cpu/newcpu.cpp ../uae_cpu/readcpu.cpp ../uae_cpu/fpu/fpu_ieee.cpp cpustbl.cpp cpudefs.cpp cpuemu.cpp
+CPUSRCS = ../Musashi/basilisk_glue.cpp ../Musashi/memory_musashi.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c
 
 ## Files
 SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../SDL/sys_unix_sdl.cpp \
@@ -66,10 +63,6 @@ SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../
 
 all: $(APP)
 
-# Thin arm64 + x86_64 slices, then lipo into a universal Mach-O.
-# Host tools stay native; only the final executable is fat. Requires both
-# Homebrew SDLs (/opt/homebrew for arm64, /usr/local for x86_64).
-# clean-objects must not delete the saved slices between the two builds.
 universal:
 	$(MAKE) clean-objects
 	$(MAKE) ARCH=arm64
@@ -107,7 +100,7 @@ mostlyclean: clean-objects
 	rm -f $(APP)-arm64 $(APP)-x86_64
 
 clean: mostlyclean
-	rm -f cpuemu.cpp cpudefs.cpp cputmp*.s cpufast*.s cpustbl.cpp cputbl.h
+	rm -f cpuemu.cpp cpudefs.cpp cpustbl.cpp cputbl.h
 
 $(OBJ_DIR)/%.o : %.c
 	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
@@ -121,30 +114,17 @@ $(OBJ_DIR)/%.o : %.cpp
 $(OBJ_DIR)/%.o : %.s
 	$(CC) -c $< -o $@
 
-$(OBJ_DIR)/build68k.o: ../uae_cpu/build68k.c
-	$(CC) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CFLAGS) -c $< -o $@
+$(OBJ_DIR)/m68kmake: ../Musashi/m68kmake.c
+	$(CC) $(HOST_CPPFLAGS) $(HOST_CFLAGS) -o $@ $<
 
-$(OBJ_DIR)/gencpu.o: ../uae_cpu/gencpu.c
-	$(CC) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CFLAGS) -c $< -o $@
+../Musashi/m68kops.c ../Musashi/m68kops.h: $(OBJ_DIR)/m68kmake
+	cd ../Musashi && ../OSX64/$(OBJ_DIR)/m68kmake
 
-$(OBJ_DIR)/readcpu_host.o: ../uae_cpu/readcpu.cpp
-	$(CXX) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CXXFLAGS) -c $< -o $@
+$(OBJ_DIR)/m68kcpu.o: ../Musashi/m68kcpu.c ../Musashi/m68kops.h ../Musashi/m68kcpu.h ../Musashi/m68kfpu.c ../Musashi/m68kmmu.h
+	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/cpudefs_host.o: cpudefs.cpp
-	$(CXX) $(HOST_CPPFLAGS) $(DEFS) $(HOST_CXXFLAGS) -c $< -o $@
+$(OBJ_DIR)/m68kops.o: ../Musashi/m68kops.c ../Musashi/m68kops.h
+	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/build68k: $(OBJ_DIR)/build68k.o
-	$(CC) -o $(OBJ_DIR)/build68k $(OBJ_DIR)/build68k.o
-
-$(OBJ_DIR)/gencpu: $(OBJ_DIR)/gencpu.o $(OBJ_DIR)/readcpu_host.o $(OBJ_DIR)/cpudefs_host.o
-	$(CXX) -o $(OBJ_DIR)/gencpu $(OBJ_DIR)/gencpu.o $(OBJ_DIR)/readcpu_host.o $(OBJ_DIR)/cpudefs_host.o
-
-cpudefs.cpp: $(OBJ_DIR)/build68k ../uae_cpu/table68k
-	$(OBJ_DIR)/build68k <../uae_cpu/table68k >cpudefs.cpp
-
-cpustbl.cpp: cpuemu.cpp
-cputbl.h: cpuemu.cpp
-
-cpuemu.cpp: $(OBJ_DIR)/gencpu
-	$(OBJ_DIR)/gencpu
-
+$(OBJ_DIR)/softfloat.o: ../Musashi/softfloat/softfloat.c
+	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
