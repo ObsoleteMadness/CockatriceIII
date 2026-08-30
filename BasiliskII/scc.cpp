@@ -249,7 +249,7 @@ static int ipInPacketIsMine(void)
 	if (MyRxAddress.sin_family != AF_INET) {
 		return 1; // Drop non-inet
 	}
-	in_addr_t raddr = MyRxAddress.sin_addr.s_addr;
+	uint32 raddr = (uint32)MyRxAddress.sin_addr.s_addr;
 
 #ifdef _WIN32
 	ULONG bufLen = 15000;
