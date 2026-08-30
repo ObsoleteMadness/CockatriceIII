@@ -1017,6 +1017,9 @@ void QuitEmulator()
 	fflush(stdout);
 	// Exit 680x0 emulation
 	Exit680x0();
+	// Stop background threads (tick, xpram) before shutting down subsystems
+	StopMainThreads();
+	// Exit all subsystems
 	ExitAll();
 	// Delete ROM area
 	delete[] ROMBaseHost;
@@ -1027,7 +1030,6 @@ void QuitEmulator()
 	// Exit preferences
 	PrefsExit();
 
-	
 	exit(0);
 }
 

@@ -65,9 +65,9 @@ jobs:
             platform: windows
             arch: x64
             msystem: MINGW64
-            pacman_packages: mingw-w64-x86_64-toolchain mingw-w64-x86_64-sdl12-compat make p7zip
+            pacman_packages: mingw-w64-x86_64-toolchain mingw-w64-x86_64-sdl12-compat make
             build_dir: BasiliskII/mingw
-            artifact_name: CockatriceIII-win32-x64.zip
+            artifact_name: CockatriceIII-win32-x64
             package_ext: zip
 
           # Windows x86 (32-bit)
@@ -76,9 +76,9 @@ jobs:
             platform: windows
             arch: x86
             msystem: MINGW32
-            pacman_packages: mingw-w64-i686-toolchain mingw-w64-i686-sdl12-compat make p7zip
+            pacman_packages: mingw-w64-i686-toolchain mingw-w64-i686-sdl12-compat make
             build_dir: BasiliskII/mingw
-            artifact_name: CockatriceIII-win32-x86.zip
+            artifact_name: CockatriceIII-win32-x86
             package_ext: zip
 
           # Windows ARM (ARM64)
@@ -87,9 +87,9 @@ jobs:
             platform: windows
             arch: arm64
             msystem: CLANGARM64
-            pacman_packages: mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-sdl12-compat make p7zip
+            pacman_packages: mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-sdl12-compat make
             build_dir: BasiliskII/mingw
-            artifact_name: CockatriceIII-win32-arm.zip
+            artifact_name: CockatriceIII-win32-arm
             package_ext: zip
 
     steps:
@@ -187,15 +187,15 @@ jobs:
         shell: msys2 {0}
         run: |
           make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} CC=cc CXX=c++ -j${NUMBER_OF_PROCESSORS}
+          echo "Imported DLLs:"
+          objdump -p "${{ matrix.build_dir }}/CockatriceIII.exe" | awk '/DLL Name:/ {print $3}'
 
-      - name: Package Windows Distribution (.zip)
+      - name: Stage Windows distribution
         if: matrix.platform == 'windows'
         shell: msys2 {0}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          PKG_NAME="CockatriceIII-${VERSION}-${{ matrix.target }}"
           STAGING_DIR="dist_staging"
-          rm -rf "${STAGING_DIR}" "${PKG_NAME}.zip"
+          rm -rf "${STAGING_DIR}"
           mkdir -p "${STAGING_DIR}"
 
           # Copy built executable
@@ -214,20 +214,48 @@ jobs:
             cp -r dist/windows/* "${STAGING_DIR}/"
           fi
 
+          # Ship toolchain DLLs from the same MSYSTEM as the compiler so the
+          # zip is self-contained and ARM64 cannot pick up an x64
+          # libwinpthread/SDL from PATH (0xc000007b). sdl12-compat's SDL.dll
+          # still needs SDL2.dll even when the exe only imports SDL.dll.
+          BINDIR="$(dirname "$(command -v c++)")"
+          for dll in SDL.dll SDL2.dll; do
+            if [ -f "${BINDIR}/${dll}" ]; then
+              cp "${BINDIR}/${dll}" "${STAGING_DIR}/"
+            fi
+          done
+          for pass in 1 2 3; do
+            for f in "${STAGING_DIR}"/*.exe "${STAGING_DIR}"/*.dll; do
+              [ -f "$f" ] || continue
+              objdump -p "$f" | awk '/DLL Name:/ {print $3}' | while IFS= read -r dll; do
+                if [ -f "${BINDIR}/${dll}" ] && [ ! -f "${STAGING_DIR}/${dll}" ]; then
+                  cp "${BINDIR}/${dll}" "${STAGING_DIR}/"
+                fi
+              done
+            done
+          done
+
           # Copy root documentation
           cp ChangeLog COPYING INSTALL README roms.txt TECH TODO "${STAGING_DIR}/"
 
-          # Create ZIP archive
-          cd "${STAGING_DIR}"
-          7z a "../${PKG_NAME}.zip" ./*
-          cd ..
-          echo "PACKAGE_FILE=${PKG_NAME}.zip" >> "$GITHUB_ENV"
+          # Do not pre-zip: upload-artifact already wraps the folder in a zip.
+          # Zipping here produced a zip-in-zip download (and .zip.zip from the
+          # artifact name). GitHub Releases zip this folder in the release job.
 
-      - name: Upload Build Artifact
+      - name: Upload macOS artifact
+        if: matrix.platform == 'osx'
         uses: actions/upload-artifact@v4
         with:
-          name: CockatriceIII-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.package_ext }}
+          name: CockatriceIII-${{ steps.version.outputs.version }}-${{ matrix.target }}
           path: ${{ env.PACKAGE_FILE }}
+          if-no-files-found: error
+
+      - name: Upload Windows artifact
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CockatriceIII-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: dist_staging/
           if-no-files-found: error
 
   release:
@@ -255,11 +283,21 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release_artifacts
-          merge-multiple: true
 
-      - name: List downloaded release assets
+      - name: Stage release assets
         run: |
-          ls -la release_artifacts/
+          mkdir -p release_files
+          find release_artifacts -name '*.dmg' -exec cp {} release_files/ \;
+          for d in release_artifacts/*; do
+            [ -d "$d" ] || continue
+            base="$(basename "$d")"
+            case "$base" in
+              *win32-*)
+                (cd "$d" && zip -r "$GITHUB_WORKSPACE/release_files/${base}.zip" .)
+                ;;
+            esac
+          done
+          ls -la release_files/
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -270,5 +308,5 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            release_artifacts/*.dmg
-            release_artifacts/*.zip
+            release_files/*.dmg
+            release_files/*.zip

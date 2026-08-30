@@ -32,10 +32,12 @@ extern uint32 SonyDriveIconAddr;
 
 extern void SonyInit(void);
 extern void SonyExit(void);
+extern void SonyReset(void);
 
 extern void SonyInterrupt(void);
 
 extern bool SonyMountVolume(void *fh);
+extern bool SonyInsertFloppy(const char *path);
 
 extern int16 SonyOpen(uint32 pb, uint32 dce);
 extern int16 SonyPrime(uint32 pb, uint32 dce);

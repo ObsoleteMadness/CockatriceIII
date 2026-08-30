@@ -191,6 +191,11 @@ void AudioInit(void)
 
 void AudioExit(void)
 {
+	close_audio();
+	if (audio_irq_done_sem) {
+		SDL_DestroySemaphore(audio_irq_done_sem);
+		audio_irq_done_sem = NULL;
+	}
 }
 
 

@@ -166,6 +166,20 @@ void DiskExit(void)
 
 
 /*
+ *  Reset
+ */
+
+void DiskReset(void)
+{
+	for (DriveInfo *info = first_drive_info; info != NULL; info = info->next) {
+		info->status = 0;
+		info->to_be_mounted = false;
+	}
+	acc_run_called = false;
+}
+
+
+/*
  *  Disk was inserted, flag for mounting
  */
 

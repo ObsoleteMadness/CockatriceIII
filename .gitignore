@@ -83,3 +83,4 @@ BasiliskII/OSX64/BasiliskII
 BasiliskII/OSX64/CockatriceIII_XPRAM
 **/obj/ 
 **/.DS_Store
+BasiliskII/mingw/.cross-win/

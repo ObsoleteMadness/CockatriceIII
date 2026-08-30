@@ -35,9 +35,25 @@ extern int16 SCSIMgrBusy(void);
 extern void SCSIInit(void);
 extern void SCSIExit(void);
 
+extern bool g_scsi_debug;
+extern void SCSI_SetDebug(bool enable);
+extern const char *scsi_cmd_name(uint8 opcode);
+
 extern void scsi_set_cmd(int cmd_length, uint8 *cmd);
 extern bool scsi_is_target_present(int id);
 extern bool scsi_set_target(int id, int lun);
 extern bool scsi_send_cmd(size_t data_length, bool reading, int sg_index, uint8 **sg_ptr, uint32 *sg_len, uint16 *stat, uint32 timeout);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern bool SCSI_Attach(int id, const char *path);
+extern bool SCSI_Detach(int id);
+extern bool SCSI_GetDeviceInfo(int id, bool *present, bool *cdrom, char *path_out, size_t max_len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

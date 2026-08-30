@@ -37,9 +37,17 @@
 #include "sys.h"
 #include "prefs.h"
 #include "cdrom.h"
+#include "scsi.h"
 
 #define DEBUG 0
 #include "debug.h"
+
+#define CDROM_LOG(...) do { \
+	if (g_scsi_debug) { \
+		printf(__VA_ARGS__); \
+		fflush(stdout); \
+	} \
+} while (0)
 
 
 // CDROM disk/drive icon
@@ -381,7 +389,7 @@ static void mount_mountable_volumes(void)
 
 int16 CDROMOpen(uint32 pb, uint32 dce)
 {
-	D(bug("CDROMOpen\n"));
+	CDROM_LOG("[CDROM-DRV] CDROMOpen()\n");
 
 	// Set up DCE
 	WriteMacInt32(dce + dCtlPosition, 0);
@@ -407,7 +415,7 @@ int16 CDROMOpen(uint32 pb, uint32 dce)
 			if (r.a[0] == 0)
 				continue;
 			info->status = r.a[0];
-			D(bug(" DrvSts at %08lx\n", info->status));
+			CDROM_LOG("[CDROM-DRV] DrvSts at 0x%08X\n", info->status);
 
 			// Set up drive status
 			WriteMacInt8(info->status + dsWriteProt, 0x80);
@@ -424,7 +432,7 @@ int16 CDROMOpen(uint32 pb, uint32 dce)
 			}
 
 			// Add drive to drive queue
-			D(bug(" adding drive %d\n", info->num));
+			CDROM_LOG("[CDROM-DRV] Adding drive %d to drive queue\n", info->num);
 			r.d[0] = (info->num << 16) | (CDROMRefNum & 0xffff);
 			r.a[0] = info->status + dsQLink;
 			Execute68kTrap(0xa04e, &r);		// AddDrive()

@@ -305,7 +305,7 @@ int tick_funcxxx(void *arg)
 		// Action
 		one_tickbbbb();
 	}
-	return NULL;
+	return 0;
 }
 
 
@@ -319,18 +319,36 @@ int xpram_func(void *arg)
 	memcpy(last_xpram, XPRAM, 256);
 
 	while (!xpram_thread_cancel) {
-		for (int i=0; i<2 && !xpram_thread_cancel; i++) {
+		for (int i=0; i<40 && !xpram_thread_cancel; i++) {
 #ifdef HAVE_NANOSLEEP
-			struct timespec req = {1, 0};
+			struct timespec req = {0, 50000000};
 			nanosleep(&req, NULL);
 #else
-			usleep(1000000);
+			usleep(50000);
 #endif
 		}
-		if (memcmp(last_xpram, XPRAM, 256)) {
+		if (!xpram_thread_cancel && memcmp(last_xpram, XPRAM, 256)) {
 			memcpy(last_xpram, XPRAM, 256);
 			SaveXPRAM();
 		}
 	}
 	return 0;
 }
+
+/*
+ *  Stop main background threads cleanly
+ */
+void StopMainThreads(void)
+{
+	if (tick_funcxxx_thread) {
+		tick_thread_cancel = true;
+		SDL_WaitThread(tick_funcxxx_thread, NULL);
+		tick_funcxxx_thread = NULL;
+	}
+	if (xpram_thread) {
+		xpram_thread_cancel = true;
+		SDL_WaitThread(xpram_thread, NULL);
+		xpram_thread = NULL;
+	}
+}
+

@@ -41,6 +41,7 @@ struct M68kRegisters {
 // General functions
 extern bool InitAll(void);
 extern void ExitAll(void);
+extern void StopMainThreads(void);
 
 // Platform-specific functions
 extern void FlushCodeCache(void *start, uint32 size);	// Code was patched, flush caches if neccessary

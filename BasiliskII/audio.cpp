@@ -491,3 +491,17 @@ delegate:	// Delegate call to Apple Mixer
 	}
 }
 
+
+/*
+ *  Reset audio state
+ */
+
+void AudioReset(void)
+{
+	AudioStatus.mixer = 0;
+	AudioStatus.num_sources = 0;
+	audio_data = 0;
+	open_count = 0;
+	AudioAvailable = false;
+}
+

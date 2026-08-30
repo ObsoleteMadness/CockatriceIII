@@ -62,6 +62,7 @@ prefs_desc common_prefs_items[] = {
 	{"idlewait",TYPE_BOOLEAN,true},		// enable idle..
 	{"yearoffset",TYPE_INT16,false},	// remove x billion seconds from the clock
 	{"ltoudp", TYPE_BOOLEAN, false},	// Enable LocalTalk over UDP (LToUDP)
+	{"scsi_debug", TYPE_BOOLEAN, false}, // Enable verbose SCSI and CD-ROM logging
 	{NULL, TYPE_END, false}	// End of list
 };
 
@@ -100,6 +101,7 @@ void PrefsInit(void)
 	PrefsAddBool("nosound", false);
 	PrefsAddBool("nogui", false);
 	PrefsAddBool("ltoudp", false);
+	PrefsAddBool("scsi_debug", true);
 	PrefsAddString("screen","win/1152/870");	//fantastic monitor for the era
 	PrefsAddString("rom","Quadra800.rom");
 	PrefsAddString("ether","slirp");
@@ -211,10 +213,15 @@ static prefs_node *find_node(const char *name, prefs_type type, int index = 0)
 
 void PrefsReplaceString(const char *name, const char *s, int index)
 {
+	if (!s)
+		return;
 	prefs_node *p = find_node(name, TYPE_STRING, index);
 	if (p) {
+		if (p->data == s)
+			return;
+		char *new_str = strdup(s);
 		free(p->data);
-		p->data = strdup(s);
+		p->data = new_str;
 	} else
 		add_data(name, TYPE_STRING, (void *)s, strlen(s) + 1);
 }
@@ -298,12 +305,12 @@ void PrefsRemoveItem(const char *name, int index)
 	if (p) {
 		free((void *)p->name);
 		free(p->data);
-		prefs_node *q = the_prefs;
-		if (q == p) {
-			the_prefs = NULL;
+		if (the_prefs == p) {
+			the_prefs = p->next;
 			delete p;
 			return;
 		}
+		prefs_node *q = the_prefs;
 		while (q) {
 			if (q->next == p) {
 				q->next = p->next;
@@ -322,8 +329,8 @@ void PrefsRemoveItem(const char *name, int index)
 
 void LoadPrefsFromStream(FILE *f)
 {
-	char line[256];
-	while(fgets(line, 255, f)) {
+	char line[2048];
+	while(fgets(line, sizeof(line), f)) {
 		// Read line
 		int len = strlen(line);
 		if (len == 0)

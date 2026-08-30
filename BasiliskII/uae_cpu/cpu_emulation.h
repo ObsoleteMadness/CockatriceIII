@@ -92,6 +92,7 @@ const bool UseJIT = false;
 // 680x0 emulation functions
 struct M68kRegisters;
 extern void Start680x0(void);									// Reset and start 680x0
+extern void Reset680x0(void);									// Reset running 680x0
 extern "C" void Execute68k(uint32 addr, M68kRegisters *r);		// Execute 68k code from EMUL_OP routine
 extern "C" void Execute68kTrap(uint16 trap, M68kRegisters *r);	// Execute MacOS 68k trap from EMUL_OP routine
 
