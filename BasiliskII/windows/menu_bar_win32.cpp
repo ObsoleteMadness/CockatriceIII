@@ -4,14 +4,13 @@
  *  Cockatrice III
  */
 
-#ifdef WIN32
+#if defined(WIN32) || defined(_WIN32)
 
 #include <windows.h>
 #include <commdlg.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "sysdeps.h"
 #include "menu_bar.h"
 #include "scsi.h"
 
@@ -202,4 +201,4 @@ bool MenuBar_ShowOpenFileDialog(const char *title, const char *filter_desc, cons
 	return false;
 }
 
-#endif // WIN32
+#endif /* WIN32 */

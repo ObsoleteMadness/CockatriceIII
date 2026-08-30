@@ -12,11 +12,15 @@
 #include "user_strings.h"
 #include "video.h"
 #include "version.h"
+#include "menu_bar.h"
 
 #define DEBUG 0
 #include "debug.h"
 
 #include <SDL/SDL.h>
+#if defined(WIN32) || defined(_WIN32)
+#include <SDL/SDL_syswm.h>
+#endif
 static SDL_Surface *SDLscreen = NULL;
 static bool use_keycodes = false;	// Flag: Use keycodes rather than keysyms
 static int keycode_table[256];		// X keycode -> Mac keycode translation table
@@ -138,6 +142,18 @@ D(bug(" init_window w%d,h%d d%d\n",width,height,depth));
         if (!(SDLscreen = SDL_SetVideoMode(width, height, depth, flags)))
         printf("VID: Couldn't set video mode: %s\n", SDL_GetError());
         SDL_WM_SetCaption(VERSION_STRING,VERSION_STRING);
+#if defined(WIN32) || defined(_WIN32)
+	{
+		SDL_SysWMinfo wminfo;
+		SDL_VERSION(&wminfo.version);
+		if (SDL_GetWMInfo(&wminfo) && wminfo.window)
+			MenuBar_Init((void *)wminfo.window);
+		else
+			printf("VID: SDL_GetWMInfo failed; Win32 menu bar not attached\n");
+	}
+#else
+	MenuBar_Init(NULL);
+#endif
 //SDL
 
                 int bytes_per_row = width;

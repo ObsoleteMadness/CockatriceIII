@@ -83,3 +83,8 @@ BasiliskII/OSX64/BasiliskII
 BasiliskII/OSX64/CockatriceIII_XPRAM
 **/obj/ 
 **/.DS_Store
+BasiliskII/mingw/.cross-win/
+BasiliskII/mingw/cpuemu.cpp
+BasiliskII/mingw/cpudefs.cpp
+BasiliskII/mingw/cpustbl.cpp
+BasiliskII/mingw/cputbl.h

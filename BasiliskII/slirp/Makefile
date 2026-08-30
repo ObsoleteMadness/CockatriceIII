@@ -1,4 +1,6 @@
-CC=gcc
+CC ?= gcc
+AR ?= ar
+RANLIB ?= ranlib
 CFLAGS=-I. -Ofast -Wall
 DEPS =	bootp.h          config-host.h    config.h         ctl.h	\
 	debug.h          icmp_var.h       if.h             ip.h		\
@@ -22,5 +24,5 @@ clean:
 	rm -f libslirp.a
 
 libslirp.a: $(OBJ)
-	ar rcs $@ $^
-	ranlib $@
+	$(AR) rcs $@ $^
+	$(RANLIB) $@

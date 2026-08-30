@@ -22,10 +22,8 @@
 
 #ifdef WIN32
 #include <windows.h>
-//#include <sys\ioctl.h>	both for visual C++??
-//#include <sys\poll.h>
-#include <SDL\SDL.h>
-#include <SDL\SDL_thread.h>
+#include <SDL/SDL.h>
+#include <SDL/SDL_thread.h>
 #include <pcap.h>
 static HINSTANCE hLib = 0;                      /* handle to DLL */
 static char* lib_name = "wpcap.dll";
