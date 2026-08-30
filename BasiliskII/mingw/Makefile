@@ -50,7 +50,7 @@ SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../
     ../macos_util.cpp ../xpram.cpp ../dummy/xpram_dummy.cpp ../timer.cpp ../SDL/timer_common.cpp \
     ../dummy/clip_dummy.cpp ../adb.cpp ../serial.cpp ../dummy/serial_dummy.cpp ../scc.cpp ../ether.cpp ../sony.cpp \
     ../disk.cpp ../cdrom.cpp ../scsi.cpp ../video.cpp ../SDL/video_sdl.cpp ../audio.cpp \
-    ../extfs.cpp ../user_strings.cpp user_strings_unix.cpp ../SDL/menu_bar.cpp ../windows/menu_bar_win32.cpp \
+    ../extfs.cpp ../user_strings.cpp user_strings_unix.cpp ../SDL/menu_bar.cpp \
     $(SYSSRCS) $(CPUSRCS) $(FPUSRCS)
 
 APP = CockatriceIII.exe
@@ -70,7 +70,10 @@ define SRCS_LIST_TO_OBJS
 	$(addprefix $(OBJ_DIR)/, $(addsuffix .o, $(foreach file, $(SRCS), \
 	$(basename $(notdir $(file))))))
 endef
-OBJS = $(SRCS_LIST_TO_OBJS)
+# Compile menu_bar_win32.cpp by explicit path. Putting ../windows/ on VPATH
+# makes parallel builds pick up that directory's stale MSVC cpustbl.cpp /
+# cpudefs.cpp instead of the tables generated here by gencpu.
+OBJS = $(SRCS_LIST_TO_OBJS) $(OBJ_DIR)/menu_bar_win32.o
 
 SRC_PATHS += $(sort $(foreach file, $(SRCS), $(dir $(file))))
 VPATH :=
@@ -96,6 +99,9 @@ $(OBJ_DIR)/%.o : %.c
 	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/%.o : %.cpp
+	$(CXX) $(CPPFLAGS) $(DEFS) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/menu_bar_win32.o: ../windows/menu_bar_win32.cpp
 	$(CXX) $(CPPFLAGS) $(DEFS) $(CXXFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/%.o : %.s
