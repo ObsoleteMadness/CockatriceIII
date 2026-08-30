@@ -187,6 +187,8 @@ jobs:
         shell: msys2 {0}
         run: |
           make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} CC=cc CXX=c++ -j${NUMBER_OF_PROCESSORS}
+          echo "Imported DLLs:"
+          objdump -p "${{ matrix.build_dir }}/CockatriceIII.exe" | awk '/DLL Name:/ {print $3}'
 
       - name: Package Windows Distribution (.zip)
         if: matrix.platform == 'windows'
@@ -213,6 +215,27 @@ jobs:
           elif [ -d dist/windows ]; then
             cp -r dist/windows/* "${STAGING_DIR}/"
           fi
+
+          # Ship toolchain DLLs from the same MSYSTEM as the compiler so the
+          # zip is self-contained and ARM64 cannot pick up an x64
+          # libwinpthread/SDL from PATH (0xc000007b). sdl12-compat's SDL.dll
+          # still needs SDL2.dll even when the exe only imports SDL.dll.
+          BINDIR="$(dirname "$(command -v c++)")"
+          for dll in SDL.dll SDL2.dll; do
+            if [ -f "${BINDIR}/${dll}" ]; then
+              cp "${BINDIR}/${dll}" "${STAGING_DIR}/"
+            fi
+          done
+          for pass in 1 2 3; do
+            for f in "${STAGING_DIR}"/*.exe "${STAGING_DIR}"/*.dll; do
+              [ -f "$f" ] || continue
+              objdump -p "$f" | awk '/DLL Name:/ {print $3}' | while IFS= read -r dll; do
+                if [ -f "${BINDIR}/${dll}" ] && [ ! -f "${STAGING_DIR}/${dll}" ]; then
+                  cp "${BINDIR}/${dll}" "${STAGING_DIR}/"
+                fi
+              done
+            done
+          done
 
           # Copy root documentation
           cp ChangeLog COPYING INSTALL README roms.txt TECH TODO "${STAGING_DIR}/"

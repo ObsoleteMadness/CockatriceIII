@@ -30,8 +30,16 @@ CXXFLAGS ?= -O2 -Wall -Wno-unused -Wno-deprecated-declarations -Wno-c++11-narrow
 CPPFLAGS = -I../include -I. -I../uae_cpu -I../SDL -ISDL -Ipcap $(SDL_CFLAGS)
 DEFS = -DHAVE_CONFIG_H -DENABLE_MON=0 -D_REENTRANT -DFPU_IEEE -D_FILE_OFFSET_BITS=64
 
-LDFLAGS = 
-LIBS = ../slirp/libslirp.a $(SDL_LIBS) -lws2_32 -liphlpapi -lcomdlg32 -luser32 -static-libgcc -static-libstdc++
+LDFLAGS =
+# SDL stays dynamic (SDL.dll / sdl12-compat). Statically absorb the MinGW
+# C++ runtime and winpthread so the exe does not depend on
+# libwinpthread-1.dll / libgcc_s_*.dll / libstdc++-6.dll. A leftover
+# dynamic pthread is what produced the missing-DLL dialog on x86/x64 and
+# STATUS_INVALID_IMAGE_FORMAT (0xc000007b) on ARM64 when a wrong-arch
+# libwinpthread-1.dll was found on PATH.
+LIBS = ../slirp/libslirp.a $(SDL_LIBS) -lws2_32 -liphlpapi -lcomdlg32 -luser32 \
+	-static-libgcc -static-libstdc++ \
+	-Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic
 
 # Conditionally link DrMinGW for 32-bit x86 if available
 ifeq ($(ARCH),x86)
