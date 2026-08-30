@@ -370,7 +370,7 @@ bool InstallSlotROM(void)
 	Offs(0x01, etherType);				// Type descriptor
 	Offs(0x02, etherName);				// Driver name
 	Offs(0x04, etherDrvrDir);			// Driver directory
-	Rsrc(0x07, 2);						// Flags: OpenAtStart
+	Rsrc(0x07, 0);						// Flags: 0 (not OpenAtStart, so user port selection persists)
 	Rsrc(0x08, 0x4232);					// Hardware device ID ('B2')
 	EndOfList();
 

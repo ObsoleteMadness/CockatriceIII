@@ -749,50 +749,7 @@ void InstallDrivers(uint32 pb)
 
 void InstallSERD(void)
 {
-	D(bug("InstallSERD\n"));
-
-	// All drivers are inside the SERD resource
-	M68kRegisters r;
-
-	// Install .AIn driver
-	r.d[0] = (uint32)-6;
-	r.a[0] = ROMBaseMac + serd_offset + 0x100;
-	Execute68kTrap(0xa53d, &r);	// DrvrInstallRsrvMem()
-	Execute68kTrap(0xa029, &r);	// HLock()
-	uint32 drvr_ptr = ReadMacInt32(r.a[0]);
-	WriteMacInt32(drvr_ptr + dCtlDriver, ROMBaseMac + serd_offset + 0x100);			// Pointer to driver header
-	WriteMacInt16(drvr_ptr + dCtlFlags, (ain_driver[0] << 8) + ain_driver[1]);		// Driver flags
-	WriteMacInt16(drvr_ptr + dCtlQHdr + qFlags, 9);									// Version number
-
-	// Install .AOut driver
-	r.d[0] = (uint32)-7;
-	r.a[0] = ROMBaseMac + serd_offset + 0x200;
-	Execute68kTrap(0xa53d, &r);	// DrvrInstallRsrvMem()
-	Execute68kTrap(0xa029, &r);	// HLock()
-	drvr_ptr = ReadMacInt32(r.a[0]);
-	WriteMacInt32(drvr_ptr + dCtlDriver, ROMBaseMac + serd_offset + 0x200);			// Pointer to driver header
-	WriteMacInt16(drvr_ptr + dCtlFlags, (aout_driver[0] << 8) + aout_driver[1]);	// Driver flags
-	WriteMacInt16(drvr_ptr + dCtlQHdr + qFlags, 9);									// Version number
-
-	// Install .BIn driver
-	r.d[0] = (uint32)-8;
-	r.a[0] = ROMBaseMac + serd_offset + 0x300;
-	Execute68kTrap(0xa53d, &r);	// DrvrInstallRsrvMem()
-	Execute68kTrap(0xa029, &r);	// HLock()
-	drvr_ptr = ReadMacInt32(r.a[0]);
-	WriteMacInt32(drvr_ptr + dCtlDriver, ROMBaseMac + serd_offset + 0x300);			// Pointer to driver header
-	WriteMacInt16(drvr_ptr + dCtlFlags, (bin_driver[0] << 8) + bin_driver[1]);		// Driver flags
-	WriteMacInt16(drvr_ptr + dCtlQHdr + qFlags, 9);									// Version number
-
-	// Install .BOut driver
-	r.d[0] = (uint32)-9;
-	r.a[0] = ROMBaseMac + serd_offset + 0x400;
-	Execute68kTrap(0xa53d, &r);	// DrvrInstallRsrvMem()
-	Execute68kTrap(0xa029, &r);	// HLock()
-	drvr_ptr = ReadMacInt32(r.a[0]);
-	WriteMacInt32(drvr_ptr + dCtlDriver, ROMBaseMac + serd_offset + 0x400);			// Pointer to driver header
-	WriteMacInt16(drvr_ptr + dCtlFlags, (bout_driver[0] << 8) + bout_driver[1]);	// Driver flags
-	WriteMacInt16(drvr_ptr + dCtlQHdr + qFlags, 9);									// Version number
+	D(bug("InstallSERD (skipped, using native hardware SCC emulation)\n"));
 }
 
 
@@ -902,16 +859,18 @@ printf("Patching for a Mac Classic/SE (version $0276)\n");
 	//CDROMIconAddr = ROMBaseMac + sony_offset + 0xa00;
 	//memcpy(ROMBaseHost + sony_offset + 0xa00, CDROMIcon, sizeof(CDROMIcon));
 
-	// Install SERD patch and serial drivers	
-	serd_offset = 0x31bae;
-	D(bug("serd %08lx\n", serd_offset));
-	wp = (uint16 *)(ROMBaseHost + serd_offset + 12);
-	*wp++ = htons(M68K_EMUL_OP_SERD);
-	*wp = htons(M68K_RTS);
-	memcpy(ROMBaseHost + serd_offset + 0x100, ain_driver, sizeof(ain_driver));
-	memcpy(ROMBaseHost + serd_offset + 0x200, aout_driver, sizeof(aout_driver));
-	memcpy(ROMBaseHost + serd_offset + 0x300, bin_driver, sizeof(bin_driver));
-	memcpy(ROMBaseHost + serd_offset + 0x400, bout_driver, sizeof(bout_driver));
+	// Install SERD patch and serial drivers
+	if (!PrefsFindBool("ltoudp")) {
+		serd_offset = 0x31bae;
+		D(bug("serd %08lx\n", serd_offset));
+		wp = (uint16 *)(ROMBaseHost + serd_offset + 12);
+		*wp++ = htons(M68K_EMUL_OP_SERD);
+		*wp = htons(M68K_RTS);
+		memcpy(ROMBaseHost + serd_offset + 0x100, ain_driver, sizeof(ain_driver));
+		memcpy(ROMBaseHost + serd_offset + 0x200, aout_driver, sizeof(aout_driver));
+		memcpy(ROMBaseHost + serd_offset + 0x300, bin_driver, sizeof(bin_driver));
+		memcpy(ROMBaseHost + serd_offset + 0x400, bout_driver, sizeof(bout_driver));
+	}
 
 
 	// Replace ADBOp()
@@ -1513,15 +1472,17 @@ static bool patch_rom_32(void)
 	//memcpy(ROMBaseHost + sony_offset + 0xa00, CDROMIcon, sizeof(CDROMIcon));
 
 	// Install SERD patch and serial drivers
-	serd_offset = find_rom_resource('SERD', 0);
-	D(bug("serd %08lx\n", serd_offset));
-	wp = (uint16 *)(ROMBaseHost + serd_offset + 12);
-	*wp++ = htons(M68K_EMUL_OP_SERD);
-	*wp = htons(M68K_RTS);
-	memcpy(ROMBaseHost + serd_offset + 0x100, ain_driver, sizeof(ain_driver));
-	memcpy(ROMBaseHost + serd_offset + 0x200, aout_driver, sizeof(aout_driver));
-	memcpy(ROMBaseHost + serd_offset + 0x300, bin_driver, sizeof(bin_driver));
-	memcpy(ROMBaseHost + serd_offset + 0x400, bout_driver, sizeof(bout_driver));
+	if (!PrefsFindBool("ltoudp")) {
+		serd_offset = find_rom_resource('SERD', 0);
+		D(bug("serd %08lx\n", serd_offset));
+		wp = (uint16 *)(ROMBaseHost + serd_offset + 12);
+		*wp++ = htons(M68K_EMUL_OP_SERD);
+		*wp = htons(M68K_RTS);
+		memcpy(ROMBaseHost + serd_offset + 0x100, ain_driver, sizeof(ain_driver));
+		memcpy(ROMBaseHost + serd_offset + 0x200, aout_driver, sizeof(aout_driver));
+		memcpy(ROMBaseHost + serd_offset + 0x300, bin_driver, sizeof(bin_driver));
+		memcpy(ROMBaseHost + serd_offset + 0x400, bout_driver, sizeof(bout_driver));
+	}
 
 	// Replace ADBOp()
 	memcpy(ROMBaseHost + find_rom_trap(0xa07c), adbop_patch, sizeof(adbop_patch));

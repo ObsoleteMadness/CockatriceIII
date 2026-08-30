@@ -14,6 +14,13 @@ nosound false
 nogui false
 idlewait false
 yearoffset 0
+
+# LocalTalk over UDP
+# Similar to Mini vMac LToUDP support
+# When enabled SCC is emulated with an LToUDP connected to the printer port.
+# You may need to activate it from the AppleTalk control panel.
+ltoudp true
+
 # SCSI ID's 0-5 are available for hard disks
 # SCSI 6 is a CD-ROM
 # 

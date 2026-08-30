@@ -23,6 +23,7 @@
 #include "cpu_emulation.h"
 #include "main.h"
 #include "prefs.h"
+#include "scc.h"
 #include "emul_op.h"
 #include "rom_patches.h"
 #include "timer.h"
@@ -170,6 +171,9 @@ void TriggerNMI(void)
 
 int intlev(void)
 {
+	if (SCCInterruptRequest) {
+		return TwentyFourBitAddressing ? 2 : 4;
+	}
 	return InterruptFlags ? 1 : 0;
 }
 

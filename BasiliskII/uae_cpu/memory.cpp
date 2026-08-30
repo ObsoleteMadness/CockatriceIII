@@ -28,6 +28,8 @@
 #include "cpu_emulation.h"
 #include "main.h"
 #include "video.h"
+#include "prefs.h"
+#include "scc.h"
 
 #include "m68k.h"
 #include "memory-uae.h"
@@ -527,6 +529,69 @@ addrbank frame_host_888_bank = {
     frame_xlate
 };
 
+/* SCC (Serial Communications Controller) */
+
+static uae_u32 REGPARAM2 scc_bget(uaecptr addr) REGPARAM;
+static uae_u32 REGPARAM2 scc_wget(uaecptr addr) REGPARAM;
+static uae_u32 REGPARAM2 scc_lget(uaecptr addr) REGPARAM;
+static void REGPARAM2 scc_bput(uaecptr addr, uae_u32 b) REGPARAM;
+static void REGPARAM2 scc_wput(uaecptr addr, uae_u32 w) REGPARAM;
+static void REGPARAM2 scc_lput(uaecptr addr, uae_u32 l) REGPARAM;
+static uae_u8 *REGPARAM2 scc_xlate(uaecptr addr) REGPARAM;
+
+uae_u32 REGPARAM2 scc_bget(uaecptr addr)
+{
+	if (TwentyFourBitAddressing) {
+		uaecptr a24 = addr & 0x00ffffff;
+		return SCC_Access(0, false, (a24 >> 1) & 3);
+	} else {
+		return SCC_Access(0, false, (addr >> 1) & 3);
+	}
+}
+
+uae_u32 REGPARAM2 scc_wget(uaecptr addr)
+{
+	return (scc_bget(addr) << 8) | scc_bget(addr + 1);
+}
+
+uae_u32 REGPARAM2 scc_lget(uaecptr addr)
+{
+	return (scc_wget(addr) << 16) | scc_wget(addr + 2);
+}
+
+void REGPARAM2 scc_bput(uaecptr addr, uae_u32 b)
+{
+	if (TwentyFourBitAddressing) {
+		uaecptr a24 = addr & 0x00ffffff;
+		SCC_Access(b, true, (a24 >> 1) & 3);
+	} else {
+		SCC_Access(b, true, (addr >> 1) & 3);
+	}
+}
+
+void REGPARAM2 scc_wput(uaecptr addr, uae_u32 w)
+{
+	scc_bput(addr, w >> 8);
+	scc_bput(addr + 1, w & 0xff);
+}
+
+void REGPARAM2 scc_lput(uaecptr addr, uae_u32 l)
+{
+	scc_wput(addr, l >> 16);
+	scc_wput(addr + 2, l & 0xffff);
+}
+
+uae_u8 *REGPARAM2 scc_xlate(uaecptr addr)
+{
+	return NULL;
+}
+
+addrbank scc_bank = {
+    scc_lget, scc_wget, scc_bget,
+    scc_lput, scc_wput, scc_bput,
+    scc_xlate
+};
+
 void memory_init(void)
 {
 	for(long i=0; i<65536; i++)
@@ -562,6 +627,16 @@ void memory_init(void)
 		case FLAYOUT_HOST_888:
 			map_banks(&frame_host_888_bank, MacFrameBaseMac >> 16, (MacFrameSize >> 16) + 1);
 			break;
+	}
+
+	// Map SCC
+	if (PrefsFindBool("ltoudp")) {
+		if (TwentyFourBitAddressing) {
+			map_banks(&scc_bank, 0x90, 0x10);
+			map_banks(&scc_bank, 0xb0, 0x10);
+		} else {
+			map_banks(&scc_bank, 0x5000, 0x100);
+		}
 	}
 }
 

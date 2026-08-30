@@ -154,6 +154,7 @@ static NetProtocol *prot_list = NULL;
 // Global variables
 
 static bool thread_active = false;			// Flag: Packet reception thread installed
+static SDL_Thread *ether_thread = NULL;
 //static sem_t int_ack;						// Interrupt acknowledge semaphore
 SDL_sem *int_ack=NULL;
 static bool is_ethertap=0;					// Flag: Ethernet device is ethertap
@@ -254,7 +255,7 @@ void EtherInit(void)
 		_pcap_compile=(PCAP_COMPILE)GetProcAddress(hLib,"pcap_compile");
 		_pcap_setfilter=(PCAP_SETFILTER)GetProcAddress(hLib,"pcap_setfilter");
 #else
-		hLib =  hLib = dlopen(lib_name, RTLD_NOW);
+		hLib = dlopen(lib_name, RTLD_NOW);
                         if(hLib==0)
                         {printf("Failed to load %s\n",lib_name);is_pcap=0;return ;}
                 _pcap_open_live=(PCAP_OPEN_LIVE)dlsym(hLib,"pcap_open_live");
@@ -273,12 +274,8 @@ void EtherInit(void)
 			printf("Pcap version [%s]\n",_pcap_lib_version());
 		//char *device, int snaplen,int promisc, int to_ms, char *errbuf);
 
-
-		//BLOCKING
-		if((pcap=_pcap_open_live(name,1518,1,-1,errbuf))==0)
-		//NONBLOCKING
-		//if((pcap=_pcap_open_live(name,1518,1,15,errbuf))==0)
-			{printf("ethernet.c: pcap_open_live error on %s!\n",name);exit(-1);}
+		if((pcap=_pcap_open_live(name,1518,1,10,errbuf))==0)
+			{printf("ethernet.c: pcap_open_live error on %s: %s\n",name,errbuf);exit(-1);}
 			}
 		else	{	
 		printf("%d %d %d %d %d %d %d\n",_pcap_lib_version, _pcap_open_live,_pcap_sendpacket,_pcap_setnonblock,_pcap_next,_pcap_close,_pcap_getnonblock);
@@ -384,7 +381,8 @@ void EtherInit(void)
 	slirp_mutex=SDL_CreateMutex();
 
 	int_ack=SDL_CreateSemaphore(0);
-	SDL_CreateThread(receive_func,NULL);
+	ether_thread = SDL_CreateThread(receive_func,NULL);
+	thread_active = (ether_thread != NULL);
 
 	// Everything OK
 	net_open = true;
@@ -392,12 +390,11 @@ void EtherInit(void)
 
 open_error:
 	if (thread_active) {
-		//pthread_cancel(ether_thread);
-		//pthread_join(ether_thread, NULL);
-		//sem_destroy(&int_ack);
-		//thread_active = false;
-		//SDL_KillThread(receive_func);
-		SDL_DestroySemaphore(int_ack);
+		thread_active = false;
+		if (ether_thread)
+			SDL_KillThread(ether_thread);
+		if (int_ack)
+			SDL_DestroySemaphore(int_ack);
 	}
 }
 
@@ -411,17 +408,16 @@ void EtherExit(void)
 printf("EtherExit called\n");
 	// Stop reception thread
 	if (thread_active) {
-		//pthread_cancel(ether_thread);
-		//pthread_join(ether_thread, NULL);
-		//sem_destroy(&int_ack);
-		SDL_KillThread((SDL_Thread*)receive_func);
-		SDL_DestroySemaphore(int_ack);
 		thread_active = false;
+		if (ether_thread)
+			SDL_KillThread(ether_thread);
+		if (int_ack)
+			SDL_DestroySemaphore(int_ack);
 		//DO NICE SHUTDOWN STUFF...
 		if(is_slirp)
 			{slirp_exit(0);}
-		if(is_pcap)
-			{_pcap_close(pcap);}
+		if(is_pcap && pcap)
+			{_pcap_close(pcap); pcap = NULL;}
 	}
 
 	// Remove all protocols
@@ -654,21 +650,20 @@ if((!is_slirp)&&(!is_pcap))
 		SDL_LockMutex(slirp_queue_mutex);
 		qp=QueueDelete(slirpq);
 		SDL_UnlockMutex(slirp_queue_mutex);
+		if (!qp)
+			break;
 		D(bug("inQ:%d  got a %dbyte packet @%d\n",QueuePeek(slirpq),qp->len,qp));
 
-		//data=p->data;
-		//length=p->len;
+		if (qp->len < 14) {
+			free(qp);
+			continue;
+		}
 
-		if (qp->len < 14)
-			break;
-
-		//memset(packet,0x0,sizeof(packet));
-		//memcpy(packet,data,length);
 		memcpy(packet,qp->data,qp->len);
 
 #if MONITOR
 		bug("Receiving Ethernet packet:\n");
-		for (int i=0; i<length; i++) {
+		for (int i=0; i<qp->len; i++) {
 			bug("%02x ", packet[i]);
 		}
 		bug("\n");
@@ -683,12 +678,10 @@ if((!is_slirp)&&(!is_pcap))
 		// Look for protocol
 		NetProtocol *prot = find_protocol(type);
 
-		if (prot == NULL)
+		if (prot == NULL || prot->handler == 0) {
+			free(qp);
 			continue;
-
-		// No default handler
-		if (prot->handler == 0)
-			continue;
+		}
 
 		// Copy header to RHA
 		Host2Mac_memcpy(ether_data + ed_RHA, p, 14);

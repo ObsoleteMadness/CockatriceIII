@@ -32,6 +32,7 @@
 #include "timer.h"
 #include "clip.h"
 #include "serial.h"
+#include "scc.h"
 #include "sony.h"
 #include "disk.h"
 #include "cdrom.h"
@@ -40,6 +41,7 @@
 #include "audio.h"
 #include "ether.h"
 #include "extfs.h"
+#include "prefs.h"
 #include "emul_op.h"
 
 #if ENABLE_MON
@@ -125,19 +127,19 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 							r->d[2] |= 0x05;	// 32bit mode is always enabled
 							break;
 						case 0xe0:				// Disable LocalTalk (use EtherTalk instead)
-							if (localtalk)
+							if (localtalk && !PrefsFindBool("ltoudp"))
 								r->d[2] = 0x00;
 							break;
 						case 0xe1:
-							if (localtalk)
+							if (localtalk && !PrefsFindBool("ltoudp"))
 								r->d[2] = 0xf1;
 							break;
 						case 0xe2:
-							if (localtalk)
+							if (localtalk && !PrefsFindBool("ltoudp"))
 								r->d[2] = 0x00;
 							break;
 						case 0xe3:
-							if (localtalk)
+							if (localtalk && !PrefsFindBool("ltoudp"))
 								r->d[2] = 0x0a;
 							break;
 					}
@@ -431,6 +433,7 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 					DiskInterrupt();
 					//CDROMInterrupt();
 					EtherInterrupt();
+					LocalTalkTick();
 
 					// Call DoVBLTask(0)
 					if (ROMVersion == ROM_VERSION_32) {
@@ -445,6 +448,7 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 			if (InterruptFlags & INTFLAG_SERIAL) {
 				ClearInterruptFlag(INTFLAG_SERIAL);
 				SerialInterrupt();
+				LocalTalkTick();
 			}
 			if (InterruptFlags & INTFLAG_ETHER) {
 				ClearInterruptFlag(INTFLAG_ETHER);

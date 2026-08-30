@@ -31,6 +31,7 @@
 #include "audio.h"
 #include "video.h"
 #include "serial.h"
+#include "scc.h"
 #include "ether.h"
 #include "clip.h"
 #include "rom_patches.h"
@@ -129,6 +130,9 @@ printf("Offsetting the year by %d billion ticks\n",yearoffset);
 	// Init serial ports
 	SerialInit();
 
+	// Init SCC / LocalTalk
+	SCCInit();
+
 	// Init network
 	EtherInit();
 
@@ -200,6 +204,9 @@ void ExitAll(void)
 
 	// Exit Time Manager
 	TimerExit();
+
+	// Exit SCC / LocalTalk
+	SCCExit();
 
 	// Exit serial ports
 	SerialExit();

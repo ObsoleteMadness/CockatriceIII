@@ -15,7 +15,7 @@ Press Enter to continue...
 #define ETH_MAX_DEVICE        30                        /* maximum ethernet devices */
 #define ETH_PROMISC            1                        /* promiscuous mode = true */
 #define ETH_MAX_PACKET      1514                        /* maximum ethernet packet size */
-#define PCAP_READ_TIMEOUT -1
+#define PCAP_READ_TIMEOUT   1000
 
 struct eth_list {
   int     num;

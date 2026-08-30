@@ -61,6 +61,7 @@ prefs_desc common_prefs_items[] = {
 	{"nogui", TYPE_BOOLEAN, false},		// Disable GUI (main_*.cpp)
 	{"idlewait",TYPE_BOOLEAN,true},		// enable idle..
 	{"yearoffset",TYPE_INT16,false},	// remove x billion seconds from the clock
+	{"ltoudp", TYPE_BOOLEAN, false},	// Enable LocalTalk over UDP (LToUDP)
 	{NULL, TYPE_END, false}	// End of list
 };
 
@@ -98,6 +99,7 @@ void PrefsInit(void)
 	PrefsAddBool("nocdrom", false);
 	PrefsAddBool("nosound", false);
 	PrefsAddBool("nogui", false);
+	PrefsAddBool("ltoudp", false);
 	PrefsAddString("screen","win/1152/870");	//fantastic monitor for the era
 	PrefsAddString("rom","Quadra800.rom");
 	PrefsAddString("ether","slirp");
