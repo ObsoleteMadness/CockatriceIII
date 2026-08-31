@@ -322,15 +322,116 @@ these instructions read looks fine; suspicion should shift toward the
 manifests transiently (the run-to-run non-determinism noted above still
 stands and is unexplained).
 
+### A genuine contradiction, precisely pinned down
+
+Widened the crash-time disassembly to cover the *entire* block from
+`0x4080FFBA` through the `jsr (A1)` at `0x4080FFF8` and one instruction
+past it (25 instructions, all shown below) — confirming there is **no
+instruction anywhere in this block, on either side of the one
+conditional branch (`bne $4080ffe6`) that skips part of it, that writes
+`A1`**:
+
+```
+4080FFBA: bne     $4080ffe6            4080FFDE: move.l  ($7a,A2), D0
+4080FFBC: move.w  $210.w, D0           4080FFE2: beq     $4080ffe6
+4080FFC0: bge     $4080ffda            4080FFE4: bsr     $40810024
+4080FFC2: cmpi.w  #-$1000, D0          4080FFE6: clr.w   (A4,D4.w)
+4080FFC6: bgt     $4080ffda            4080FFEA: moveq   #$2, D4
+4080FFC8: bsr     $4080f4fa            4080FFEC: move.w  D4, (-$2,A4)
+4080FFCC: bne     $4080ffda            4080FFF0: move.l  (-$6,A4), D0
+4080FFCE: cmp.w   ($4e,A2), D2         4080FFF4: beq     $40812236
+4080FFD2: bne     $4080ffda            4080FFF8: jsr     (A1)
+4080FFD4: move.l  ($4,A3), D0          4080FFFA: move.w  (A4,D4.w), D0
+4080FFD8: bsr     $40810024            4080FFFE: bsr     $4080f4ac
+4080FFDA: movea.l $3ee.w, A2           40810002: bne     $4081001e
+```
+
+Both `bsr` targets were disassembled too (`$4080f4fa` and `$40810024`,
+called twice) — neither touches `A1` either; `$4080f4fa` explicitly
+*preserves* it (`movem.l D1/A1,-(A7)` on entry, `movem.l (A7)+,D1/A1` on
+exit), and `$40810024` (a linear dispatch-table search keyed on `D2`/`D0`,
+indexed by `D4`, over a table based at `A4`) never references `A1` at
+all.
+
+Then instrumented `hash_lookup_code_and_create_if_needed()` directly
+(`runtime/hash.c`, temporarily — reverted, not in the final diff) to
+print `A1` via direct register read (`EM_A1`) every time a new block is
+entered within `0x4080FE00`-`0x40810200`. **The very last such print
+before the crash was `entering 0x4080FFBA with A1=0x000117D0`** — a
+plausible pointer, not `0x00002000`. Yet the block-entry history recorded
+by the exact same underlying counter (`s_recent_syn68k_pcs[]`) shows
+`0x4080FFBA` immediately followed by `0x00002000` as the *very next*
+lookup, with nothing else in between.
+
+Put together: `A1` reads as a plausible pointer (`0x117D0`) on entry to
+the block containing the only `jsr (A1)` in this whole stretch of ROM,
+that block provably never writes `A1` anywhere along either path through
+it, and yet the next block-hash lookup after it is for `0x00002000`, not
+`0x117D0`. **This doesn't add up with a static read of the ROM bytes
+alone** — resolved below, and it's a methodological artifact, not
+evidence of a second bug.
+
+### The contradiction resolved: a diagnostic-read pitfall, not a real anomaly
+
+`runtime/syn68k.c` (`NONNATIVE`/switch-dispatch build) keeps the working
+680x0 registers in **local C variables** (`a0`..`a7`, `d0`..`d7`) for the
+duration of interpretation — see `LOAD_CPU_STATE()`/`SAVE_CPU_STATE()`
+(`syn68k_header.h` / `syn68k.c` around line 203), which copy between
+those locals and `cpu_state.regs[]` only at specific sync points (trap
+dispatch, `a_line_trap`, the `"Reserved - callback"` case, etc — every
+site that calls `code_lookup()` on a *trap*, but notably **not**
+`jsr_dynamic`, the register-indirect `JSR`/`JMP` case, which doesn't
+round-trip through `cpu_state.regs[]` at all). `EM_A1` / `EM_AREG(1)`
+(used by my temporary `hash.c` watch, and by `syn68k_glue.cpp`'s crash
+printer) reads `cpu_state.regs[9]` directly — the *synced* copy, which
+can be stale relative to the live local variable `a1` mid-block. That's
+almost certainly why the watch read `0x117D0` while the actual `jsr`
+target was `0x00002000`: two different copies of "A1", read at two
+different times, neither wrong on its own, just not the same value.
+**Lesson for next time diagnosing this interpreter: `EM_AREG(n)` reads
+from C code outside the interpreter's own dispatch loop are only
+trustworthy at a `SAVE_CPU_STATE()` boundary (trap/EmulOp entry); they
+are not a live view of the register during straight-line interpretation.**
+
+So `A1` genuinely does become `0x00002000` — not a diagnostic artifact.
+Traced *how* one step further: `jsr_dynamic` (`runtime/syn68k.c`, `CASE
+(0x00B4)`'s neighbor) doesn't read `A1` directly either — it reads
+`cpu_state.amode_p`, a separate, single, **global** scratch field that a
+prior "compute effective address" pseudo-op populates ahead of it. For
+plain `(A1)` addressing (68k mode 2/3) that's pseudo-op `0x0005`
+(`AMODE_2_3` macro): `cpu_state.amode_p = CLEAN(a1.ul.n)` — using the
+live local variable, correctly. The mechanism itself looks correct on
+inspection. What's now the open question: `cpu_state.amode_p` is a
+**single shared field with no save/restore around it** — unlike the
+general registers, it isn't part of `SAVE_CPU_STATE()`/`LOAD_CPU_STATE()`
+at all. If *any* interrupt or EmulOp dispatch fires in the narrow window
+between this block's `0x0005` amode-compute pseudo-op and `jsr_dynamic`
+consuming it, and that handler's own execution (or the C++ glue's
+`EM_AREG`-style register pokes) touches `cpu_state.regs[9]`/`amode_p` in
+any way, `jsr_dynamic` would use the wrong value with no trace of it in
+the guest ROM's own instruction stream — explaining why nothing in the
+static disassembly of `0x4080FFBA` accounts for the bad jump. **Not
+confirmed** — the concrete next step is to check whether
+`CHECK_FOR_INTERRUPT()` (`syn68k_header.h`) or any EmulOp path can run
+between those two specific pseudo-ops for this instruction, and whether
+`cpu_state.amode_p` needs to become part of the state saved/restored
+around trap and interrupt dispatch (it currently isn't, in either
+upstream or the CockatriceIII fork).
+
 ### Status
 
-Not fixed. All diagnostics added this session (block-entry history,
-disassembly of the last good block, and now these low-memory global
-reads) are permanent and low-cost (only active on the illegal-opcode
-fault path) — run live boot with `cpu_emulator syn68k`, watch for
-`[CPU-ILLEGAL] syn68k:`, and this context will already be in the log.
-Next step, not yet done: instrument closer to the actual `JSR (A1)` --
-e.g. print `A1` and `A4` right as the `0x4080FFF8` block is entered
-(available in the block-entry history / `syn68k_glue_disassemble()`
-machinery already built this session) -- to catch the bad value at the
-moment it's computed, not several blocks and one exception later.
+Not fixed, but the mechanism is now understood precisely: `jsr_dynamic`
+reads a global, un-saved `cpu_state.amode_p` scratch field rather than
+the register directly, and that field has no protection against being
+clobbered by a concurrent trap/interrupt dispatch. All diagnostics added
+this session and kept (block-entry history, the full-block disassembly
+above, and the low-memory global reads) are permanent and low-cost (only
+active on the illegal-opcode fault path) — run live boot with
+`cpu_emulator syn68k`, watch for `[CPU-ILLEGAL] syn68k:`, and this
+context will already be in the log. The `hash.c` `A1`-watch has been
+reverted (it answered its question and, per the diagnostic-read pitfall
+above, isn't reliable for watching this specific field anyway). Next
+step: confirm whether `cpu_state.amode_p` (and `reversed_amode_p`) can
+be clobbered by a nested trap/interrupt dispatch between the amode-compute
+pseudo-op and its consumer, and if so, save/restore them the same way
+the general registers already are.
