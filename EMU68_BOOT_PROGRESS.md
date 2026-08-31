@@ -260,10 +260,77 @@ zero-filled — see the memory-model fix in
 read as if it were guest data. Worth checking first before spending
 more time tracing the ROM's own control flow.
 
+### Ruled out via a diff against upstream Executor's syn68k
+
+`BasiliskII/syn68k` is a nested git repo (its own `.git`, not a
+registered submodule — see its own commit history), forked from
+`https://github.com/autc04/syn68k` at the exact commit Executor
+(`~/Source/executor`, submodule `syn68k`) currently pins. Diffed every
+CockatriceIII-modified file against that pristine upstream copy — the
+full list is `include/syn68k_private.h`, `include/syn68k_public.h`,
+`runtime/68k.scm`, `runtime/hash.c`, `runtime/include/callback.h`,
+`runtime/include/translate.h`, `runtime/include/trap.h`, `runtime/init.c`,
+`runtime/translate.c`, `runtime/trap.c`, `test/main.c`. Nothing else is
+touched relative to upstream; `syn68k_glue.cpp` is a wholly new file with
+no upstream counterpart. None of the following, all real deviations, turn
+out to be the cause:
+
+- `translate.c` / `68k.scm`: adds a new `emulop` pseudo-opcode
+  (`0111000100eeeeee`, i.e. `0x7100`-`0x713F`) that traps to Vector 4,
+  matching `M68K_EMUL_OP_MAX` (`0x7131`) with room to spare. Correctly
+  scoped, not the issue.
+- `trap.c`: **the one that looked most suspicious.** Upstream only
+  invokes an installed trap callback if the guest's own vector still
+  equals what the callback originally installed (`trap_addr ==
+  thi->callback_address`) — i.e. it backs off once the guest installs its
+  own handler. CockatriceIII's version dropped that check, so an
+  installed callback fires unconditionally. In principle this could
+  permanently block a guest-installed exception handler from ever
+  running. In practice: `trap_install_handler()` is called exactly once
+  in this codebase, for trap 4 (`syn68k_illg_handler` in
+  `syn68k_glue.cpp`), and that handler already re-implements the same
+  "did the guest override vector 4" check internally
+  (`guest_vec != cpu_state.trap_handler_info[4].callback_address`) before
+  deciding whether to forward. Net behavior is unchanged today. Still
+  worth fixing properly (restore the upstream check, or at least a code
+  comment) before anyone installs a second trap handler and silently
+  reintroduces this.
+- `syn68k_private.h`'s `COMPUTE_SR_FROM_CPU_STATE()` fix (masks the low 5
+  SR bits before OR-ing in freshly computed CCR flags, where upstream
+  doesn't) is a **correctness improvement** over upstream, not a
+  regression — ruled out as a cause for that reason.
+- Everything else (`hash.c`'s MMIO hooks and PC-history tracking,
+  `init.c`'s diagnostics, the `callback.h`/`translate.h`/`trap.h` renames
+  for C++ compatibility) is cosmetic or unrelated to this bug.
+
+### Confirmed with live data: the structures involved aren't obviously wrong
+
+Printed the low-memory globals referenced by the deterministic failing
+block (`0x4080FFBA`, disassembled above) at crash time:
+
+```
+low-mem globals: $210.w=0x0005 $372.l=0x00012690 $3EE.l=0x00015700
+```
+
+Both `$372` and `$3EE` hold plausible, non-zero RAM pointers (not zero,
+not wild) — `$372`'s value (`0x12690`) is within 2 bytes of the crash-time
+`A3` (`0x12692`), consistent with legitimate pointer arithmetic on it.
+`$210` holds a small plausible value. **This weakens "an uninitialized
+low-memory global feeds a bad pointer" as the explanation** — the data
+these instructions read looks fine; suspicion should shift toward the
+`JSR (A1)`/branch computation itself, or toward something that only
+manifests transiently (the run-to-run non-determinism noted above still
+stands and is unexplained).
+
 ### Status
 
-Not fixed. Diagnostics are permanent (low-cost, only active on the
-illegal-opcode-fault path) and should make the next pass faster —
-run live boot with `cpu_emulator syn68k`, watch for
-`[CPU-ILLEGAL] syn68k:`, and the block-entry history plus disassembly
-will already be in the log.
+Not fixed. All diagnostics added this session (block-entry history,
+disassembly of the last good block, and now these low-memory global
+reads) are permanent and low-cost (only active on the illegal-opcode
+fault path) — run live boot with `cpu_emulator syn68k`, watch for
+`[CPU-ILLEGAL] syn68k:`, and this context will already be in the log.
+Next step, not yet done: instrument closer to the actual `JSR (A1)` --
+e.g. print `A1` and `A4` right as the `0x4080FFF8` block is entered
+(available in the block-entry history / `syn68k_glue_disassemble()`
+machinery already built this session) -- to catch the bad value at the
+moment it's computed, not several blocks and one exception later.
