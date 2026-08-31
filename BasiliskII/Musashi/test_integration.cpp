@@ -1602,31 +1602,53 @@ int main(void)
         ROMBaseMac = 0x40800000;
         memory_init();
         CHECK(activate_cpu_engine("emu68", true), "activate emu68 for ROM-range JMP-table test");
-        const uint32 code_addr = ROMBaseMac + 0x00007000;
-        const uint32 table_addr = ROMBaseMac + 0x00007100;
+        uint32 code_addr = ROMBaseMac + 0x00007000;
+        if (getenv("JMP_TABLE_ADDR"))
+            code_addr = (uint32)strtoul(getenv("JMP_TABLE_ADDR"), NULL, 0);
+        uint32 table_addr = code_addr + 0x100;
+        if (getenv("JMP_TABLE_DIST"))
+            table_addr = code_addr + (uint32)strtoul(getenv("JMP_TABLE_DIST"), NULL, 0);
+        printf("[ROM-RANGE] code_addr=0x%08X table_addr=0x%08X\n", code_addr, table_addr);
         // Write directly through the host pointer -- WriteMacInt silently
         // drops writes to ROM range, which would make this a no-op test.
-        auto poke16 = [](uint32 addr, uint16 val) {
-            Host_Mem_Base[addr + 0] = (uint8)(val >> 8);
-            Host_Mem_Base[addr + 1] = (uint8)(val & 0xFF);
+        bool use_writemacint = getenv("JMP_TABLE_WMI") != NULL;
+        auto poke16 = [use_writemacint](uint32 addr, uint16 val) {
+            if (use_writemacint) {
+                WriteMacInt16(addr, val);
+            } else {
+                Host_Mem_Base[addr + 0] = (uint8)(val >> 8);
+                Host_Mem_Base[addr + 1] = (uint8)(val & 0xFF);
+            }
         };
-        poke16(code_addr + 0,  0x48E7);
-        poke16(code_addr + 2,  0x0706);
-        poke16(code_addr + 4,  0x4DFA);
-        poke16(code_addr + 6,  0x0006);
-        poke16(code_addr + 8,  0x48E7);
-        poke16(code_addr + 10, 0xE0F0);
-        poke16(code_addr + 12, 0x4DFA);
-        poke16(code_addr + 14, 0x000C);
-        poke16(code_addr + 16, 0x4BF9);
-        // target = (code_addr+24+2) - 8 + A5  =>  A5 = table_addr - code_addr - 18
-        {
-            int32_t a5val = (int32_t)table_addr - (int32_t)code_addr - 18;
-            poke16(code_addr + 18, (uint16)((uint32_t)a5val >> 16));
-            poke16(code_addr + 20, (uint16)(a5val & 0xFFFF));
-        }
-        poke16(code_addr + 22, 0x4EFB);
-        poke16(code_addr + 24, 0xD8F8);
+        // Real ROM block has 16 NOPs between the first LEA and the second
+        // MOVEM.L (see EMU68_BOOT_PROGRESS.md); the earlier hand-picked
+        // offsets omitted them. Build the layout with a variable NOP count
+        // (JMP_TABLE_NOPS, default 16) so that can be tested directly.
+        int nop_count = 16;
+        if (getenv("JMP_TABLE_NOPS"))
+            nop_count = atoi(getenv("JMP_TABLE_NOPS"));
+
+        uint32 p = code_addr;
+        poke16(p, 0x48E7); p += 2;  // MOVEM.L D5-D7/A5-A6,-(A7)
+        poke16(p, 0x0706); p += 2;
+        poke16(p, 0x4DFA); p += 2;  // LEA (6,PC),A6
+        poke16(p, 0x0006); p += 2;
+        for (int i = 0; i < nop_count; i++) { poke16(p, 0x4E71); p += 2; }
+        poke16(p, 0x48E7); p += 2;  // MOVEM.L D0-D2/A0-A3,-(A7)
+        poke16(p, 0xE0F0); p += 2;
+        poke16(p, 0x4DFA); p += 2;  // LEA (0xC,PC),A6
+        poke16(p, 0x000C); p += 2;
+        poke16(p, 0x4BF9); p += 2;  // LEA $const.L,A5
+        uint32 a5_lo_addr = p;
+        p += 4; // hi16/lo16 filled in below, once ext_word_addr is known
+        uint32 jmp_addr = p;
+        poke16(p, 0x4EFB); p += 2;  // JMP (-8,PC,A5.L)
+        poke16(p, 0xD8F8); p += 2;
+        uint32 ext_word_addr = jmp_addr + 2;
+        int32_t a5val = (int32_t)table_addr - (int32_t)ext_word_addr + 8;
+        poke16(a5_lo_addr + 0, (uint16)((uint32_t)a5val >> 16));
+        poke16(a5_lo_addr + 2, (uint16)(a5val & 0xFFFF));
+        printf("[ROM-RANGE] nop_count=%d block_len=%u\n", nop_count, p - code_addr);
         poke16(table_addr + 0, 0x4CDF);
         poke16(table_addr + 2, 0x0F07);
         poke16(table_addr + 4, 0x4CDF);
@@ -1637,6 +1659,9 @@ int main(void)
         M68kRegisters r;
         memset(&r, 0, sizeof(r));
         r.d[0] = 100;
+        if (getenv("JMP_TABLE_SP"))
+            r.a[7] = (uint32)strtoul(getenv("JMP_TABLE_SP"), NULL, 0);
+        printf("[ROM-RANGE] initial a7=0x%08X\n", r.a[7]);
         Execute68k(code_addr, &r);
         printf("[ROM-RANGE RESULT] d0=0x%08X (expected 104)\n", r.d[0]);
         return (r.d[0] == 104) ? 0 : 1;

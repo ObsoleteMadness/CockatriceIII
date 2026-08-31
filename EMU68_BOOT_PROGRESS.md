@@ -8,8 +8,9 @@ memory-model fix and the illegal-opcode isolation test from
 [JIT_MEMORY_MODEL_FIXES.md](JIT_MEMORY_MODEL_FIXES.md) — read that first for
 context on the memory model and why Emu68 was looping on `0x773F` at boot.
 
-Status: **not yet booting.** One confirmed, precisely-isolated, not-yet-fixed
-bug is blocking Emu68 boot. Details and a fast reproduction below.
+Status: **not yet booting.** One confirmed real bug is blocking Emu68 boot,
+precisely characterized (which registers go wrong and how) but not yet
+isolated outside a live boot, and not yet fixed. Details below.
 
 ---
 
@@ -92,59 +93,92 @@ EmulOp" forever. That's the `[JIT] opcode 773f ... not implemented` /
   C++ *outside* the JIT-compiled stream, reading `__m68k_state->PC` after
   `emu68_call_jit_block()` returns.
 
-### What it is: address range (ROM vs RAM) is the deciding factor
+### What it is: confirmed real, but not yet isolated outside live boot
 
-An isolated `Execute68k()` test byte-for-byte reproducing this exact block
-(all four instructions, including the real `JMP`) **passes** when placed
-at a low-RAM scratch address (`0x7250`) with its jump-table stub at
-`0x9000`. The identical bytes, at the identical *relative* offsets, placed
-instead at `ROMBaseMac + 0x7000` / `ROMBaseMac + 0x7100` (poked directly
-through `Host_Mem_Base`, since `WriteMacInt16` silently drops ROM writes)
-**hang** — same failure shape as live boot (`opcode 7100 at 0000fffc`
-looping forever). Nothing else differs between the two tests. This is the
-one variable left unexplained: something in Emu68's translator behaves
-differently when the executing PC is in ROM range (`0x40800000`+) versus
-RAM range (`0x00000000`-ish), for this specific `(d8,PC,Xn.L)` JMP. Not
-yet root-caused further — the next step is finding what in the translator
-branches on absolute address range (ICache hashing? a ROM/RAM fast-path?)
-rather than treating all addresses uniformly for PC-relative arithmetic.
+A live, non-intrusive register read right after the block executes (same
+safe technique as above — plain C++ `printf` reading `__m68k_state` after
+`emu68_call_jit_block()` returns, no JIT-internal instrumentation) shows
+exactly which registers come out wrong:
 
-### Fast reproduction
-
-`BasiliskII/Musashi/test_integration.cpp`, run manually (not wired into
-the automatic suite — see below for why):
-
-```sh
-cd BasiliskII/Musashi
-make test_integration
-JMP_TABLE_ROM=1 ./test_integration    # hangs: reproduces the bug (Ctrl-C or timeout)
-JMP_TABLE_MANUAL=1 ./test_integration # passes: same bytes at a RAM address
+```
+before: pc=0x408000BA SR=0x2700 A5=0x00000000 A7=0x00010000
+after:  PC=0x0000B1C2 SR=0x2700 A5=0x0000B190 A6=0x0000003C A7=0x0000FFD0
 ```
 
-Runs in well under a second (no SDL, no real ROM, no full boot) versus
-minutes to reproduce live. `JMP_TABLE_ROM=1` **hangs** while the bug is
-open — always run it with a wall-clock timeout, e.g.
-`timeout 10 env JMP_TABLE_ROM=1 ./test_integration` (or the
-background-process-plus-`kill` pattern if your `timeout` isn't GNU
-coreutils' version).
+`A7` is correct (both `MOVEM.L` predecrements landed: `0x10000 - 0x30 =
+0xFFD0`). `A5` — set via `LEA $B190.L,A5`, **absolute** addressing, no
+dependency on the current PC — is correct. `A6` — set via `LEA
+($C,PC),A6`, PC-*relative* — and the final `JMP (d8,PC,A5.L)` target are
+both wrong in the identical shape: the ROM-base component is missing,
+leaving a small value close to what the instruction's own displacement
+would contribute alone. **This confirms the bug is specifically in
+PC-relative addressing during this block's execution — absolute
+addressing is unaffected — and it is not an artifact of any instrumentation.**
+
+### Isolated reproduction attempts: all failed to reproduce it (important negative result)
+
+Multiple attempts to reproduce this in `BasiliskII/Musashi/test_integration.cpp`
+via `Execute68k()`, matching the real block with increasing fidelity, all
+**passed cleanly** (including via `emu68`):
+
+- The exact 4 core instructions (`MOVEM.L`/`LEA`/`MOVEM.L`/`LEA`/`LEA`/`JMP`)
+  at a RAM scratch address.
+- The same, preceded by a real `Execute68k()` call executing the actual
+  boot lead-in (`RESET` EmulOp + `JMP`), to test whether prior JIT activity
+  mattered.
+- The same, at a genuine ROM address (`ROMBaseMac + 0x7000`) written
+  directly through `Host_Mem_Base` (`WriteMacInt16` drops ROM writes).
+- The same, with the block's exact instruction count restored — **16 `NOP`s**
+  between the first `LEA` and the second `MOVEM.L`, exactly matching the
+  real ROM bytes, which earlier isolated attempts had omitted.
+
+Two of these "reproductions" early on were actually bugs in the test
+itself, not the emulator, each initially mistaken for confirmation:
+
+1. An off-by-2 error deriving the `JMP`'s jump-table immediate (used
+   `ext_word_addr = jmp_opcode_addr + 2 + 2` instead of `+ 2`), which
+   produced a wrong-but-plausible-looking failure at *any* address,
+   including RAM ones this bug should never affect. This is what
+   originally looked like "ROM vs RAM is the deciding factor" — it
+   wasn't; both pass once the formula is fixed.
+2. Reusing a `MOVEM.L` restore mask (`D0-D2/A0-A3`) that included the
+   register used as the test's own result probe, so the probe's write
+   was immediately overwritten by the very next instruction.
+
+**Net effect: no isolated repro currently reproduces the live-boot
+failure.** Every difference tried between the isolated tests and live
+boot (RAM vs ROM address, cold vs warmed-up JIT, with vs without the real
+boot lead-in, NOP count) has been closed without reproducing it, which
+means the real trigger is still an open question. The one structural
+difference **not yet tested**: all isolated attempts drive execution
+through `Execute68k()` (`emu68_execute_68k()` in `emu68_glue.cpp`, a
+nested call with its own `PushReturnStack()`/`memory_guard_enter()`
+scope), never through the actual boot loop (`emu68_start()`'s
+`while (!quit) { emu68_run_jit_slice(50000); }`). Both ultimately call
+the same `emu68_run_jit_slice()` / `emu68_call_jit_block()` and both sync
+through `__m68k_state` the same way, so this is a weak lead, not a
+strong one — but it's the only remaining untested difference between
+"isolated harness" and "live boot" found so far.
 
 ### Test suite additions
 
 - `test_movem_lea_pc_tracking()` — wired into `test_all_cpu_engines()` for
-  every engine. Passes today (it doesn't include the real `JMP`, by
-  design — see the comment above `test_movem_lea_jmp_table_dispatch()` in
-  the source). Kept as permanent regression coverage for the `MOVEM.L`
-  and `(d16,PC)` `LEA` codegen this bug sits next to.
+  every engine. Passes on all of them (it omits the real `JMP`, by design
+  — see the comment above `test_movem_lea_jmp_table_dispatch()` in the
+  source). Kept as permanent regression coverage for the `MOVEM.L` and
+  `(d16,PC)` `LEA` codegen this bug sits next to.
 - `test_movem_lea_jmp_table_dispatch()` — the full sequence including the
-  real `JMP`, at a RAM address. Passes today. Reachable via
-  `JMP_TABLE_MANUAL=1`.
-- The ROM-range variant of the same test lives inline in `main()` behind
-  `JMP_TABLE_ROM=1` (not a named/registered test function — it's a
-  hang-on-failure repro, not something `test_all_cpu_engines()` can run
-  safely). **Once the underlying bug is fixed, promote this into a proper
-  `test_*()` function wired into the automatic suite** (or add a
-  cycle-budget escape hatch to `Execute68k()`/`emu68_run_jit_slice()`
-  first, if you want it in CI before the bug is fixed).
+  real `JMP`, at a RAM address. Passes on all engines today. Reachable via
+  `JMP_TABLE_MANUAL=1 ./test_integration`.
+- A parameterized variant (address, NOP count, jump-table distance, ROM
+  vs RAM, direct-poke vs `WriteMacInt16`) lives inline in `main()` behind
+  `JMP_TABLE_ROM=1` — this is the tool that was used to rule out every
+  variable above. It currently **passes in every configuration tried**,
+  i.e. it does not reproduce the bug; it's kept as a ready-made harness
+  for whoever picks this up next, not as a failing regression test. See
+  the source comment above it (search `JMP_TABLE_ROM`) for the env vars:
+  `JMP_TABLE_ADDR`, `JMP_TABLE_DIST`, `JMP_TABLE_NOPS`, `JMP_TABLE_SP`,
+  `JMP_TABLE_WMI`.
 
 ---
 
