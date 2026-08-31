@@ -394,44 +394,163 @@ trustworthy at a `SAVE_CPU_STATE()` boundary (trap/EmulOp entry); they
 are not a live view of the register during straight-line interpretation.**
 
 So `A1` genuinely does become `0x00002000` — not a diagnostic artifact.
-Traced *how* one step further: `jsr_dynamic` (`runtime/syn68k.c`, `CASE
-(0x00B4)`'s neighbor) doesn't read `A1` directly either — it reads
-`cpu_state.amode_p`, a separate, single, **global** scratch field that a
-prior "compute effective address" pseudo-op populates ahead of it. For
-plain `(A1)` addressing (68k mode 2/3) that's pseudo-op `0x0005`
-(`AMODE_2_3` macro): `cpu_state.amode_p = CLEAN(a1.ul.n)` — using the
-live local variable, correctly. The mechanism itself looks correct on
-inspection. What's now the open question: `cpu_state.amode_p` is a
-**single shared field with no save/restore around it** — unlike the
-general registers, it isn't part of `SAVE_CPU_STATE()`/`LOAD_CPU_STATE()`
-at all. If *any* interrupt or EmulOp dispatch fires in the narrow window
-between this block's `0x0005` amode-compute pseudo-op and `jsr_dynamic`
-consuming it, and that handler's own execution (or the C++ glue's
-`EM_AREG`-style register pokes) touches `cpu_state.regs[9]`/`amode_p` in
-any way, `jsr_dynamic` would use the wrong value with no trace of it in
-the guest ROM's own instruction stream — explaining why nothing in the
-static disassembly of `0x4080FFBA` accounts for the bad jump. **Not
-confirmed** — the concrete next step is to check whether
-`CHECK_FOR_INTERRUPT()` (`syn68k_header.h`) or any EmulOp path can run
-between those two specific pseudo-ops for this instruction, and whether
-`cpu_state.amode_p` needs to become part of the state saved/restored
-around trap and interrupt dispatch (it currently isn't, in either
-upstream or the CockatriceIII fork).
+That conclusion is now **retracted**; see below. It led to a theory that
+`jsr_dynamic` reads a global, un-saved `cpu_state.amode_p` scratch field
+that could be clobbered by a nested trap/interrupt firing between the
+`0x0005` amode-compute pseudo-op and `jsr_dynamic` consuming it.
+
+### The `amode_p`/`jsr_dynamic` theory was wrong -- ruled out with hard evidence
+
+This session (a later one) built proper instrumentation instead of
+reasoning from one-off snapshots, and it disproves the theory outright:
+
+1. **No `CHECK_FOR_INTERRUPT()` sits between an amode-compute pseudo-op
+   and its consumer.** Read every `CHECK_FOR_INTERRUPT` call site in
+   `syn68k_header.h`/`syn68k.c`: they only appear after backward-branch
+   pseudo-ops (the "ctm fix" mentioned in a comment in
+   `include/syn68k_private.h` around `SYNCHRONOUS_INTERRUPTS`), not after
+   `AMODE_2_3` or before `jsr_dynamic`. For one 68k instruction like
+   `jsr (A1)`, its amode-compute and `jsr_dynamic` pseudo-ops are a fixed,
+   back-to-back pair with no dispatch-loop boundary an interrupt could
+   land on in between.
+2. **Built a real diagnostic**, not a one-off read: a durable, unified
+   ring buffer (`runtime/hash.c`: `s_recent_event_kind/code/value[64]` +
+   index) that records, in true chronological order, every `AMODE_2_3`
+   firing (with the *live local* register value, not a stale
+   `cpu_state.regs[]` snapshot) and every `code_lookup()` call (hit or
+   miss -- unlike the pre-existing `s_recent_syn68k_pcs`, which only
+   updates on a hash-table *miss*, i.e. a block's first compile, and so
+   silently skips most real control transfers). Both are wired into
+   `code_lookup()` and the `AMODE_2_3` macro in `runtime/syn68k_header.h`
+   (real source, not generated -- survives a `syn68k.c` regen).
+3. **Result: `jsr_dynamic` (case `0x0585`) never once fires with
+   `amode_p` anywhere near `0x00002000`.** Confirmed two independent
+   ways: (a) the unified event ring shows zero `AMODE_2_3` case
+   `0x0004`-`0x000B` events anywhere between entering the `4080FFBA`
+   block and the crash-causing `code_lookup(00002000)`; (b) a direct,
+   temporary probe placed inside `jsr_dynamic`'s case body itself (in the
+   generated `syn68k.c`, reverted after use) logged every real firing of
+   that case for an entire boot run and never once saw a low/suspicious
+   `amode_p`. The `jsr (A1)` at `0x4080FFF8` is not the culprit.
+
+### Finding the real call site: `code_lookup()`'s caller, via `__builtin_return_address`
+
+`code_lookup()` (`syn68k_header.h`) is a single chokepoint called from
+~20 distinct textual sites across the generated interpreter (every
+dynamic jsr/jmp/rts/trap-return path). Tagged each ring-buffer entry with
+`__builtin_return_address(0)` to identify *which* call site produced the
+`0x00002000` lookup. Two pitfalls along the way, both worth remembering:
+
+- At `-O2`, `code_lookup` is `static inline` and gets its callers'
+  "cold path" code folded/outlined by the optimizer, so many textually
+  different call sites collapse onto one shared return address --
+  `atos` then reports a bogus, unrelated symbol (e.g. `d68851_pdbcc`,
+  a PMMU opcode handler that has nothing to do with any of this). Fixed
+  by marking `code_lookup` `__attribute__((noinline))` and building
+  `syn68k.c` at `-O0 -g` for one diagnostic pass (`clang ... -O0 -g -c
+  ../syn68k/runtime/syn68k.c`, bypassing the Makefile's `-O2` just for
+  that one object file, then reverted).
+- Raw `__builtin_return_address` values are meaningless across runs on
+  macOS: the executable is ASLR-slid at load. Fixed by also printing
+  `(void*)&syn68k_illg_handler` (a stable, named, externally-visible
+  function in the same image) at crash time, then computing
+  `slide = runtime_addr(syn68k_illg_handler) - static_addr(syn68k_illg_handler)`
+  (`nm`/`atos` for the static side) and subtracting it from the captured
+  return addresses before symbolizing.
+
+With both fixed, `atos -o CockatriceIII -l 0x100000000 <adjusted addr>`
+resolved the real call site precisely to **`runtime/syn68k.c:50488`,
+inside `rts` (case `0x0730`)** -- specifically its cache-miss fallback:
+
+```c
+CASE (0x0730)
+  CASE_PREAMBLE ("rts", ...)
+  (tmpul1 = READUL_UNSWAPPED (ADDRESS_REGISTER_UL (7))) ;   /* pop return addr from A7 */
+  ((INC_VAR (ADDRESS_REGISTER_UL (7), 4))) ;
+  (ix = cpu_state.jsr_stack_byte_index) ;
+  (j = (jsr_stack_elt_t *)((char *)&cpu_state.jsr_stack + ix)) ;
+  if ((j->tag == tmpul1)) { code = j->code ; ...}          /* fast-path cache hit */
+  else { code = code_lookup (SWAPUL_IFLE (tmpul1)) ; }      /* cache miss: use popped value */
+```
+
+`rts` pops a 32-bit return address off the real 68k stack at `A7` and
+either takes a small direct-mapped cache (`cpu_state.jsr_stack`, keyed by
+`tag == popped value`) or falls back to a full `code_lookup()` on
+whatever was actually in memory. (Aside, ruled out: `jsr_dynamic` never
+populates this cache at all -- only `jsr_common`'s callers do -- so a
+dynamic `jsr (A1)` is *always* a guaranteed cache miss on its matching
+`rts`. That's expected behavior, not a bug, since the miss path is
+correct as long as the popped value is correct.)
+
+Added a one-off temporary probe directly in the `rts` case body
+(generated file, reverted after use) printing the popped value and `A7`
+whenever the popped value looked suspicious (`< 0x10000`). Confirmed on
+a live boot:
+
+```
+[RTS-TRACE] popped_retaddr=0x00002000 a7_before_pop=0x02006E5E a0=0x4000000C a1=0x00000050 a4=0x00012E46 a5=0x0200FD90 a6=0x00012E40
+[CPU-ILLEGAL] syn68k: Forwarding illegal opcode 0x7C7C ... at PC=<wild ASLR-looking address> ...
+```
+
+**This is the real mechanism**, and it fully replaces the `amode_p`
+theory: some `rts` pops the literal 32-bit value `0x00002000` off the
+guest stack at `A7=0x02006E5E` and jumps there as if it were a return
+address. `0x00002000` is exactly `CPU_ENGINE_BOOT_SP` -- the *initial*
+68k stack pointer at reset -- not a plausible mid-boot ROM address, and
+`A7` itself (`0x02006E5E`) is a perfectly ordinary, plausible RAM stack
+address, not corrupted. That combination points at a **stack depth
+mismatch** (an unbalanced push/pop somewhere upstream in the call chain
+-- one `bsr`/`jsr` fewer than the matching `rts`s, or a stray extra
+`ADDQ`/`MOVEM`/etc. adjustment to `A7`) rather than at `A7` itself being
+wrong or at anything single-instruction-local to the `rts` site. Given
+`0x00002000` is specifically the *boot-time* SP value, the most likely
+explanation is that `A7` has drifted (grown) far enough, due to that
+earlier imbalance, to reach back up into stack memory that was only ever
+written once, very early in boot (e.g. as part of the first-ever
+exception/context-save), and is now being misread as a live return
+address left over from a much later, unrelated call.
 
 ### Status
 
-Not fixed, but the mechanism is now understood precisely: `jsr_dynamic`
-reads a global, un-saved `cpu_state.amode_p` scratch field rather than
-the register directly, and that field has no protection against being
-clobbered by a concurrent trap/interrupt dispatch. All diagnostics added
-this session and kept (block-entry history, the full-block disassembly
-above, and the low-memory global reads) are permanent and low-cost (only
-active on the illegal-opcode fault path) — run live boot with
-`cpu_emulator syn68k`, watch for `[CPU-ILLEGAL] syn68k:`, and this
-context will already be in the log. The `hash.c` `A1`-watch has been
-reverted (it answered its question and, per the diagnostic-read pitfall
-above, isn't reliable for watching this specific field anyway). Next
-step: confirm whether `cpu_state.amode_p` (and `reversed_amode_p`) can
-be clobbered by a nested trap/interrupt dispatch between the amode-compute
-pseudo-op and its consumer, and if so, save/restore them the same way
-the general registers already are.
+Not fixed. The `amode_p`/interrupt-clobber theory from earlier this
+document is retracted -- disproved by direct instrumentation, not just
+superseded. The real, confirmed mechanism is a 68k-level **call stack
+depth mismatch**: some `rts` during boot pops a stale, boot-time-SP-like
+value (`0x00002000`) rather than a real return address, from an
+otherwise-ordinary-looking `A7`. This points at an unbalanced
+push/pop -- most likely in some *other* opcode's implementation (a
+`MOVEM`/`LINK`/`UNLK`/stack-adjustment bug that over- or under-shoots by
+a few bytes over many calls) rather than in `rts`/`jsr` themselves, which
+were exhaustively traced this session and appear mechanically correct.
+
+Diagnostics kept, all in real (non-generated) source so they survive a
+`syn68k.c` regen:
+- `runtime/hash.c` / `runtime/syn68k_header.h`: the unified event ring
+  (`s_recent_event_kind/code/value[64]` + index) recording every
+  `AMODE_2_3` firing and every `code_lookup()` call, chronologically.
+- `syn68k_glue.cpp`: prints the ring, plus a `ref_symbol
+  syn68k_illg_handler=<addr>` line so a future session can ASLR-adjust
+  any `__builtin_return_address` captures the same way (see above).
+- Block-entry history, low-memory globals, and block disassembly from
+  earlier sessions, unchanged.
+
+Reverted (one-off, not kept): the `jsr_dynamic`-body probe, the `rts`-body
+probe, the `-O0 -g` one-off build of `syn68k.c`, and an abandoned
+narrow-address-window dispatch-case tracer (`syn68k_trace_dispatch`) that
+was pulled because inserting *any* code directly between `while(1) {` and
+`switch(...) {` in `syn68k_header.h`'s `main_loop` -- even a single
+no-op-looking function call -- corrupts `syngen`'s code generation
+(produces truncated/malformed `CASE_PREAMBLE` output far later in the
+generated file, e.g. around `addiw_imm_ind`). That exact insertion point
+is off-limits for future instrumentation; route around it via a real
+out-of-line function called from *inside* a specific opcode's case body
+instead, as the working instrumentation in this section does.
+
+**Concrete next step:** find the specific unbalanced push/pop. Candidate
+approach: extend the `rts` fast-path-miss probe (reverted, but trivial to
+re-add) to also log every `bsr`/`jsr`/`rts`'s `A7` value across a full
+boot, and diff the push/pop depth against what the 68k call graph should
+produce -- or, more directly, track `A7`'s value on every `AMODE_4`
+predecrement/`AMODE_2_3` case 0x000B (a7-relative) firing plus every
+explicit `ADDQ/SUBQ #n,A7` and `LINK`/`UNLK`, looking for the first point
+where cumulative adjustment stops matching a balanced push/pop count.
