@@ -1,3 +1,11 @@
+CPU engines (BasiliskII/tests cpu_tests):
+- syn68k: fix opcode battery failures — abcd, divs, divu, move_usp, move_xxx_flags,
+  sbcd, divs_long; fix hangs in btst, chk2, cmp2, illegal-0x773F handler loop
+- DONE emu68: opcode battery 109/109 — see docs/cpu-engine-opcode-fixes.md
+  (InsnTable gaps, 0x7100/EmulOp in JIT, Execute68k interpreter slice, cache invalidate)
+- DONE UAE (amiberry): opcode battery 358/358 — see docs/cpu-engine-opcode-fixes.md
+  (banked get_di*, ABCD/SBCD carry, CHK2/CMP2 wrapped-range + byte bounds, harness STOP patch)
+
 Bugs:
 - System 7.1 with Quadra900 ModelID (1MB ROM): 0x108 gets strange value
 - Strange things happen when the Mac ROM is lower in memory than the RAM

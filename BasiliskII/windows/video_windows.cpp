@@ -42,7 +42,6 @@ void VideoInterrupt(void)
 
 bool VideoInit(bool classic)
 {
-	unsigned int flags;
 	if(classic)
 		classic_mode=true;
 
@@ -68,28 +67,20 @@ bool VideoInit(bool classic)
 	//set_video_monitor(width, height, img->bytes_per_line, img->bitmap_bit_order == LSBFirst);
 	set_video_monitor(width, height, width);
 
-	#if !REAL_ADDRESSING
-	// Set variables for UAE memory mapping
-	the_buffer = (uint8 *)malloc(1024*1024*2);	//just grab some ram
+	if (!Host_Mem_Base) {
+		printf("VID: unified 4GB Host_Mem_Base window is not allocated\n");
+		return false;
+	}
+	the_buffer = Host_Mem_Base + MacFrameBaseMac;
 	MacFrameBaseHost = the_buffer;
 	MacFrameSize = VideoMonitor.bytes_per_row * VideoMonitor.y;
-	#endif
 
-#if 0
-	flags = (SDL_SWSURFACE|SDL_HWPALETTE);
-
-	if (!(screen = SDL_SetVideoMode(width, height, 8, flags)))
-        printf("VID: Couldn't set video mode: %s\n", SDL_GetError());
-	SDL_WM_SetCaption("Basilisk II","Basilisk II");
-#endif
-	//xvideo_set_palette();
-	// No special frame buffer in Classic mode (frame buffer is in Mac RAM)
 	if (classic)
 		MacFrameLayout = FLAYOUT_NONE;
 
-	
+	InitFrameBufferMapping();
 
-return true;
+	return true;
 }
 
 

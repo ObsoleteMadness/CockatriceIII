@@ -104,11 +104,11 @@ int SDL_main(int argc, char *argv[])
 		RAMSize = 1024*1024;
 	}
 
-	// Create areas for Mac RAM and ROM
-	RAMBaseHost = new uint8[RAMSize];
-	ROMBaseHost = new uint8[0x100000];
-
-	memset(ROMBaseHost,0xAA,0x100000);
+	// Initialize unified 4GB flat memory window
+	RAMBaseMac = 0;
+	ROMBaseMac = 0x40800000;
+	memory_init();
+	memset(ROMBaseHost, 0xAA, 0x100000);
 
 	// Get rom file path from preferences
 	const char *rom_path = PrefsFindString("rom");

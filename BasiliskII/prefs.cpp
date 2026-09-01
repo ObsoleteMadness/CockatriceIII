@@ -55,6 +55,11 @@ prefs_desc common_prefs_items[] = {
 	{"frameskip", TYPE_INT32, false},	// Number of frames to skip in refreshed video modes (video_*.cpp)
 	{"modelid", TYPE_INT32, false},		// Mac Model ID (Gestalt Model ID minus 6) (rom_patches.cpp)
 	{"cpu", TYPE_INT32, false},			// CPU type (0 = 68000, 1 = 68010 etc.) (main.cpp)
+	{"cpu_emulator", TYPE_STRING, false}, // CPU emulator backend (musashi | uae | emu68 | syn68k)
+	{"jit", TYPE_BOOLEAN, false},		// Enable JIT compilation
+	{"jitfpu", TYPE_BOOLEAN, false},	// Enable JIT for FPU instructions
+	{"jitcachesize", TYPE_INT32, false}, // JIT translation cache size in KB
+	{"emu68_jit_dump", TYPE_BOOLEAN, false}, // Dump each Emu68 translated AArch64 unit to stdout
 	{"fpu", TYPE_BOOLEAN, false},		// Enable FPU emulation (main.cpp)
 	{"nocdrom", TYPE_BOOLEAN, false},	// Don't install CD-ROM driver (cdrom.cpp/rom_patches.cpp)
 	{"nosound", TYPE_BOOLEAN, false},	// Don't enable sound output (audio_*.cpp)
@@ -100,6 +105,7 @@ void PrefsInit(void)
 	PrefsAddBool("jit", false);
 	PrefsAddBool("jitfpu", false);
 	PrefsAddInt32("jitcachesize", 2048);
+	PrefsAddBool("emu68_jit_dump", false);
 	PrefsAddBool("fpu", false);		// 68040LC
 	PrefsAddBool("nocdrom", false);
 	PrefsAddBool("nosound", false);

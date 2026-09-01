@@ -25,6 +25,7 @@
 #include "prefs.h"
 #include "user_strings.h"
 #include "menu_bar.h"
+#include "toolbox_traps.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -70,6 +71,8 @@ void MenuQueue_Post(const MenuCmd *cmd)
  */
 void MenuQueue_Drain(void)
 {
+    Toolbox_ProcessPendingMenuBarSync();
+
     while (s_tail != s_head) {
         MenuCmd cmd = s_queue[s_tail];
         __sync_synchronize();
@@ -129,6 +132,12 @@ void MenuQueue_Drain(void)
             MenuBar_UpdateAll();
             break;
 
+        case MENU_CMD_GUEST_MENU_SELECT:
+            printf("MenuQueue: Guest Menu Selected (MenuID=%d, ItemIndex=%d)\n", cmd.param, cmd.param2);
+            fflush(stdout);
+            Toolbox_DispatchGuestMenuSelect((int16)cmd.param, (int16)cmd.param2);
+            break;
+
         default:
             break;
         }
@@ -144,27 +153,37 @@ void MenuQueue_Reset(void)
  *  MenuAction_*  [UI thread — build and post commands]
  * ====================================================================== */
 
+void MenuAction_GuestMenuSelect(int menuID, int itemIndex)
+{
+    MenuCmd cmd;
+    cmd.type   = MENU_CMD_GUEST_MENU_SELECT;
+    cmd.param  = menuID;
+    cmd.param2 = itemIndex;
+    cmd.path[0] = '\0';
+    MenuQueue_Post(&cmd);
+}
+
 void MenuAction_SaveConfig(void)
 {
-    MenuCmd cmd = {MENU_CMD_SAVE_CONFIG, 0, ""};
+    MenuCmd cmd = {MENU_CMD_SAVE_CONFIG, 0, 0, ""};
     MenuQueue_Post(&cmd);
 }
 
 void MenuAction_ZapPRAM(void)
 {
-    MenuCmd cmd = {MENU_CMD_ZAP_PRAM, 0, ""};
+    MenuCmd cmd = {MENU_CMD_ZAP_PRAM, 0, 0, ""};
     MenuQueue_Post(&cmd);
 }
 
 void MenuAction_ResetMachine(void)
 {
-    MenuCmd cmd = {MENU_CMD_RESET, 0, ""};
+    MenuCmd cmd = {MENU_CMD_RESET, 0, 0, ""};
     MenuQueue_Post(&cmd);
 }
 
 void MenuAction_Shutdown(void)
 {
-    MenuCmd cmd = {MENU_CMD_SHUTDOWN, 0, ""};
+    MenuCmd cmd = {MENU_CMD_SHUTDOWN, 0, 0, ""};
     MenuQueue_Post(&cmd);
 }
 
@@ -216,8 +235,9 @@ void MenuAction_AttachSCSI(int id)
         return;
 
     MenuCmd cmd;
-    cmd.type  = MENU_CMD_ATTACH_SCSI;
-    cmd.param = id;
+    cmd.type   = MENU_CMD_ATTACH_SCSI;
+    cmd.param  = id;
+    cmd.param2 = 0;
     strncpy(cmd.path, path, MENU_CMD_PATH_MAX - 1);
     cmd.path[MENU_CMD_PATH_MAX - 1] = '\0';
     MenuQueue_Post(&cmd);
@@ -227,6 +247,6 @@ void MenuAction_DetachSCSI(int id)
 {
     if (id < 0 || id > 6)
         return;
-    MenuCmd cmd = {MENU_CMD_DETACH_SCSI, id, ""};
+    MenuCmd cmd = {MENU_CMD_DETACH_SCSI, id, 0, ""};
     MenuQueue_Post(&cmd);
 }

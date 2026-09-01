@@ -7,6 +7,8 @@
     Visit http://mamedev.org for licensing and usage restrictions.
 */
 
+extern void cockatrice_m68k_low_heap_fault(uint16 opcode, uint32 pc, const char *kind);
+
 /*
 	pmmu_translate_addr: perform 68851/68030-style PMMU address translation
 */
@@ -287,6 +289,7 @@ void m68881_mmu_ops(void)
 
 						default:
 							fprintf(stderr,"680x0: unknown PMOVE mode %x (modes %04x) (PC %x)\n", (modes>>13) & 0x7, modes, REG_PC);
+							cockatrice_m68k_low_heap_fault(m68ki_cpu.ir, ADDRESS_68K(REG_PC), "pmmu");
 							break;
 					}
 				}

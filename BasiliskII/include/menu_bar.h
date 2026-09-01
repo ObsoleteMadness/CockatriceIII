@@ -26,16 +26,18 @@ typedef enum {
     MENU_CMD_RESET        = 2,
     MENU_CMD_SHUTDOWN     = 3,
     MENU_CMD_ADD_FLOPPY   = 4,  /* path in cmd.path */
-    MENU_CMD_ATTACH_SCSI  = 5,  /* id in cmd.param, path in cmd.path */
-    MENU_CMD_DETACH_SCSI  = 6,  /* id in cmd.param */
-    MENU_CMD_SAVE_CONFIG  = 7,
+    MENU_CMD_ATTACH_SCSI       = 5,  /* id in cmd.param, path in cmd.path */
+    MENU_CMD_DETACH_SCSI       = 6,  /* id in cmd.param */
+    MENU_CMD_SAVE_CONFIG       = 7,
+    MENU_CMD_GUEST_MENU_SELECT = 8,  /* menuID in cmd.param, itemIndex in cmd.param2 */
 } MenuCmdType;
 
 #define MENU_CMD_PATH_MAX 1024
 
 typedef struct {
     MenuCmdType type;
-    int         param;                   /* scsi id, or 0 */
+    int         param;                   /* scsi id, or menuID */
+    int         param2;                  /* itemIndex, or 0 */
     char        path[MENU_CMD_PATH_MAX]; /* file path, or "" */
 } MenuCmd;
 
@@ -65,6 +67,7 @@ void MenuAction_ForcePoweroff(void);   /* calls exit() directly — safe from an
 void MenuAction_AddFloppy(void);
 void MenuAction_AttachSCSI(int id);
 void MenuAction_DetachSCSI(int id);
+void MenuAction_GuestMenuSelect(int menuID, int itemIndex);
 
 /* -------------------------------------------------------------------------
  *  Platform-specific menu bar initialization and updating

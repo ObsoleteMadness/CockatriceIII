@@ -272,6 +272,7 @@ void ADBKeyUp(int code)
 void ADBInterrupt(void)
 {
 	M68kRegisters r;
+	memset(&r, 0, sizeof(r));
 
 	// Return if ADB is not initialized
 	uint32 adb_base = ReadMacInt32(0xcf8);

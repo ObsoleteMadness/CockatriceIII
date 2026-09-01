@@ -1989,6 +1989,8 @@ static inline void m68ki_exception_1010(void)
 	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_1010] - CYC_INSTRUCTION[REG_IR]);
 }
 
+extern void cockatrice_m68k_low_heap_fault(uint16 opcode, uint32 pc, const char *kind);
+
 /* Exception for F-Line instructions */
 static inline void m68ki_exception_1111(void)
 {
@@ -1996,6 +1998,7 @@ static inline void m68ki_exception_1111(void)
 
 	printf("[CPU-LINEF] Unhandled Line-F Opcode 0x%04X at PC=0x%08X (PPC=0x%08X, SR=0x%04X, A7=0x%08X)\n",
 	       REG_IR, ADDRESS_68K(REG_PC), ADDRESS_68K(REG_PPC), m68ki_get_sr(), REG_A[7]);
+	cockatrice_m68k_low_heap_fault(REG_IR, ADDRESS_68K(REG_PC), "line-f");
 	fflush(stdout);
 
 	sr = m68ki_init_exception();

@@ -111,3 +111,45 @@ the artifacts from all targets are attached to a single GitHub Release.
 The workflow triggers on push to **any** branch (not just `main`), so pushing
 a feature/port branch like `osx-arm` runs the full build matrix without
 needing to merge first.
+
+## Multi-Engine 680x0 CPU Architecture
+
+Cockatrice III features a modular CPU engine abstraction layer (`CPUEngine`), allowing seamless switching between different 680x0 execution engines:
+
+```mermaid
+graph TD
+    A[Prefs / Configuration: cpu_emulator] --> B[CPUEngine Dispatcher: cpu_engine.cpp]
+    B -->|cpu_emulator musashi| C[Musashi 680x0 C Core 4.5+]
+    B -->|cpu_emulator syn68k| D[syn68k Dynamic Binary Translation Core]
+    B -->|cpu_emulator uae| E[Amiberry 680x0 interpreter + ARM64/x86-64 JIT]
+    B -->|cpu_emulator emu68| F[Emu68 AArch64 JIT Dynamic Translator]
+    
+    C --> G[Mac OS Memory Banking: RAMBaseHost / ROMBaseHost]
+    D --> G
+    E --> G
+    F --> H[Emu68 JIT Translation Pipeline]
+    
+    H --> I[Emu68 JIT Code Cache: MAP_JIT / s_jit_buffer]
+    I -->|Direct Native AArch64 Execution| G
+    
+    G --> J[EmulOp & Line-A Trap Hooks: 0x71xx / 0xAxxx]
+    J --> K[Peripheral Subsystems: SCSI / Video / Audio / Ethernet]
+```
+
+### Available CPU Engines
+
+1. **`musashi`** (Default): Portable, cycle-accurate C interpreter (Musashi 4.5+) supporting 68000, 68010, 68020, 68030, and 68040 emulation.
+2. **`syn68k`**: Executor/ARDI Dynamic Binary Translation (DBT) core generating synthetic opcodes and native translated blocks with address mapping for 64-bit hosts.
+3. **`uae`**: Amiberry 680x0 CPU (interpreter or ARM64/x86-64 JIT) with SoftFloat 68881/68882/68040 FPU.
+4. **`emu68`**: High-performance AArch64 Dynamic Binary Translation (JIT) compiler for Apple Silicon (ARM64), executing translated 680x0 blocks directly on host hardware with Darwin `MAP_JIT` memory protection.
+
+### Configuration
+
+Set the active CPU core in your `.basilisk_ii_prefs` / `BasiliskII_prefs` configuration file:
+
+```text
+cpu_emulator syn68k   # Options: musashi, syn68k, uae, emu68
+jit true              # Enable JIT compilation (UAE / Emu68)
+jitcachesize 8192     # Code cache size in KB (default: 8192 KB / 8 MB)
+```
+

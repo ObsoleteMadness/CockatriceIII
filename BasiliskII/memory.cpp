@@ -334,6 +334,28 @@ uint32 memory_guest_fault_addr(void)
 }
 
 /*
+ * Raises a guest access fault when software detects an unmapped address before
+ * dereferencing Host_Mem_Base (avoids host SIGSEGV outside the 4GB window).
+ *
+ * Arguments:
+ *   addr: 32-bit Macintosh address that would fault.
+ *
+ * Does not return when a memory_guard_enter() checkpoint is active.
+ */
+void memory_raise_guest_fault(uint32 addr)
+{
+	if (s_guard_depth <= 0)
+		return;
+
+	s_guest_fault_addr = addr;
+#ifdef _WIN32
+	longjmp(s_guard_jmp[s_guard_depth - 1], 1);
+#else
+	siglongjmp(s_guard_jmp[s_guard_depth - 1], 1);
+#endif
+}
+
+/*
  * Converts a host fault inside the 4GB window into a longjmp to the CPU loop.
  *
  * Arguments:
@@ -558,3 +580,4 @@ uint32 get_virtual_address(uint8 *addr)
 {
 	return Host2MacAddr(addr);
 }
+

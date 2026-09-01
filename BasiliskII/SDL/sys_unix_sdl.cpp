@@ -1005,7 +1005,7 @@ static void Sys_find_hfs_partition(file_handle *fh)
                 // Partition map found, Apple HFS partition?
                 if (strcmp((char *)(map + 48), "Apple_HFS") == 0) {
                         fh->start_byte = ntohl(((uint32 *)map)[2]) << 9;
-                        D(bug(" HFS partition found at %ld, %ld blocks\n", info->start_byte, ntohl(((uint32 *)map)[3])));
+                        D(bug(" HFS partition found at %ld, %ld blocks\n", fh->start_byte, ntohl(((uint32 *)map)[3])));
                         break;
                 }
         }
@@ -1021,10 +1021,8 @@ void QuitEmulator()
 	StopMainThreads();
 	// Exit all subsystems
 	ExitAll();
-	// Delete ROM area
-	delete[] ROMBaseHost;
-	// Delete RAM area
-	delete[] RAMBaseHost;
+	// RAM/ROM/FB live inside the 4GB Host_Mem_Base window, not separate new[] heaps
+	memory_exit();
 	// Exit system routines
 	SysExit();
 	// Exit preferences

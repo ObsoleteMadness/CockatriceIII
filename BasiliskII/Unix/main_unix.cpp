@@ -26,6 +26,7 @@
 #include <signal.h>
 
 #include "cpu_emulation.h"
+#include "cpu_engine.h"
 #include "sys.h"
 #include "rom_patches.h"
 #include "xpram.h"
@@ -213,8 +214,11 @@ int main(int argc, char **argv)
     for (int i=0; i<0x80000; i+=4096)
         mmap(good_address_map + i + 0x00400000, 4096, PROT_READ, MAP_FIXED | MAP_PRIVATE, good_address_fd, 0);
 #else
-	RAMBaseHost = new uint8[RAMSize];
-	ROMBaseHost = new uint8[0x100000];
+	// Initialize unified 4GB flat memory window
+	RAMBaseMac = 0;
+	ROMBaseMac = 0x40800000;
+	memory_init();
+	memset(ROMBaseHost, 0xAA, 0x100000);
 #endif
 
 	// Get rom file path from preferences
@@ -344,11 +348,8 @@ void QuitEmulator(void)
 	// Deinitialize everything
 	ExitAll();
 
-	// Delete ROM area
-	delete[] ROMBaseHost;
-
-	// Delete RAM area
-	delete[] RAMBaseHost;
+	// RAM/ROM/FB live inside the 4GB Host_Mem_Base window, not separate new[] heaps
+	memory_exit();
 
 	// Exit system routines
 	SysExit();
@@ -372,6 +373,7 @@ void QuitEmulator(void)
 #if EMULATED_68K
 void FlushCodeCache(void *start, uint32 size)
 {
+	cpu_engine_invalidate_code(Host2MacAddr((uint8 *)start), size);
 }
 #endif
 

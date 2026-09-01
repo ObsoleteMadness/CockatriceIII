@@ -215,7 +215,7 @@ int16 RmvTime(uint32 tm)
 		WriteMacInt32(tm + tmCount, timer_host2mac_time(remaining));
 	} else
 		WriteMacInt32(tm + tmCount, 0);
-	D(bug(" tmCount %ld\n", ReadMacInt32(tm + tmCount)));
+	D(bug(" tmCount %d\n", (int)ReadMacInt32(tm + tmCount)));
 
 	// Free descriptor
 	free_desc(i);
@@ -229,7 +229,7 @@ int16 RmvTime(uint32 tm)
 
 int16 PrimeTime(uint32 tm, int32 time)
 {
-	D(bug("PrimeTime %08lx, time %ld\n", tm, time));
+	D(bug("PrimeTime %08lx, time %d\n", tm, (int)time));
 
 	// Find descriptor
 	int i = find_desc(tm);

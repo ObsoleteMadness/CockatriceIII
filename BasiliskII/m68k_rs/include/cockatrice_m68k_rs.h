@@ -1,0 +1,103 @@
+/*
+ *  cockatrice_m68k_rs.h - C ABI for the m68k-rs CPU engine shim
+ *
+ *  CockatriceIII (C) 2026
+ */
+
+#ifndef COCKATRICE_M68K_RS_H
+#define COCKATRICE_M68K_RS_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct M68kRsCpu M68kRsCpu;
+
+typedef enum M68kRsReg {
+	M68K_RS_REG_D0 = 0,
+	M68K_RS_REG_D1,
+	M68K_RS_REG_D2,
+	M68K_RS_REG_D3,
+	M68K_RS_REG_D4,
+	M68K_RS_REG_D5,
+	M68K_RS_REG_D6,
+	M68K_RS_REG_D7,
+	M68K_RS_REG_A0,
+	M68K_RS_REG_A1,
+	M68K_RS_REG_A2,
+	M68K_RS_REG_A3,
+	M68K_RS_REG_A4,
+	M68K_RS_REG_A5,
+	M68K_RS_REG_A6,
+	M68K_RS_REG_A7,
+	M68K_RS_REG_PC,
+	M68K_RS_REG_SR,
+	M68K_RS_REG_PPC
+} M68kRsReg;
+
+typedef enum M68kRsCpuType {
+	M68K_RS_CPU_68000 = 0,
+	M68K_RS_CPU_68010,
+	M68K_RS_CPU_68020,
+	M68K_RS_CPU_68030,
+	M68K_RS_CPU_68040
+} M68kRsCpuType;
+
+typedef enum M68kRsRunExit {
+	M68K_RS_EXIT_BUDGET = 0,
+	M68K_RS_EXIT_STOPPED,
+	M68K_RS_EXIT_BOUNDARY,
+	M68K_RS_EXIT_TRAP_UNHANDLED,
+	M68K_RS_EXIT_HALTED
+} M68kRsRunExit;
+
+typedef struct M68kRsRegs {
+	uint32_t d[8];
+	uint32_t a[8];
+	uint16_t sr;
+} M68kRsRegs;
+
+typedef struct M68kRsHostCallbacks {
+	uint8_t (*read_byte)(void *ctx, uint32_t addr);
+	uint16_t (*read_word)(void *ctx, uint32_t addr);
+	uint32_t (*read_long)(void *ctx, uint32_t addr);
+	void (*write_byte)(void *ctx, uint32_t addr, uint8_t val);
+	void (*write_word)(void *ctx, uint32_t addr, uint16_t val);
+	void (*write_long)(void *ctx, uint32_t addr, uint32_t val);
+	int (*handle_illegal)(void *ctx, uint16_t opcode, M68kRsRegs *io_regs);
+	int (*handle_aline)(void *ctx, uint16_t opcode, M68kRsRegs *io_regs);
+	void (*boundary_hook)(void *ctx, uint32_t cycles);
+	int (*get_irq)(void *ctx);
+	void *host_ctx;
+} M68kRsHostCallbacks;
+
+typedef struct M68kRsRunResult {
+	M68kRsRunExit exit;
+	uint32_t cycles;
+	uint32_t instructions;
+	uint16_t trap_opcode;
+} M68kRsRunResult;
+
+M68kRsCpu *m68k_rs_create(const M68kRsHostCallbacks *callbacks);
+void m68k_rs_destroy(M68kRsCpu *cpu);
+
+int m68k_rs_init(M68kRsCpu *cpu, M68kRsCpuType cpu_type);
+void m68k_rs_pulse_reset(M68kRsCpu *cpu);
+void m68k_rs_invalidate_prefetch(M68kRsCpu *cpu);
+
+uint32_t m68k_rs_get_reg(const M68kRsCpu *cpu, M68kRsReg reg);
+void m68k_rs_set_reg(M68kRsCpu *cpu, M68kRsReg reg, uint32_t value);
+
+void m68k_rs_set_irq(M68kRsCpu *cpu, int level);
+void m68k_rs_request_stop(M68kRsCpu *cpu);
+
+M68kRsRunResult m68k_rs_run_cycles(M68kRsCpu *cpu, int32_t cycle_budget);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* COCKATRICE_M68K_RS_H */

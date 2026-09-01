@@ -293,7 +293,7 @@ fi
 
 dnl Musashi 680x0 CPU sources.
 CPUINCLUDES="-I../Musashi -I../Musashi/softfloat"
-CPUSRCS="../Musashi/basilisk_glue.cpp ../Musashi/memory_musashi.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c"
+CPUSRCS="../memory.cpp ../Musashi/basilisk_glue.cpp ../Musashi/memory_musashi.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c"
 
 dnl Generate Makefile.
 AC_SUBST(DEFINES)

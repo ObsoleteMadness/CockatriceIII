@@ -88,7 +88,7 @@ enum {
 	//M68K_EMUL_OP_SOUNDIN_CLOSE,
 	//M68K_EMUL_OP_DEBUGUTIL,
 	M68K_EMUL_OP_IDLE_TIME,
-
+	M68K_EMUL_OP_TOOLBOX_DISPATCH,	// 0x7130 - Modular Toolbox and OS trap dispatch
 
 	M68K_EMUL_OP_MAX				// highest number
 };

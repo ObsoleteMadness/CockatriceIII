@@ -1,0 +1,12 @@
+[package]
+name = "cockatrice_m68k_rs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+name = "cockatrice_m68k_rs"
+
+[dependencies]
+m68k = { path = "../vendor/m68k-rs" }

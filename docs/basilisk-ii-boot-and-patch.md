@@ -361,7 +361,8 @@ Typical 32-bit sequence (function names = `EmulOp` cases):
 
 If a JIT clobbers A3 (or other GPRs) across this trampoline, the continuation
 dies on `MOVE.L (A3)`. Regression: `test_rom_boot_after_reset()` in
-`BasiliskII/Musashi/test_integration.cpp`.
+[`BasiliskII/tests/cpu/cpu_regressions.cpp`](../BasiliskII/tests/cpu/cpu_regressions.cpp)
+and `basilisk_patches_test`.
 
 ### 10.2 Memory manager
 

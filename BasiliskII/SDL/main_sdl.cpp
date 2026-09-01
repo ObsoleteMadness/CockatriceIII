@@ -26,6 +26,7 @@
 
 
 #include "cpu_emulation.h"
+#include "cpu_engine.h"
 #include "sys.h"
 #include "rom_patches.h"
 #include "xpram.h"
@@ -81,12 +82,90 @@ void fixstdio(void);
 extern void slirp_tic(void);	//to keep slirp happy
 
 
+#include <signal.h>
+#include <execinfo.h>
+#include <string.h>
+
+#if defined(__APPLE__) && defined(__arm64__)
+extern "C" void emu68_jit_on_crash(uintptr_t pc, uintptr_t lr);
+extern "C" int emu68_hosted_try_skip_el1(uintptr_t pc, uint32_t insn);
+#endif
+
+static void crash_handler(int sig, siginfo_t *info, void *ucontext)
+{
+	printf("\n*** CRASH SIGNAL %d (%s) at faulting address %p ***\n", sig, sys_siglist[sig], info->si_addr);
+#if defined(__APPLE__) && defined(__arm64__)
+	ucontext_t *uc = (ucontext_t *)ucontext;
+	if (uc) {
+		uintptr_t pc = (uintptr_t)uc->uc_mcontext->__ss.__pc;
+		uintptr_t lr = (uintptr_t)uc->uc_mcontext->__ss.__lr;
+		if (sig == SIGILL) {
+			uint32_t insn = 0;
+			memcpy(&insn, (const void *)pc, sizeof(insn));
+			if (emu68_hosted_try_skip_el1(pc, insn)) {
+				printf("[Emu68] skipped leftover EL1 encoding 0x%08x at PC 0x%llx (not a substitute for clean codegen)\n",
+				       insn, (unsigned long long)pc);
+				fflush(stdout);
+				uc->uc_mcontext->__ss.__pc = pc + 4;
+				return;
+			}
+		}
+		printf("  PC: 0x%llx, LR: 0x%llx, SP: 0x%llx\n",
+		       (unsigned long long)pc,
+		       (unsigned long long)lr,
+		       uc->uc_mcontext->__ss.__sp);
+		for (int i = 0; i < 30; i += 2) {
+			printf("  x%02d: 0x%016llx  x%02d: 0x%016llx\n",
+			       i, uc->uc_mcontext->__ss.__x[i],
+			       i+1, uc->uc_mcontext->__ss.__x[i+1]);
+		}
+
+		// Report which GPRs hold the faulting address so a NULL/unmapped load is obvious
+		uintptr_t fault = (uintptr_t)info->si_addr;
+		for (int i = 0; i < 29; i++) {
+			if (uc->uc_mcontext->__ss.__x[i] == (uint64_t)fault)
+				printf("  x%02d matches faulting address\n", i);
+		}
+
+		// Emu68 pins 680x0 SR in v19.h[5] and the 4GB host memory window in v22.d[0]
+		const uint16_t *sr_lanes = (const uint16_t *)&uc->uc_mcontext->__ns.__v[19];
+		const uint64_t *host_mem = (const uint64_t *)&uc->uc_mcontext->__ns.__v[22];
+		printf("  v19.h[5] (JIT SR image)=0x%04x  v22.d[0] (HOST_MEM_BASE)=0x%llx\n",
+		       sr_lanes[5], (unsigned long long)host_mem[0]);
+
+		emu68_jit_on_crash((uintptr_t)uc->uc_mcontext->__ss.__pc,
+		                   (uintptr_t)uc->uc_mcontext->__ss.__lr);
+	}
+#else
+	(void)ucontext;
+#endif
+	void *callstack[128];
+	int frames = backtrace(callstack, 128);
+	backtrace_symbols_fd(callstack, frames, 1);
+	fflush(stdout);
+	_exit(sig);
+}
+
+static void install_crash_handler(void)
+{
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_sigaction = crash_handler;
+	sa.sa_flags = SA_SIGINFO;
+	sigaction(SIGSEGV, &sa, NULL);
+	sigaction(SIGBUS, &sa, NULL);
+	sigaction(SIGILL, &sa, NULL);
+	// JIT-emitted SVC is a Darwin syscall; unregistered immediates raise SIGSYS
+	sigaction(SIGSYS, &sa, NULL);
+}
+
 #ifdef __APPLE__
 int SDL_main(int argc, char *argv[])
 #else
 int main(int argc, char *argv[])
 #endif
 {
+	install_crash_handler();
 
 	//	_chdir("c:\\test\\");
 	// Initialize variables
@@ -141,11 +220,11 @@ int main(int argc, char *argv[])
 		RAMSize = 1024*1024;
 	}
 
-	// Create areas for Mac RAM and ROM
-	RAMBaseHost = new uint8[RAMSize];
-	ROMBaseHost = new uint8[0x100000];
-
-	memset(ROMBaseHost,0xAA,0x100000);
+	// Initialize unified 4GB flat memory window
+	RAMBaseMac = 0;
+	ROMBaseMac = 0x40800000;
+	memory_init();
+	memset(ROMBaseHost, 0xAA, 0x100000);
 
 	// Get rom file path from preferences
 	const char *rom_path = PrefsFindString("rom");
@@ -223,6 +302,7 @@ void ErrorAlert(const char *p)
 #if EMULATED_68K
 void FlushCodeCache(void *start, uint32 size)
 {
+	cpu_engine_invalidate_code(Host2MacAddr((uint8 *)start), size);
 }
 #endif
 

@@ -5,6 +5,7 @@
 
 
 #include "cpu_emulation.h"
+#include "cpu_engine.h"
 #include "main.h"
 #include "adb.h"
 #include "macos_util.h"
@@ -65,61 +66,73 @@ static bool is_ctrl_down(SDL_keysym const & ks);
 ////////////////////////////////////////
 
 
+/*
+ * Sets the 256-color palette on the active SDL video screen surface.
+ *
+ * Arguments:
+ *   pal: Pointer to 256*3 RGB bytes (values 0..255).
+ */
 void video_set_palette(uint8 *pal)
 {
-        int r, g, b;
-	int ncolors;
-	int i;
-    SDL_Color *colors;
+	if (!SDLscreen)
+		return;
 
-
-        /* Allocate 256 color palette */
-        ncolors = 256;
-        colors  = (SDL_Color *)malloc(ncolors*sizeof(SDL_Color));
-
-        for (int i=0; i<256; i++) {
-                colors[i].r = pal[i*3] * 0x0101;
-                colors[i].g = pal[i*3+1] * 0x0101;
-                colors[i].b = pal[i*3+2] * 0x0101;
-        }
-
-SDL_SetColors(SDLscreen, colors, 0, ncolors);
+	SDL_Color colors[256];
+	for (int i = 0; i < 256; i++) {
+		colors[i].r = pal[i * 3 + 0];
+		colors[i].g = pal[i * 3 + 1];
+		colors[i].b = pal[i * 3 + 2];
+		colors[i].unused = 0;
+	}
+	SDL_SetColors(SDLscreen, colors, 0, 256);
 }
 
 bool VideoInit(bool classic)
 {
-const char *mode_str;
+	const char *mode_str;
 	if (classic)
-                mode_str = "win/512/342";
-        else
-                mode_str = PrefsFindString("screen");
+		mode_str = "win/512/342";
+	else
+		mode_str = PrefsFindString("screen");
 
-
-classic_mode = classic;
-D(bug(" VideoInit %d\n",classic));
-if (classic)
-	depth =1;
-else depth=8;	/* lame hardcode, as it only paints 2/3rds the screen with a warped palette.	*/
-        //int width = 512, height = 384;
+	classic_mode = classic;
+	D(bug(" VideoInit %d\n",classic));
+	if (classic)
+		depth = 1;
+	else
+		depth = 8;	/* 8-bit color mode */
 	int width = 1152, height = 870;		//the old 21" Macintosh monitor
 
-        if (mode_str) {
-                if (sscanf(mode_str, "win/%d/%d", &width, &height) == 2)
-	sscanf(mode_str,"win/%d/%d",&width,&height);
+	if (mode_str) {
+		if (sscanf(mode_str, "win/%d/%d", &width, &height) == 2)
+			sscanf(mode_str,"win/%d/%d",&width,&height);
 	}
-	if(!init_window(width,height))
+	if (!init_window(width, height))
 		return false;
 
-        // Set variables for UAE memory mapping
-        MacFrameBaseHost = the_buffer;
-        MacFrameSize = VideoMonitor.bytes_per_row * VideoMonitor.y;
+	// Framebuffer is Host_Mem_Base + MacFrameBaseMac (set in init_window)
+	MacFrameBaseHost = the_buffer;
+	MacFrameSize = VideoMonitor.bytes_per_row * VideoMonitor.y;
 
-        // No special frame buffer in Classic mode (frame buffer is in Mac RAM)
-        if (classic)
-                MacFrameLayout = FLAYOUT_NONE;
+	// No special frame buffer in Classic mode (frame buffer is in Mac RAM)
+	if (classic)
+		MacFrameLayout = FLAYOUT_NONE;
 
+	// Commit only the real screen bytes; the rest of slot 0xA0000000 stays PROT_NONE
+	InitFrameBufferMapping();
 
-return true;
+	// Initialize default gray palette for 8-bit mode
+	if (!classic && depth == 8) {
+		uint8 init_pal[256 * 3];
+		for (int i = 0; i < 256; i++) {
+			init_pal[i * 3 + 0] = 127;
+			init_pal[i * 3 + 1] = 127;
+			init_pal[i * 3 + 2] = 127;
+		}
+		video_set_palette(init_pal);
+	}
+
+	return true;
 }
 
 // Init window mode
@@ -178,7 +191,12 @@ D(bug(" init_window w%d,h%d d%d\n",width,height,depth));
                                 break;
                 }
 		D(bug(" bytes per row %d\n",bytes_per_row));
-        the_buffer = (uint8 *)malloc((height + 2) * bytes_per_row);
+	// Guest framebuffer is the NuBus slot at MacFrameBaseMac inside the 4GB window
+	if (!Host_Mem_Base) {
+		printf("VID: unified 4GB Host_Mem_Base window is not allocated\n");
+		return false;
+	}
+	the_buffer = Host_Mem_Base + MacFrameBaseMac;
         //the_buffer_copy = (uint8 *)malloc((height + 2) * img->bytes_per_line);
 
 set_video_monitor(width, height, bytes_per_row);//img->bytes_per_line);
@@ -237,13 +255,21 @@ void VideoInterrupt(void)
 int lx,ly=0;
 void* p;
 int count=0;
+#if defined(HEARTBEAT_DEBUG) && HEARTBEAT_DEBUG
+static int s_heartbeat_ticks = 0;
+if (++s_heartbeat_ticks % 60 == 0) {
+	printf("[HEARTBEAT] 680x0 CPU active at PC=0x%08X\n", cpu_engine_last_pc);
+	fflush(stdout);
+}
+#endif
+uint8 *src_buf = MacFrameBaseHost ? MacFrameBaseHost : the_buffer;
 if(skip_count++>frame_skip){
 	if(classic_mode)
-		Mac2Host_memcpy(the_buffer, 0x3fa700, VideoMonitor.bytes_per_row * VideoMonitor.y);
+		Mac2Host_memcpy(src_buf, 0x3fa700, VideoMonitor.bytes_per_row * VideoMonitor.y);
 	else
 	switch (depth) {
 		case 8:
-			memcpy(SDLscreen->pixels,the_buffer,VideoMonitor.bytes_per_row*VideoMonitor.y);
+			memcpy(SDLscreen->pixels,src_buf,VideoMonitor.bytes_per_row*VideoMonitor.y);
 			break;
 		 case 16: case 24: case 32:
 			p=SDLscreen->pixels;
@@ -251,7 +277,7 @@ if(skip_count++>frame_skip){
 				{
 				for(lx=0;lx<VideoMonitor.x*bytes_per_pixel;lx+=bytes_per_pixel)
 					{
-					memcpy((uint8 *)SDLscreen->pixels+(ly*VideoMonitor.y+lx),the_buffer+(ly*VideoMonitor.y+lx)+1,bytes_per_pixel);
+					memcpy((uint8 *)SDLscreen->pixels+(ly*VideoMonitor.y+lx),src_buf+(ly*VideoMonitor.y+lx)+1,bytes_per_pixel);
 					count+=bytes_per_pixel;
 					}
 				}

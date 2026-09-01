@@ -5,6 +5,7 @@
 #import <SDL/SDL.h>
 #import "sdlmain.h"
 #import "menu_bar.h"
+#import "macos_menu_bridge.h"
 #import "scsi.h"
 #import <sys/param.h>
 #import <unistd.h>
@@ -281,6 +282,7 @@ void MenuBar_UpdateAll(void)
 
 void MenuBar_Init(void *native_window_handle)
 {
+    MacMenuBridge_RegisterMenuTraps();
     MenuBar_UpdateAll();
 }
 
@@ -405,6 +407,9 @@ static void CustomApplicationMain (int argc, char **argv)
 
 int main (int argc, char **argv)
 {
+    /* Earliest possible stderr marker — if this never appears, dyld/kernel killed us before main */
+    write(STDERR_FILENO, "[CockatriceIII] entering main\n", 31);
+
     if ( argc >= 2 && strncmp (argv[1], "-psn", 4) == 0 ) {
         gArgv = (char **) malloc(sizeof (char *) * 2);
         gArgv[0] = argv[0];

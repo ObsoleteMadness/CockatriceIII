@@ -1402,7 +1402,7 @@ static bool patch_rom_32(void)
 	// Don't use PTEST instruction on 68040/060
 	if (ROMSize > 0x80000) {
 
-		// BlockMove()
+		// BlockMove() — NOP PTEST/cpusha tail; trap 0xA02E is replaced by EMUL_OP below.
 		static const uint8 ptest_dat[] = {0xa0, 0x8d, 0x0c, 0x81, 0x00, 0x00, 0x0c, 0x00, 0x6d, 0x06, 0x4e, 0x71, 0xf4, 0xf8};
 		base = find_rom_data(0x87000, 0x87800, ptest_dat, sizeof(ptest_dat));
 		D(bug("ptest %08lx\n", base));

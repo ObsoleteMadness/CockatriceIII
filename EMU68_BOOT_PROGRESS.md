@@ -554,3 +554,266 @@ produce -- or, more directly, track `A7`'s value on every `AMODE_4`
 predecrement/`AMODE_2_3` case 0x000B (a7-relative) firing plus every
 explicit `ADDQ/SUBQ #n,A7` and `LINK`/`UNLK`, looking for the first point
 where cumulative adjustment stops matching a balanced push/pop count.
+
+**Update, retracted:** the push/pop trace instrumentation described above
+(`s_trace_push_*`/`s_trace_pop_*` in `runtime/hash.c`, wired through
+`jsr_common`, `jsr_dynamic`, `rts`, and the self-modifying "fast jsr" case
+`0x00B4` in `syn68k_header.h`) was completed and run against a live boot.
+It measured `push_index=965100` vs `pop_index=1209336` -- 244,236 more
+counted `rts` pops than counted pushes, with the self-modifying "fast jsr"
+path (`case 0x00B4`) confirmed to fire **zero** times during boot
+(`fastjsr_pushes=0`), ruling it out as the explanation.
+
+That raw mismatch is **not reliable evidence of a real bug** and should not
+be chased further as-is: `jsr_common`/`jsr_dynamic`/`rts` only cover
+`bsr`/`jsr`/`rts`. Real 68k/Mac ROM code routinely returns via `rts` from a
+frame it never pushed itself (A-line trap dispatch pushing an exception
+frame via hardware-exception semantics, not `jsr`; hand-built "PEA
+returnaddr; JMP handler; ...; RTS" dispatch idioms) and can push via
+`MOVE.L/PEA -(A7)` without ever going through `jsr_common`. Every such path
+is invisible to this instrumentation on *both* sides of the ledger, so a
+nonzero delta proves nothing about a real imbalance on its own. A battery
+of controlled, engine-agnostic tests covering exactly these idioms
+(`test_jsr_stack_integrity`, below) was added and **all pass on every
+engine**, including the hand-built-frame and repeated-call-site stress
+cases -- which weighs against a simple call-stack-depth bug and toward
+something more specific to the real ROM's code shape. The diagnostics
+described above are left in place (low overhead, still potentially useful)
+but this specific 244,236 figure should not be treated as a finding.
+
+---
+
+## Cross-engine test infrastructure and confirmed bugs (2026-08-31/09-01 session)
+
+Prompted by a request to stop inferring bugs from raw ROM-boot traces and
+instead validate CPU emulation with controlled, repeatable tests: checked
+whether syn68k/UAE/Emu68 are exercised against independent ground-truth
+test suites (not just their own), and added targeted JSR/BSR/JMP/RTS tests
+that isolate the specific call/return idioms under suspicion. This
+produced one already-fixed bug and several newly-confirmed, still-open
+bugs, summarized here for follow-up.
+
+### TODO: this codebase predates 64-bit CPUs and ASLR
+
+Worth keeping in mind for future debugging sessions on this fork: syn68k
+(and much of the Basilisk II/Executor lineage it comes from) was written
+in the 1990s for 32-bit, non-ASLR hosts. Several bugs found this session
+and in prior sessions share a family resemblance -- undefined behavior
+(uninitialized/stale reads, dangling pointers, buffer overreads) that was
+probably always technically wrong but silently "worked" on the flat,
+deterministic, 32-bit memory layouts of its original era, and only
+manifests as visible corruption now that host addresses are 64-bit and
+ASLR-randomized (allocator base addresses, and therefore exactly which
+bytes sit past the end of an overread or past a freed block, vary from run
+to run). The syngen `is_member_of_set` bug and the syn68k opcode-battery
+hang/crash below both fit this pattern (see each section for specifics).
+
+When debugging further syn68k weirdness that seems to "shift around"
+between otherwise-identical runs, or between machines, consider this
+class of bug first rather than assuming the 68k-level logic is at fault.
+**Concrete idea worth trying:** compare against how UAE/Amiberry (a much
+more actively maintained, modern JIT with its own long history of solving
+exactly this "translated-code-cache + host-pointer-validity" problem)
+handles guest-address-to-host-pointer translation and cache invalidation
+-- `BasiliskII/amiberry/src/newcpu.cpp` and `custommem.cpp` are the
+relevant files. UAE's approach to keeping cached translations valid across
+memory writes/ASLR may point at what syn68k is missing.
+
+### Fixed: syngen `is_member_of_set` heap-buffer-overflow (upstream bug, not this fork's)
+
+**Status: fixed, not yet committed.** `BasiliskII/syn68k/syngen/bitstring.c`
+`is_member_of_set()` unconditionally read 16 characters from a quoted
+bit-pattern string. `runtime/68k.scm:4532`'s `linkw` opcode definition uses
+a malformed 13-character pattern (`"xxxx111xxxxxx"`, vs. 16 for every
+sibling pattern like `linkl`'s `"x1xxxxxxxxxxxxxx"`), causing a
+heap-buffer-overflow *read* confirmed via AddressSanitizer (manual
+`clang -fsanitize=address` build of `syngen`, bypassing the normal
+Makefile). Confirmed present verbatim in upstream Executor's
+`~/Source/executor/syn68k/runtime/68k.scm` at the same line -- a
+decades-old, never-fixed upstream defect, not introduced by this fork.
+
+This heap-layout-dependent undefined behavior is the root cause of the
+"syngen corruption landmine" documented earlier in this file/session
+history (inserting unrelated code elsewhere in `68k.scm` corrupted
+generated code at unrelated locations, with the corruption shifting based
+on unrelated total-file-size changes) -- the OOB read feeds `empty_set`'s
+opcode-legality determination and is sensitive to adjacent heap contents.
+
+**Fix applied** (`syngen/bitstring.c`, real tracked source used only to
+*build* the `syngen` code-generator tool, not part of the interpreter
+itself): bound the pattern-matching loop by the string's actual NUL
+terminator (`mask != 0 && *s != '\0'`) instead of blindly reading 16
+characters. Behavior-preserving for every well-formed 16-character pattern;
+for the one malformed pattern, missing trailing positions are treated as
+wildcards (consistent with the existing convention for non-`0`/`1`
+characters) instead of reading undefined heap bytes. Deliberately did
+**not** guess-fix `linkw`'s bit-pattern string itself -- its synthetic
+`zzz` field's exact intended semantics are unclear, and a wrong guess
+risks a silent functional regression to a currently-working, path-covered
+instruction. Verified: full project builds cleanly, repeatedly, with no
+corruption, after this fix (previously blocked by this bug for two
+sessions).
+
+**Needs committing** in the `BasiliskII/syn68k` nested repo.
+
+### New test infrastructure (`BasiliskII/Musashi/test_integration.cpp`)
+
+- **`test_jsr_stack_integrity(engine)`**: four targeted, engine-agnostic
+  call/return tests, run on all 6 engine configs (musashi, syn68k, uae,
+  uae+jit, uae+jit+jitfpu, emu68): `JSR (An)` indirect call (the
+  `jsr_dynamic` path); `JSR -> JMP -> RTS` tail-call (confirms JMP
+  indirection is stack-neutral); a hand-built return frame (`PEA` + `JMP`,
+  no `JSR`) unwound via plain `RTS` (the A-trap/Toolbox-dispatch idiom);
+  and 5,000 looped `JSR`/`RTS` calls through the *same* call site (to
+  exercise any self-modifying "first execution vs. subsequent" call-site
+  caching). **All pass on all 6 engines.** This is a clean negative result
+  against the "simple call-stack-depth bug" theory above.
+
+- **`test_musashi_opcode_battery(engine)` / `run_opcode_battery_isolated`**:
+  runs Musashi's own official opcode-level test battery
+  (`test/mc68000/*.bin`, `test/mc68040/*.bin` -- 78 prebuilt 68k machine
+  code images with self-checking pass/fail markers, from Musashi's own
+  `test/entry.s`/`test_driver.c`, unchanged) against whichever engine is
+  active, reusing the existing `Execute68k` harness instead of Musashi's
+  own dummy machine. Each image's `stop #0x2700` halts are patched to
+  `rts; nop` so `Execute68k`'s RTS-catch can detect completion; the
+  TEST_FAIL_REG/TEST_PASS_REG/etc. special-register range
+  (`0x100000`-`0x100024`, see `test/entry.s`) is left as plain memory
+  rather than given real MMIO callbacks, since the images only ever write
+  markers there and never read them back. `interrupt.bin` and `rtd.bin`
+  are excluded (see below). Because every image loads at the same guest
+  address (`0x10000`) in sequence, each iteration calls
+  `cpu_engine_invalidate_code(0, ~0)` before running -- **this exposed
+  that syn68k has no automatic self-modifying-code detection** (unlike
+  UAE/Emu68, which apparently do; without the explicit invalidate call,
+  syn68k kept executing stale cached translations from the *previous*
+  test image and nearly the entire battery failed with unrelated-looking
+  corruption). This mirrors the real ROM's own reliance on explicit
+  `cpu_engine_invalidate_code()` calls from `emul_op.cpp` (ROM
+  patching/`FlushCodeCache`-equivalent EmulOps) -- direct `WriteMacInt*`
+  pokes never trigger it automatically for *any* engine.
+
+  Runs in a **forked child process with a 30-second `alarm()` watchdog**
+  (`run_opcode_battery_isolated`), reporting the child's pass/fail delta
+  back through a pipe. This is load-bearing, not defensive boilerplate --
+  see "syn68k opcode-battery crash" below: the battery reliably hangs or
+  crashes for 3 of the 6 engine configs, and without isolation this takes
+  the entire `test_integration` binary down, silently losing every other
+  engine's coverage and the SCSI/SCC suites that run afterward.
+
+  `interrupt.bin` is excluded: it requires Musashi's own `test_driver.c`
+  wiring `INTERRUPT_REG` (`0x100C`) to real `m68k_set_irq()`/autovector
+  delivery, which this harness doesn't provide (a confirmed harness gap,
+  not an engine bug -- confirmed by musashi, the reference engine here,
+  also failing it before the exclusion was added). `rtd.bin` is also
+  excluded: it fails on musashi *and* syn68k but passes on uae, which is
+  unexplained (musashi is normally trustworthy as ground truth, so this is
+  flagged rather than asserted as either a harness gap or a real bug) --
+  worth a fresh look.
+
+### Confirmed bug: ABCD/SBCD (packed-BCD arithmetic) wrong on syn68k and UAE, correct on Musashi
+
+`test/mc68000/abcd.bin` and `test/mc68000/sbcd.bin` (Musashi's own,
+unmodified opcode tests) **fail identically on syn68k and every UAE
+variant (uae, uae+jit, uae+jit+jitfpu), but pass on musashi.** Musashi is
+the reference implementation here (it's what the real ROM boot path
+already relies on and what these tests were written against upstream), so
+this is strong evidence of a real ABCD/SBCD bug shared by syn68k and UAE
+-- not a harness artifact, since the identical harness gives musashi a
+clean pass. `abcd.s`/`sbcd.s` exercise ABCD/SBCD across the full 0x00-0x99
+BCD byte range in both register-to-register and predecrement-memory forms,
+with the X flag both clear and set, checking the cumulative C-flag count,
+cumulative result sum, and cumulative memory-form result against known
+constants (see the `.s` source for the exact expected values). **Not yet
+root-caused; next step is bisecting which of the four sub-cases (register
+X=0, register X=1, memory X=0, memory X=1) actually diverges** by adapting
+the same technique into a `test_jsr_stack_integrity`-style inline test
+that reports intermediate D3/D4/D5 values instead of a single pass/fail
+bit.
+
+### Open bug: syn68k opcode-battery hangs; UAE/Emu68 opcode-battery crashes
+
+Running the full `test/mc68000` battery in sequence (78 files, same guest
+address, `cpu_engine_invalidate_code(0, ~0)` between each) does not
+complete cleanly for syn68k, uae+jit, uae+jit+jitfpu, uae (interpreter), or
+emu68 -- only musashi gets through all 78 files without incident.
+
+- **syn68k, uae+jit, uae+jit+jitfpu: hang** (30s watchdog fires, ~99% CPU
+  the whole time -- not a crash, an infinite loop). For syn68k, traced one
+  instance to `syn68k_glue.cpp`'s illegal-opcode fallback: when it can't
+  decode an opcode, it returns `MAGIC_RTE_ADDRESS`, whose pre-installed
+  *immortal* block (`runtime/init.c`, never destroyed by
+  `cpu_engine_invalidate_code`) unconditionally executes a real 68k `RTE`
+  -- popping whatever garbage happens to be at the current `A7` as the
+  "new" PC/SR with no validation. If that garbage doesn't happen to be a
+  real return frame, execution resumes at a wild address, very plausibly
+  hits another illegal opcode, and repeats indefinitely.
+  **The precipitating cause -- why syn68k jumps to a wild PC in the first
+  place, before ever reaching that fallback -- is not yet isolated.** A
+  minimal 2-file repro (`test/mc68000/bsr.bin` then `test/mc68000/btst.bin`
+  only, nothing else) reproduced a crash at this same fallback in one run;
+  a full-battery run crashed near `move.bin`/`move_usp.bin` instead in
+  another run with the *same* underlying illegal-opcode signature
+  (`PC=0x46040100`/`PC=0x94040100`/`PC=0x026C23F2` -- note the varying
+  high byte with a plausibly-related low portion across separate process
+  invocations). **This "same failure, different trigger site between
+  otherwise-identical runs" pattern is the same signature as the syngen
+  bug above** -- heap-layout/ASLR-dependent undefined behavior, not a bug
+  tied to one specific opcode. Recommended next step: the same technique
+  that found the syngen bug -- build `test_integration` (or a smaller
+  isolated harness around just `syn68k_execute_68k`) with
+  `-fsanitize=address` and run the two-file repro to get an exact
+  use-after-free/OOB stack trace, rather than continuing to guess from
+  symptom addresses.
+
+- **uae (interpreter) and emu68: crash with SIGSEGV** (caught cleanly by
+  `test_integration.cpp`'s `install_crash_handler`, so the process still
+  exits instead of hanging, but the child dies mid-battery either way).
+  uae's crash happens somewhere after `sbcd.bin`; emu68's happens very
+  early (before any per-file PASS/FAIL is even printed for it -- possibly
+  on the very first file, or before `Execute68k` even returns once). Not
+  yet investigated whether this is the same root cause as syn68k's hang
+  manifesting differently per engine, or a separate bug per engine --
+  needs its own triage, starting with `install_crash_handler`'s backtrace
+  output (already captured to stdout/stderr on crash, just needs a run
+  with `backtrace_symbols_fd` output captured and symbolicated).
+
+**Reproduction:** `cd BasiliskII/Musashi && make test_integration &&
+./test_integration` (run with a wall-clock safety net from the *caller*
+too -- e.g. `( ./test_integration & pid=$!; ( sleep 180; kill -9 $pid )
+& w=$!; wait $pid; kill $w )` -- macOS has no `timeout` command, and a
+background `&` launch reports "done" the instant it forks, not when
+`test_integration` actually finishes, which is exactly how three
+`test_integration` processes were left running at ~99% CPU for several
+minutes, undetected, earlier in this same investigation). Grep the output
+for `[FAIL]` and `Unhandled illegal opcode`.
+
+### UAE (Amiberry) official accuracy test suite: not currently wireable
+
+Checked whether Toni Wilen's `cputest` -- UAE's own hardware-validated
+opcode accuracy suite -- could be wired in the same way as Musashi's
+battery. `BasiliskII/amiberry/src/include/cputest.h` exists (scaffolding
+only), but it `#include`s `cputest/cputest_defines.h` and
+`cputbl_test.h`, **neither of which exist anywhere in this repo**, and
+nothing in the tree includes `cputest.h`. Those files (plus the actual
+hardware-derived test-vector data) are generated/vendored separately
+upstream and were never pulled into this fork's `amiberry` submodule.
+Wiring in the real `cputest` suite would mean vendoring a substantial
+amount of additional upstream UAE test infrastructure, not just writing a
+harness -- out of scope for a quick win; Musashi's battery above already
+gives independent, real ground-truth coverage without that cost.
+
+### Files touched this session, commit status
+
+- `BasiliskII/Musashi/test_integration.cpp` (outer/main repo): new
+  `test_jsr_stack_integrity`, `test_musashi_opcode_battery`,
+  `run_opcode_battery_isolated`, wired into `test_all_cpu_engines()`.
+  **Not yet committed.**
+- `BasiliskII/syn68k/syngen/bitstring.c` (nested repo): the
+  `is_member_of_set` fix. **Not yet committed.**
+- `BasiliskII/syn68k/runtime/hash.c`, `runtime/syn68k_header.h`,
+  `syn68k_glue.cpp`, `runtime/68k.scm` (nested repo): push/pop trace
+  diagnostics from the retracted 244,236-mismatch investigation above --
+  low-overhead, left in place, not yet committed.
+- `BasiliskII/OSX64/CockatriceIII_Prefs` (local config, not a source
+  file): active engine currently set to `syn68k` for this investigation.

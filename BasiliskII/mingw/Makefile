@@ -61,7 +61,7 @@ ifeq ($(ARCH),x86)
 endif
 
 SYSSRCS = ../SDL/sdl_pcap.cpp ../dummy/scsi_dummy.cpp ../SDL/audio_sdl.cpp ../dummy/prefs_editor_dummy.cpp 
-CPUSRCS = $(MUSASHIDIR)/basilisk_glue.cpp $(MUSASHIDIR)/memory_musashi.cpp $(MUSASHIDIR)/m68kcpu.c $(MUSASHIDIR)/m68kops.c $(MUSASHIDIR)/m68kdasm.c $(MUSASHIDIR)/softfloat/softfloat.c
+CPUSRCS = ../memory.cpp $(MUSASHIDIR)/basilisk_glue.cpp $(MUSASHIDIR)/memory_musashi.cpp $(MUSASHIDIR)/m68kcpu.c $(MUSASHIDIR)/m68kops.c $(MUSASHIDIR)/m68kdasm.c $(MUSASHIDIR)/softfloat/softfloat.c
 
 ## Files
 SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../SDL/sys_unix_sdl.cpp \

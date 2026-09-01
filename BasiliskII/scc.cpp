@@ -65,7 +65,11 @@ typedef int socklen_t;
 #define RX_BUFFER_ALLOCATION 1800
 
 #ifndef SCC_DEBUG
+#if defined(COCKATRICE_DEBUG) && COCKATRICE_DEBUG
+#define SCC_DEBUG 1
+#else
 #define SCC_DEBUG 0
+#endif
 #endif
 
 #if SCC_DEBUG
@@ -216,91 +220,27 @@ static void LT_PickStampNodeHint(void)
 
 static void embedMyPID(void)
 {
-#ifdef _WIN32
-	uint32 v = (uint32)GetCurrentProcessId();
-#else
-	uint32 v = (uint32)getpid();
-#endif
+	// Embed unique 32-bit session stamp into packet header
 	for (int i = 0; i < 4; i++) {
-		tx_buffer[i] = (v >> ((3 - i) * 8)) & 0xff;
+		tx_buffer[i] = (LT_MyStamp >> ((3 - i) * 8)) & 0xff;
 	}
 }
 
 static int pidInPacketIsMine(void)
 {
-#ifdef _WIN32
-	uint32 v = (uint32)GetCurrentProcessId();
-#else
-	uint32 v = (uint32)getpid();
-#endif
+	// Match packet header against this instance's session stamp
 	for (int i = 0; i < 4; i++) {
-		if (MyRxBuffer[i] != ((v >> ((3 - i) * 8)) & 0xff)) {
+		if (MyRxBuffer[i] != ((LT_MyStamp >> ((3 - i) * 8)) & 0xff)) {
 			return 0;
 		}
 	}
 	return 1;
 }
 
-static int ipInPacketIsMine(void)
-{
-	if (MyRxAddress.sin_family != AF_INET) {
-		return 1; // Drop non-inet
-	}
-	uint32 raddr = (uint32)MyRxAddress.sin_addr.s_addr;
-
-#ifdef _WIN32
-	ULONG bufLen = 15000;
-	PIP_ADAPTER_ADDRESSES pAddresses = (IP_ADAPTER_ADDRESSES *)malloc(bufLen);
-	if (!pAddresses) return 0;
-	if (GetAdaptersAddresses(AF_INET, 0, NULL, pAddresses, &bufLen) == ERROR_BUFFER_OVERFLOW) {
-		free(pAddresses);
-		pAddresses = (IP_ADAPTER_ADDRESSES *)malloc(bufLen);
-		if (!pAddresses) return 0;
-	}
-	int foundAddress = 0;
-	if (GetAdaptersAddresses(AF_INET, 0, NULL, pAddresses, &bufLen) == NO_ERROR) {
-		for (PIP_ADAPTER_ADDRESSES pCurr = pAddresses; pCurr; pCurr = pCurr->Next) {
-			for (PIP_ADAPTER_UNICAST_ADDRESS pUnicast = pCurr->FirstUnicastAddress; pUnicast; pUnicast = pUnicast->Next) {
-				if (pUnicast->Address.lpSockaddr && pUnicast->Address.lpSockaddr->sa_family == AF_INET) {
-					struct sockaddr_in *sa = (struct sockaddr_in *)pUnicast->Address.lpSockaddr;
-					if (sa->sin_addr.s_addr == raddr) {
-						foundAddress = 1;
-						break;
-					}
-				}
-			}
-			if (foundAddress) break;
-		}
-	}
-	free(pAddresses);
-	return foundAddress;
-#else
-	struct ifaddrs *iflist, *ifptr;
-	int foundAddress = 0;
-
-	if (getifaddrs(&iflist) == 0) {
-		for (ifptr = iflist; ifptr; ifptr = ifptr->ifa_next) {
-			if (!ifptr->ifa_addr || ifptr->ifa_addr->sa_family != AF_INET) {
-				continue;
-			}
-			struct sockaddr_in *addr = (struct sockaddr_in *)ifptr->ifa_addr;
-			if (addr->sin_addr.s_addr == raddr) {
-				foundAddress = 1;
-				break;
-			}
-		}
-		freeifaddrs(iflist);
-	}
-	return foundAddress;
-#endif
-}
-
 static int packetIsOneISent(void)
 {
-	if (pidInPacketIsMine()) {
-		return ipInPacketIsMine();
-	}
-	return 0;
+	// If stamp matches, packet was sent by this emulator instance
+	return pidInPacketIsMine();
 }
 
 static void LT_TransmitPacket(void)
@@ -443,9 +383,8 @@ static void CheckSCCInterruptFlag(void)
 			old_type, SCC.SCC_Interrupt_Type, SCCInterruptRequest, NewSCCInterruptRequest,
 			SCC.MIE, SCC.a[1].RxIntMode, SCC.a[1].RxChrAvail, SCC.a[1].FirstChar, SCC.a[1].EndOfFrame, SCC.a[1].TxIP, SCC.a[1].ExtIP);
 		SCCInterruptRequest = NewSCCInterruptRequest;
-		if (SCCInterruptRequest) {
-			TriggerInterrupt();
-		}
+		// Always notify CPU engine to assert or lower the interrupt request level
+		TriggerInterrupt();
 	}
 }
 
@@ -641,6 +580,12 @@ static void SCC_InitChannel(int chan)
 	SCC.a[chan].BaudLo = 0;
 	SCC.a[chan].BaudHi = 0;
 	SCC.a[chan].WR15 = 0;
+	SCC.a[chan].RxIntMode = 0;
+	SCC.a[chan].RxEnable = false;
+	SCC.a[chan].TxEnable = false;
+	SCC.a[chan].TxIP = false;
+	SCC.a[chan].TxIE = false;
+	SCC.a[chan].ExtIE = false;
 	SCC.a[chan].ExtIP = false;
 	SCC.a[chan].BreakAbort = false;
 	SCC.a[chan].SendBreak = false;
@@ -652,6 +597,11 @@ static void SCC_ResetChannel(int chan)
 	SCC.a[chan].RxChrAvail = false;
 	SCC.a[chan].TxBufferEmpty = true;
 	SCC.a[chan].TxUnderrun = true;
+	SCC.a[chan].TxIP = false;
+	SCC.a[chan].TxIE = false;
+	SCC.a[chan].RxIntMode = 0;
+	SCC.a[chan].RxEnable = false;
+	SCC.a[chan].TxEnable = false;
 	SCC.a[chan].EndOfFrame = false;
 	SCC.a[chan].ExtIE = false;
 	SCC.a[chan].ExtIP = false;
@@ -710,7 +660,7 @@ static uint32 SCC_GetRR2(int chan)
 	if (chan == 0) {
 		return SCC.InterruptVector;
 	} else {
-		uint32 val = SCC.InterruptVector & 0x70;
+		uint32 val = SCC.InterruptVector & 0xf0;
 		int type = SCC.SCC_Interrupt_Type;
 		switch (type) {
 			case SCC_A_Rx_Spec:  val |= (7 << 1); break;
@@ -1041,19 +991,18 @@ uint32 SCC_Access(uint32 Data, bool WriteMem, uint32 addr)
 	}
 
 #if SCC_DEBUG
-	uint32 pc = m68k_getpc();
 	if (WriteMem) {
-		SCC_LOG("WR [PC=%08x]: chan=%c (%s) WR%d <- 0x%02x\n",
-			pc, chan == 0 ? 'A' : 'B', is_data ? "Data" : "Ctl", SCC_Reg, Data & 0xff);
+		SCC_LOG("WR [addr=%08x chan=%c %s WR%d]: 0x%02x\n",
+			addr, chan == 0 ? 'A' : 'B', is_data ? "Data" : "Ctl", SCC_Reg, Data & 0xff);
 		SCC_PutReg(Data, chan, SCC_Reg);
 	} else {
 		Data = SCC_GetReg(chan, SCC_Reg);
 		if (is_data) {
-			SCC_LOG("RD [PC=%08x]: chan=%c (Data) RR8 -> 0x%02x (offset=%d/%lu)\n",
-				pc, chan == 0 ? 'A' : 'B', Data & 0xff, rx_data_offset - 1, (unsigned long)LT_RxBuffSz);
+			SCC_LOG("RD [addr=%08x chan=%c Data RR8]: 0x%02x (offset=%d/%lu)\n",
+				addr, chan == 0 ? 'A' : 'B', Data & 0xff, rx_data_offset - 1, (unsigned long)LT_RxBuffSz);
 		} else {
-			SCC_LOG("RD [PC=%08x]: chan=%c (%s) RR%d -> 0x%02x\n",
-				pc, chan == 0 ? 'A' : 'B', "Ctl", SCC_Reg, Data & 0xff);
+			SCC_LOG("RD [addr=%08x chan=%c Ctl RR%d]: 0x%02x\n",
+				addr, chan == 0 ? 'A' : 'B', SCC_Reg, Data & 0xff);
 		}
 	}
 #else

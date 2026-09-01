@@ -88,23 +88,22 @@ printf("Offsetting the year by %d billion ticks\n",yearoffset);
 			CPUType = PrefsFindInt32("cpu");
 			if (CPUType < 2) CPUType = 2;
 			if (CPUType > 4) CPUType = 4;
-			FPUType = PrefsFindBool("fpu") ? 1 : 0;
-			//if (CPUType == 4) FPUType = 1;	// 68040 always with FPU
+			/* 68040 integrates the FPU; Basilisk must advertise it to the Mac ROM. */
+			FPUType = (CPUType == 4) ? 1 : (PrefsFindBool("fpu") ? 1 : 0);
 			TwentyFourBitAddressing = true;
 			break;
 		case ROM_VERSION_32:
 			CPUType = PrefsFindInt32("cpu");
 			if (CPUType < 2) CPUType = 2;
 			if (CPUType > 4) CPUType = 4;
-			FPUType = PrefsFindBool("fpu") ? 1 : 0;
-			//if (CPUType == 4) FPUType = 1;	// 68040 always with FPU
+			FPUType = (CPUType == 4) ? 1 : (PrefsFindBool("fpu") ? 1 : 0);
 			TwentyFourBitAddressing = false;
 			break;
 	}
 	const char *engine_name = "Musashi";
 	const char *req_engine = PrefsFindString("cpu_emulator");
 	if (req_engine && strcmp(req_engine, "uae") == 0) {
-		engine_name = "WinUAE";
+		engine_name = "Amiberry";
 	} else if (req_engine && strcmp(req_engine, "emu68") == 0) {
 		engine_name = "Emu68";
 	} else {
@@ -118,12 +117,16 @@ printf("Offsetting the year by %d billion ticks\n",yearoffset);
 	bool jit_enabled = false;
 	if (strcmp(engine_name, "Emu68") == 0) {
 		jit_enabled = true;
-	} else if (strcmp(engine_name, "WinUAE") == 0 && PrefsFindBool("jit")) {
+	} else if (strcmp(engine_name, "Amiberry") == 0 && PrefsFindBool("jit")) {
 		jit_enabled = true;
 	}
 
 	if (jit_enabled) {
-		printf("JIT enabled\n");
+		if (strcmp(engine_name, "Amiberry") == 0 && PrefsFindBool("jitfpu")) {
+			printf("JIT enabled (with JIT FPU)\n");
+		} else {
+			printf("JIT enabled\n");
+		}
 	}
 	fflush(stdout);
 	CPUIs68060 = false;
