@@ -1,7 +1,8 @@
 //! C ABI shim between CockatriceIII and the m68k-rs interpreter core.
 
 use m68k::{
-    AddressBus, CpuCore, CpuType, CycleBatchControl, CycleBatchExit, CycleBoundaryEvent,
+    AddressBus, BatchExit, CpuCore, CpuType, CycleBatchControl, CycleBatchExit, CycleBoundaryEvent,
+    FastMem,
 };
 use std::os::raw::{c_int, c_void};
 use std::ptr;
@@ -20,6 +21,10 @@ pub struct M68kRsHostCallbacks {
     pub handle_aline: Option<unsafe extern "C" fn(*mut c_void, u16, *mut M68kRsRegs) -> c_int>,
     pub boundary_hook: Option<unsafe extern "C" fn(*mut c_void, u32)>,
     pub get_irq: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    /// Reports a contiguous, side-effect-free guest RAM window to the batch
+    /// executor. Writes `*base`/`*len` and returns the host pointer backing
+    /// `*base`, or null when no direct window is available.
+    pub fast_mem: Option<unsafe extern "C" fn(*mut c_void, *mut u32, *mut u32) -> *mut u8>,
     pub host_ctx: *mut c_void,
 }
 
@@ -143,6 +148,23 @@ impl AddressBus for BasiliskBus {
         if let Some(f) = cb.write_long {
             unsafe { f(cb.host_ctx, address, value) };
         }
+    }
+
+    /// Direct window over the host's flat Macintosh address space.
+    ///
+    /// `run_batch` captures this once per call, so the host is free to shrink
+    /// or withdraw the window (24-bit addressing, MMIO apertures) between
+    /// batches. Cycle-accurate entry points ignore it entirely.
+    fn fast_mem(&mut self) -> Option<FastMem> {
+        let cb = self.callbacks();
+        let f = cb.fast_mem?;
+        let mut base: u32 = 0;
+        let mut len: u32 = 0;
+        let ptr = unsafe { f(cb.host_ctx, &mut base, &mut len) };
+        if ptr.is_null() || len < 4 {
+            return None;
+        }
+        Some(FastMem { ptr, base, len })
     }
 }
 
@@ -307,6 +329,110 @@ pub unsafe extern "C" fn m68k_rs_request_stop(cpu: *mut M68kRsCpu) {
         return;
     }
     (*cpu).stop_requested = true;
+}
+
+/// Reports whether this build compiled the Cranelift trace JIT in.
+///
+/// The batch executor works either way — without the feature the hot traces
+/// run through the portable executor instead of native code — so this only
+/// exists so the host can say which one it got.
+#[no_mangle]
+pub extern "C" fn m68k_rs_jit_available() -> c_int {
+    if cfg!(feature = "jit") { 1 } else { 0 }
+}
+
+/// Throughput entry point: run up to `max_instructions` guest instructions
+/// through the decoded-op cache, the fastmem window, and the trace JIT.
+///
+/// Unlike [`m68k_rs_run_cycles`] this keeps no cycle accounting and calls no
+/// per-instruction boundary hook, so the host must poll interrupts between
+/// batches. Traps are handled in-loop exactly as the cycle path handles them,
+/// so a Toolbox-heavy guest does not pay a host round trip per A-line.
+#[no_mangle]
+pub unsafe extern "C" fn m68k_rs_run_batch(
+    cpu: *mut M68kRsCpu,
+    max_instructions: u32,
+) -> M68kRsRunResult {
+    if cpu.is_null() || max_instructions == 0 {
+        return run_result(M68kRsRunExit::Budget, 0, 0, 0);
+    }
+
+    let cpu = &mut *cpu;
+    if cpu.core.is_halted() {
+        return run_result(M68kRsRunExit::Halted, 0, 0, 0);
+    }
+
+    let mut total_instructions = 0u32;
+    let mut remaining = max_instructions;
+
+    // `run_batch` services interrupts from the level latched on the CPU, but
+    // unlike the cycle path it never calls back into the host mid-batch. Chunk
+    // the outer budget and refresh IRQ from Basilisk between chunks so SCSI and
+    // the 60 Hz tick are not starved across a 16K-instruction slice.
+    const IRQ_POLL_CHUNK: u32 = 256;
+
+    while remaining > 0 && !cpu.stop_requested {
+        if let Some(get_irq) = cpu.callbacks.get_irq {
+            let level = unsafe { get_irq(cpu.callbacks.host_ctx) };
+            cpu.core.set_irq(level.clamp(0, 7) as u8);
+        }
+        let chunk = remaining.min(IRQ_POLL_CHUNK);
+        let result = cpu.core.run_batch(&mut cpu.bus, chunk, &[]);
+
+        total_instructions += result.instructions;
+        remaining = remaining.saturating_sub(result.instructions);
+
+        match result.exit {
+            BatchExit::BudgetExhausted => {
+                return run_result(M68kRsRunExit::Budget, 0, total_instructions, 0);
+            }
+            BatchExit::Stopped => {
+                return run_result(M68kRsRunExit::Stopped, 0, total_instructions, 0);
+            }
+            BatchExit::WatchedPc { .. } => {
+                return run_result(M68kRsRunExit::Boundary, 0, total_instructions, 0);
+            }
+            BatchExit::IllegalInstruction { opcode } => {
+                let handled = dispatch_trap(cpu, cpu.callbacks.handle_illegal, opcode);
+                if handled {
+                    // M68K_EXEC_RETURN (0x7100): end the slice immediately so a
+                    // patched STOP #0x2700 cannot fall through NOP into TEST_FAIL.
+                    if opcode == 0x7100 {
+                        return run_result(
+                            M68kRsRunExit::Budget,
+                            0,
+                            total_instructions,
+                            opcode,
+                        );
+                    }
+                } else {
+                    cpu.core.take_illegal_exception(&mut cpu.bus);
+                }
+            }
+            BatchExit::AlineTrap { opcode } => {
+                let handled = dispatch_trap(cpu, cpu.callbacks.handle_aline, opcode);
+                if !handled {
+                    cpu.core.take_aline_exception(&mut cpu.bus);
+                }
+            }
+            BatchExit::FlineTrap { opcode: _ } => {
+                cpu.core.take_fline_exception(&mut cpu.bus);
+            }
+            BatchExit::TrapInstruction { trap_num } => {
+                cpu.core.take_trap_exception(&mut cpu.bus, trap_num);
+            }
+            BatchExit::Breakpoint { bp_num } => {
+                cpu.core.take_bkpt_exception(&mut cpu.bus);
+                let _ = bp_num;
+            }
+        }
+
+        if cpu.core.is_halted() {
+            return run_result(M68kRsRunExit::Halted, 0, total_instructions, 0);
+        }
+    }
+
+    run_result(M68kRsRunExit::Budget, 0, total_instructions, 0)
 }
 
 #[no_mangle]

@@ -71,6 +71,11 @@ typedef struct M68kRsHostCallbacks {
 	int (*handle_aline)(void *ctx, uint16_t opcode, M68kRsRegs *io_regs);
 	void (*boundary_hook)(void *ctx, uint32_t cycles);
 	int (*get_irq)(void *ctx);
+	/* Reports a contiguous, side-effect-free guest RAM window to the batch
+	 * executor: writes *base / *len and returns the host pointer backing
+	 * *base, or NULL when no direct window is available. Re-queried at the
+	 * start of every m68k_rs_run_batch() call. */
+	uint8_t *(*fast_mem)(void *ctx, uint32_t *base, uint32_t *len);
 	void *host_ctx;
 } M68kRsHostCallbacks;
 
@@ -95,6 +100,15 @@ void m68k_rs_set_irq(M68kRsCpu *cpu, int level);
 void m68k_rs_request_stop(M68kRsCpu *cpu);
 
 M68kRsRunResult m68k_rs_run_cycles(M68kRsCpu *cpu, int32_t cycle_budget);
+
+/* Throughput path: instruction-budgeted, no cycle accounting and no
+ * per-instruction boundary hook, so the host polls interrupts between
+ * batches. Uses the decoded-op cache, the fast_mem window and the trace JIT. */
+M68kRsRunResult m68k_rs_run_batch(M68kRsCpu *cpu, uint32_t max_instructions);
+
+/* Non-zero when the Cranelift trace JIT was compiled in. The batch path works
+ * either way; without it hot traces run on the portable executor. */
+int m68k_rs_jit_available(void);
 
 #ifdef __cplusplus
 }

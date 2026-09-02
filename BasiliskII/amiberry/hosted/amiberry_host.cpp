@@ -371,10 +371,15 @@ uaecptr cpuboard_get_reset_pc(uaecptr *stack)
 	return 0;
 }
 
+/* Defined in BasiliskII/memory.cpp: base of the flat 4GB Host_Mem_Base
+ * mmap that backs every Mac guest address (Mac2HostAddr(addr) == this + addr). */
+extern unsigned char *Host_Mem_Base;
+
 addrbank dummy_bank;
 addrbank kickmem_bank;
 addrbank rtarea_bank;
-static addrbank mac_bank;
+static addrbank mac_bank;         /* SCC MMIO window only: must stay indirect. */
+static addrbank mac_direct_bank;  /* Everything else: flat Host_Mem_Base, JIT can go direct. */
 addrbank *mem_banks[MEMORY_BANKS];
 uae_u8 *baseaddr[MEMORY_BANKS];
 uae_u8 ce_banktype[65536];
@@ -421,34 +426,74 @@ static int REGPARAM2 mac_check(uaecptr addr, uae_u32 size)
 }
 
 /*
- * Fills mac_bank with Macintosh accessors and points every 64K slot at it.
+ * Fills mac_direct_bank/mac_bank with Macintosh accessors. Every 64K slot
+ * defaults to mac_direct_bank (flat Host_Mem_Base, JIT compiles direct
+ * loads/stores); only the SCC MMIO windows are pointed at mac_bank, whose
+ * jit_read_flag/jit_write_flag force the JIT back to indirect (checked)
+ * access for any block that touches them. Ranges mirror is_scc_addr() in
+ * BasiliskII/include/cpu_emulation.h: both 24-bit mirrors are marked
+ * regardless of current addressing mode, since a 32-bit-clean ROM can still
+ * briefly run 24-bit during early boot.
+ *   0x00900000-0x009FFFFF, 0x00B00000-0x00BFFFFF : 24-bit SCC mirrors
+ *   0x50000000-0x50FFFFFF                        : 32-bit SCC window
  * dummy_bank stays a true unmapped sentinel: UAE Exception() treats
  * SSP in dummy_bank as CPU_HALT_SSP_IN_NON_EXISTING_ADDRESS, so the Mac
  * RAM bank must be a different addrbank object.
+ *
+ * mem_banks[] alone is NOT enough for the JIT's direct path: computed-jump
+ * targets (JMP/JSR (An), see jnf_MEM_GETADR_JMP_OFF in
+ * compemu_midfunc_arm64_2.cpp) translate guest->host addresses via the
+ * *separate* per-bank baseaddr[] array, not via R_MEMSTART/natmem_offset.
+ * Skipping put_mem_bank() left baseaddr[] all-zero, so any computed jump
+ * stored the raw (untranslated) guest address into regs.pc_p, which then
+ * segfaulted on the next fetch. put_mem_bank() populates both arrays
+ * consistently; mac_direct_bank.baseaddr = Host_Mem_Base with realstart=0
+ * makes baseaddr[i] + addr == Host_Mem_Base + addr for every slot, matching
+ * mac_xlate()/Mac2HostAddr() exactly.
  */
 static void amiberry_init_mac_banks(void)
 {
 	memset(&dummy_bank, 0, sizeof(dummy_bank));
 	memset(&mac_bank, 0, sizeof(mac_bank));
-	mac_bank.lget = mac_lget;
-	mac_bank.wget = mac_wget;
-	mac_bank.bget = mac_bget;
-	mac_bank.lput = mac_lput;
-	mac_bank.wput = mac_wput;
-	mac_bank.bput = mac_bput;
-	mac_bank.xlateaddr = mac_xlate;
-	mac_bank.check = mac_check;
-	mac_bank.lgeti = mac_lget;
-	mac_bank.wgeti = mac_wget;
+	memset(&mac_direct_bank, 0, sizeof(mac_direct_bank));
+
+	for (addrbank *b : { &mac_bank, &mac_direct_bank }) {
+		b->lget = mac_lget;
+		b->wget = mac_wget;
+		b->bget = mac_bget;
+		b->lput = mac_lput;
+		b->wput = mac_wput;
+		b->bput = mac_bput;
+		b->xlateaddr = mac_xlate;
+		b->check = mac_check;
+		b->lgeti = mac_lget;
+		b->wgeti = mac_wget;
+	}
+
 	mac_bank.jit_read_flag = S_READ;
 	mac_bank.jit_write_flag = S_WRITE;
-	mac_bank.flags = ABFLAG_RAM | ABFLAG_INDIRECT;
-	mac_bank.label = _T("mac");
-	mac_bank.name = _T("Macintosh");
-	kickmem_bank = mac_bank;
-	rtarea_bank = mac_bank;
+	mac_bank.flags = ABFLAG_IO | ABFLAG_INDIRECT;
+	mac_bank.label = _T("scc");
+	mac_bank.name = _T("Macintosh SCC");
+
+	mac_direct_bank.jit_read_flag = 0;
+	mac_direct_bank.jit_write_flag = 0;
+	mac_direct_bank.flags = ABFLAG_RAM;
+	mac_direct_bank.label = _T("mac");
+	mac_direct_bank.name = _T("Macintosh");
+	mac_direct_bank.baseaddr = Host_Mem_Base;
+
+	kickmem_bank = mac_direct_bank;
+	rtarea_bank = mac_direct_bank;
+
 	for (int i = 0; i < MEMORY_BANKS; i++)
-		mem_banks[i] = &mac_bank;
+		put_mem_bank((uaecptr)i << 16, &mac_direct_bank, 0);
+	for (int i = 0x90; i < 0xA0; i++)
+		put_mem_bank((uaecptr)i << 16, &mac_bank, 0);
+	for (int i = 0xB0; i < 0xC0; i++)
+		put_mem_bank((uaecptr)i << 16, &mac_bank, 0);
+	for (int i = 0x5000; i < 0x5100; i++)
+		put_mem_bank((uaecptr)i << 16, &mac_bank, 0);
 }
 
 addrbank *get_mem_bank_real(uaecptr)
@@ -571,18 +616,46 @@ int amiberry_cpu_init(int cpu_type, int fpu_type, int jit, uint32_t cache_kb, in
 	else
 		currprefs.fpu_model = 0;
 
-	/* Indirect JIT only: Mac memory is banked, not a flat NATMEM mapping. */
+	/* Direct/trusted JIT memory access. Mac memory is a flat 4GB
+	 * Host_Mem_Base mmap (see memory.cpp) and both address-translation bugs
+	 * that direct mode originally exposed are fixed: comp_hardflush above,
+	 * and jnf_MEM_GETADR_JMP_OFF (compemu_midfunc_arm64_2.cpp) now routes
+	 * computed-jump targets through R_MEMSTART/natmem_offset instead of the
+	 * separate baseaddr[] table, matching ARAnyM's WINUAE_ARANYM
+	 * get_n_addr_jmp(). Verified: no host crashes, no regs.pc_p desyncs,
+	 * across repeated boots. */
 	currprefs.comptrustbyte = 1;
 	currprefs.comptrustword = 1;
 	currprefs.comptrustlong = 1;
 	currprefs.comptrustnaddr = 1;
 	currprefs.compnf = true;
-	currprefs.comp_hardflush = true;
+	/* Lazy flush: 68040 guests issue CINVA/CPUSHx routinely for DMA cache
+	 * coherency (every disk/network transfer), not because code changed.
+	 * Hard-flushing the whole JIT cache on each one forces constant
+	 * recompilation; lazy flush just checksums affected blocks before
+	 * reuse, which is what real UAE JIT builds use for this reason. */
+	currprefs.comp_hardflush = false;
 	currprefs.cpu_compatible = false;
 	currprefs.address_space_24 = false;
 	currprefs.fpu_no_unimplemented = false;
 	canbang = false;
 	jit_direct_compatible_memory = false;
+	/* memory_init() (amiberry_glue.cpp, before this call) has already
+	 * allocated Host_Mem_Base; wired for when the JIT direct-access bug
+	 * above is fixed and canbang goes back to true. */
+	natmem_offset = Host_Mem_Base;
+
+	/* Mac memory reaches the JIT through indirect addrbanks, so multi-access
+	 * opcodes (MOVEM in both directions, MOVE16) must fall back to the
+	 * per-access helpers instead of being compiled as native burst accesses:
+	 * a runtime data address can land in an indirect bank even when the
+	 * instruction history carries no special-memory marker.
+	 * jit_opcode_needs_compile_fallback() (compemu_support_arm.cpp) already
+	 * implements exactly that, but it is gated on jit_n_addr_bank_unsafe,
+	 * which nothing ever assigned - so the guard was dead code and MOVEM
+	 * compiled to a burst that corrupted guest memory (a MOVEM.L (A6)+
+	 * register restore then RTS'd through a clobbered slot). */
+	jit_n_addr_bank_unsafe = 1;
 
 	if (jit && cache_kb > 0) {
 		currprefs.cachesize = (int)cache_kb;

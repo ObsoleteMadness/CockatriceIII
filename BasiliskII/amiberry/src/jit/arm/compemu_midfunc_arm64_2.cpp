@@ -8124,10 +8124,18 @@ MIDFUNC(2,jnf_MEM_GETADR_JMP_OFF,(W4 d, RR4 adr))
 	adr = readreg(adr);
 	d = writereg(d);
 
-	LOAD_U64(REG_WORK2, (uintptr)baseaddr);
-	LSR_wwi(REG_WORK1, adr, 16);
-	LDR_xXxLSLi(REG_WORK3, REG_WORK2, REG_WORK1, 1); // 1 means shift by 3
-	ADD_xxwEX(d, REG_WORK3, adr, EX_UXTW);
+	/* Translate via R_MEMSTART/natmem_offset (the same source of truth as
+	 * jnf_MEM_GETADR_OFF, used for every ordinary memory access) instead of
+	 * the separate per-bank baseaddr[] table. baseaddr[] must be kept in
+	 * sync with mem_banks[] by every bank registration (put_mem_bank()); a
+	 * bank that skips it silently produces an untranslated (raw guest)
+	 * pointer here with no compile-time or runtime signal — this is what
+	 * crashed JMP/JSR (An) after amiberry_init_mac_banks() assigned
+	 * mem_banks[] directly without populating baseaddr[]. Reusing
+	 * R_MEMSTART removes that whole class of bug. Matches ARAnyM's
+	 * WINUAE_ARANYM get_n_addr_jmp(), which routes jump targets through the
+	 * same path as ordinary get_n_addr() for the same reason. */
+	ADD_xxwEX(d, R_MEMSTART, adr, EX_UXTW);
 	LOAD_U64(REG_WORK1, ~1ULL);
 	AND_xxx(d, d, REG_WORK1);
 

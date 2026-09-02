@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <setjmp.h>
 
@@ -29,6 +30,24 @@ static jmp_buf s_cpu_reset_jmp;
 static volatile bool s_cpu_reset_valid = false;
 static bool s_quit_requested = false;
 static M68kRsCpu *s_cpu = nullptr;
+
+/* Set from UseJIT in init: true selects m68k_rs_run_batch (decoded-op cache,
+ * fastmem window, trace JIT), false keeps the cycle-accurate interpreter. */
+static bool s_use_batch = false;
+
+/*
+ * Slice budgets. The cycle path is budgeted in CPU cycles and polls interrupts
+ * from its per-instruction boundary hook; the batch path is budgeted in
+ * instructions and polls between batches, so its budget also sets worst-case
+ * interrupt latency. 16K instructions is well under a 60 Hz tick while still
+ * amortising the batch entry cost across a long run of guest code.
+ */
+enum {
+	M68K_RS_SLICE_CYCLES = 50000,
+	M68K_RS_SLICE_INSNS = 16384,
+	M68K_RS_NESTED_CYCLES = 5000,
+	M68K_RS_NESTED_INSNS = 2048
+};
 
 /*
  * Writes trap callback results back into the live CPU, gating A7 like Musashi.
@@ -123,6 +142,33 @@ static int m68k_rs_host_handle_aline(void *ctx, uint16 opcode, M68kRsRegs *io_re
 	return 0;
 }
 
+#ifdef M68K_RS_BATCH_TRACE
+/*
+ * Prints the post-retirement register state for the first M68K_RS_TRACE_PC
+ * instructions so the batch and cycle paths can be diffed against each other.
+ */
+static long s_trace_left = -1;
+
+static void m68k_rs_trace_step(void)
+{
+	if (s_trace_left < 0) {
+		const char *n = getenv("M68K_RS_TRACE_PC");
+		s_trace_left = n ? atol(n) : 0;
+	}
+	if (s_trace_left == 0)
+		return;
+	s_trace_left--;
+	printf("[TR] pc=%08X sr=%04X d3=%08X a2=%08X a3=%08X a6=%08X a7=%08X\n",
+	       (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_PC),
+	       (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_SR),
+	       (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_D3),
+	       (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_A2),
+	       (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_A3),
+	       (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_A6),
+	       (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_A7));
+}
+#endif
+
 /*
  * Polls Basilisk interrupt sources and records the guest PC each instruction.
  */
@@ -131,6 +177,9 @@ static void m68k_rs_host_boundary_hook(void *ctx, uint32 cycles)
 	(void)ctx;
 	(void)cycles;
 	cpu_engine_note_pc(m68k_rs_get_reg(s_cpu, M68K_RS_REG_PC));
+#ifdef M68K_RS_BATCH_TRACE
+	m68k_rs_trace_step();
+#endif
 }
 
 static int m68k_rs_host_get_irq(void *ctx)
@@ -140,12 +189,87 @@ static int m68k_rs_host_get_irq(void *ctx)
 }
 
 /*
- * Runs a cycle slice, stopping early when the host requests exit or an unhandled trap fires.
+ * Publishes the flat Macintosh RAM window to the batch executor.
+ *
+ * UAE routes every access through memory_get_* → ReadMacInt/WriteMacInt so
+ * SCC MMIO and ROM write suppression stay in effect. m68k-rs FastMem is a
+ * single direct window; when it covers RAM (or ROM) the batch executor can
+ * bypass those hooks and we have seen silent corruption/stalls during heavy
+ * SCSI (17k READs then hang) while the same build with FastMem disabled
+ * reaches full boot (~27k READs in 45s).
+ *
+ * Leave the window off until the vendor fastmem path is audited; set
+ * M68K_RS_FASTMEM=1 to experiment with the layout below.
+ *
+ * Intended layout when enabled (32-bit):
+ *   base 0, len RAMSize — RAM only; ROM/framebuffer/SCC use callbacks.
+ * 24-bit: len 0x900000 (below SCC mirrors; Mac2HostAddr masking stays
+ * on the callback path).
  */
-static void m68k_rs_run_slice(int32 cycles)
+static uint8 *m68k_rs_host_fast_mem(void *ctx, uint32 *base, uint32 *len)
 {
+	(void)ctx;
+	if (!Host_Mem_Base)
+		return nullptr;
+	if (!getenv("M68K_RS_FASTMEM"))
+		return nullptr;
+	*base = 0;
+	if (TwentyFourBitAddressing) {
+		*len = 0x00900000U;
+	} else if (RAMSize > 0) {
+		*len = RAMSize;
+	} else if (ROMBaseMac != 0) {
+		*len = ROMBaseMac;
+	} else {
+		*len = 0x50000000U;
+	}
+	return Host_Mem_Base;
+}
+
+/*
+ * Runs one slice, stopping early when the host requests exit or an unhandled trap fires.
+ *
+ * Arguments:
+ *   cycles: budget for the cycle-accurate interpreter path.
+ *   instructions: budget for the batch path (also its interrupt poll interval).
+ */
+static void m68k_rs_run_slice(int32 cycles, uint32 instructions)
+{
+#ifdef M68K_RS_BATCH_TRACE
+	/* One-instruction batches while tracing so batch and cycle paths emit
+	 * comparable per-instruction [TR] lines. */
+	const char *trace_env = getenv("M68K_RS_TRACE_PC");
+	const bool tracing = trace_env && trace_env[0] != '\0' && trace_env[0] != '0';
+	if (s_use_batch && tracing)
+		instructions = 1;
+#endif
 	for (;;) {
-		M68kRsRunResult result = m68k_rs_run_cycles(s_cpu, cycles);
+		M68kRsRunResult result;
+		if (s_use_batch) {
+			/* No per-instruction boundary hook on this path: sample the
+			 * interrupt level and the heartbeat PC per batch instead. */
+			m68k_rs_set_irq(s_cpu, cpu_engine_intlev());
+			result = m68k_rs_run_batch(s_cpu, instructions);
+			cpu_engine_note_pc(m68k_rs_get_reg(s_cpu, M68K_RS_REG_PC));
+#ifdef M68K_RS_BATCH_TRACE
+			if (tracing)
+				m68k_rs_trace_step();
+			else {
+				static int dbg_n = 0;
+				if (dbg_n < 200) {
+					dbg_n++;
+					printf("[RSDBG] batch exit=%d insns=%u pc=%08X sr=%04X a7=%08X\n",
+					       (int)result.exit, result.instructions,
+					       (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_PC),
+					       (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_SR),
+					       (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_A7));
+					fflush(stdout);
+				}
+			}
+#endif
+		} else {
+			result = m68k_rs_run_cycles(s_cpu, cycles);
+		}
 		if (s_quit_requested)
 			return;
 		if (result.exit == M68K_RS_EXIT_HALTED) {
@@ -192,11 +316,18 @@ static bool m68k_rs_engine_init(void)
 		callbacks.handle_aline = m68k_rs_host_handle_aline;
 		callbacks.boundary_hook = m68k_rs_host_boundary_hook;
 		callbacks.get_irq = m68k_rs_host_get_irq;
+		callbacks.fast_mem = m68k_rs_host_fast_mem;
 		callbacks.host_ctx = nullptr;
 		s_cpu = m68k_rs_create(&callbacks);
 		if (!s_cpu)
 			return false;
 	}
+
+	s_use_batch = UseJIT;
+	printf("[m68k-rs] execution path: %s (cranelift %s)\n",
+	       s_use_batch ? "batch/JIT" : "cycle-accurate interpreter",
+	       m68k_rs_jit_available() ? "compiled in" : "not compiled in");
+	fflush(stdout);
 
 	memory_init();
 	m68k_rs_pulse_reset(s_cpu);
@@ -224,7 +355,7 @@ static void m68k_rs_engine_start(void)
 			m68k_rs_invalidate_prefetch(s_cpu);
 
 			while (!s_quit_requested)
-				m68k_rs_run_slice(50000);
+				m68k_rs_run_slice(M68K_RS_SLICE_CYCLES, M68K_RS_SLICE_INSNS);
 			break;
 		} else {
 			printf("Reset680x0: Resetting machine subsystems...\n");
@@ -276,7 +407,7 @@ static void m68k_rs_engine_execute_68k_trap(uint16 trap, struct M68kRegisters *r
 	bool return_seen = false;
 	PushReturnStack(&return_seen);
 	while (!return_seen && !s_quit_requested)
-		m68k_rs_run_slice(5000);
+		m68k_rs_run_slice(M68K_RS_NESTED_CYCLES, M68K_RS_NESTED_INSNS);
 	PopReturnStack();
 
 	sp = m68k_rs_get_reg(s_cpu, M68K_RS_REG_A7) + 4;
@@ -308,7 +439,7 @@ static void m68k_rs_engine_execute_68k(uint32 addr, struct M68kRegisters *r)
 	bool return_seen = false;
 	PushReturnStack(&return_seen);
 	while (!return_seen && !s_quit_requested)
-		m68k_rs_run_slice(5000);
+		m68k_rs_run_slice(M68K_RS_NESTED_CYCLES, M68K_RS_NESTED_INSNS);
 	PopReturnStack();
 
 	sp = m68k_rs_get_reg(s_cpu, M68K_RS_REG_A7) + 2;

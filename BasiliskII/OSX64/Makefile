@@ -10,8 +10,11 @@ mandir = ${prefix}/man
 
 CC = clang
 CXX = clang++
-CFLAGS = -O2 -Wall -Wno-unused -Wno-deprecated-non-prototype
-CXXFLAGS = -O2 -Wall -Wno-unused -Wno-writable-strings -Wno-multichar -Wno-deprecated-declarations -Wno-format -Wno-c++11-narrowing
+# `make optimised` overrides this to -Os; JIT-heavy code is not cycle/size
+# sensitive enough for -Os to matter, this is about smaller release binaries.
+OPT_LEVEL ?= -O2
+CFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-deprecated-non-prototype
+CXXFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-writable-strings -Wno-multichar -Wno-deprecated-declarations -Wno-format -Wno-c++11-narrowing
 
 APP = CockatriceIII
 
@@ -59,8 +62,8 @@ EMU68_CORE_CPPFLAGS = $(EMU68_INCLUDES) -I../include -I. -I../Unix -I../SDL -I..
 	-include ../Emu68/include/RegLock.h -include ../Emu68/hosted/A64.h
 
 HOST_CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I../bridge/darwin -I../Emu68/hosted -I../Emu68/include
-HOST_CFLAGS = -O2 -Wall -Wno-unused -Wno-deprecated-non-prototype
-HOST_CXXFLAGS = -O2 -Wall -Wno-unused -Wno-writable-strings -Wno-multichar -Wno-deprecated-declarations -Wno-format -Wno-c++11-narrowing
+HOST_CFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-deprecated-non-prototype
+HOST_CXXFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-writable-strings -Wno-multichar -Wno-deprecated-declarations -Wno-format -Wno-c++11-narrowing
 DEFS = -DHAVE_CONFIG_H -D_REENTRANT
 ifeq ($(COCKATRICE_DEBUG),1)
   DEFS += -DCOCKATRICE_DEBUG=1 -DSCC_DEBUG=1 -DEMULOP_DEBUG=1 -DHEARTBEAT_DEBUG=1
@@ -170,7 +173,7 @@ SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../
     $(SYSSRCS) $(CPUSRCS)
 
 ## Rules
-.PHONY: all clean mostlyclean clean-objects slirp_lib universal amiberry-objs debug
+.PHONY: all clean mostlyclean clean-objects slirp_lib universal amiberry-objs debug optimised optimized
 .SUFFIXES:
 .SUFFIXES: .c .cpp .m .mm .s .o .h
 
@@ -181,6 +184,13 @@ all: $(APP)
 debug:
 	$(MAKE) clean-objects
 	$(MAKE) COCKATRICE_DEBUG=1 all
+
+# Release build optimised for size (-Os) rather than the default -O2.
+# clean-objects so TUs built at another OPT_LEVEL get rebuilt.
+optimized: optimised
+optimised:
+	$(MAKE) clean-objects
+	$(MAKE) OPT_LEVEL=-Os all
 
 universal:
 	$(MAKE) clean-objects
@@ -255,7 +265,7 @@ clean-objects:
 	rm -rf $(EMU68_GEN) $(M68K_RS_TARGET)
 	$(MAKE) -C ../slirp clean
 
-$(M68K_RS_LIB): $(M68K_RS_DIR)/Cargo.toml $(M68K_RS_DIR)/src/lib.rs ../vendor/m68k-rs/Cargo.toml
+$(M68K_RS_LIB): $(M68K_RS_DIR)/Cargo.toml $(M68K_RS_DIR)/src/lib.rs ../vendor/m68k-rs/Cargo.toml ../vendor/m68k-rs/src/core/op_cache.rs
 	cargo build --release --manifest-path $(M68K_RS_DIR)/Cargo.toml --target-dir $(M68K_RS_TARGET)
 
 mostlyclean: clean-objects

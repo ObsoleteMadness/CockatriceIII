@@ -441,9 +441,11 @@ bool Init680x0(void)
 	if (cachesize > 0)
 		JITCacheSize = (uint32)cachesize;
 
-	// Enforce JIT mode flags per active engine. uae/emu68/syn68k/m68k_rs never fall back to Musashi.
+	// Engines with no translator at all ignore the flag. m68k_rs honours it:
+	// UseJIT selects its batch executor (decoded-op cache, direct-RAM window,
+	// trace JIT) over the cycle-accurate interpreter.
 	if (s_active_engine && (strcmp(s_active_engine->id, "musashi") == 0 ||
-	    strcmp(s_active_engine->id, "syn68k") == 0 || strcmp(s_active_engine->id, "m68k_rs") == 0)) {
+	    strcmp(s_active_engine->id, "syn68k") == 0)) {
 		UseJIT = false;
 	}
 

@@ -8,5 +8,12 @@ publish = false
 crate-type = ["staticlib"]
 name = "cockatrice_m68k_rs"
 
+[features]
+# Pulls Cranelift in so run_batch's hot traces compile to native code. Without
+# it run_batch still works, on the portable trace executor; build
+# --no-default-features to compare the two.
+default = ["jit"]
+jit = ["m68k/jit"]
+
 [dependencies]
 m68k = { path = "../vendor/m68k-rs" }
