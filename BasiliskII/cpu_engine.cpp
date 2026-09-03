@@ -162,7 +162,7 @@ bool cpu_engine_map_rom_base(void)
 int cpu_engine_intlev(void)
 {
 	if (SCCInterruptRequest)
-		return TwentyFourBitAddressing ? 2 : 4;
+		return 4;
 	return InterruptFlags ? 1 : 0;
 }
 

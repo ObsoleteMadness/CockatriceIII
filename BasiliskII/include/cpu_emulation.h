@@ -147,9 +147,6 @@ extern void ClearMMIORegions(void);
 /*
  * Looks up the registered MMIO region (if any) covering a Macintosh address.
  *
- * Applies the same 24-bit mirroring rule as Mac2HostAddr() so a region
- * registered at its canonical (masked) base still matches every mirror.
- *
  * Arguments:
  *   addr: 32-bit Macintosh address.
  *
@@ -158,10 +155,9 @@ extern void ClearMMIORegions(void);
  */
 static inline const MMIORegion *FindMMIORegion(uint32 addr)
 {
-	uint32 lookup = TwentyFourBitAddressing ? (addr & 0x00ffffff) : addr;
 	for (int i = 0; i < g_mmio_region_count; i++) {
 		const MMIORegion *r = &g_mmio_regions[i];
-		if (lookup >= r->base && lookup < r->base + r->length)
+		if (addr >= r->base && addr < r->base + r->length)
 			return r;
 	}
 	return NULL;
@@ -211,9 +207,6 @@ static inline bool is_scc_addr(uint32 addr)
  */
 static inline uint8 *Mac2HostAddr(uint32 addr)
 {
-	// Mask address to 24 bits if running in vintage 24-bit addressing mode
-	if (TwentyFourBitAddressing)
-		addr &= 0x00ffffff;
 	return Host_Mem_Base + addr;
 }
 
@@ -303,7 +296,7 @@ static inline void WriteMacInt8(uint32 addr, uint32 b)
 		return;
 	}
 	// Protect ROM region from guest writes
-	if (!TwentyFourBitAddressing && addr >= ROMBaseMac && addr < ROMBaseMac + ROMSize)
+	if (addr >= ROMBaseMac && addr < ROMBaseMac + ROMSize)
 		return;
 	*(uint8 *)Mac2HostAddr(addr) = (uint8)b;
 }
@@ -325,7 +318,7 @@ static inline void WriteMacInt16(uint32 addr, uint32 w)
 		return;
 	}
 	// Protect ROM region from guest writes
-	if (!TwentyFourBitAddressing && addr >= ROMBaseMac && addr < ROMBaseMac + ROMSize)
+	if (addr >= ROMBaseMac && addr < ROMBaseMac + ROMSize)
 		return;
 	do_put_mem_word((uint16 *)Mac2HostAddr(addr), (uint16)w);
 }
@@ -346,7 +339,7 @@ static inline void WriteMacInt32(uint32 addr, uint32 l)
 		return;
 	}
 	// Protect ROM region from guest writes
-	if (!TwentyFourBitAddressing && addr >= ROMBaseMac && addr < ROMBaseMac + ROMSize)
+	if (addr >= ROMBaseMac && addr < ROMBaseMac + ROMSize)
 		return;
 	do_put_mem_long((uint32 *)Mac2HostAddr(addr), l);
 }

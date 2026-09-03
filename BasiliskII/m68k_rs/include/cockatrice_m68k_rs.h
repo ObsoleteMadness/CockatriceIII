@@ -100,12 +100,10 @@ void m68k_rs_destroy(M68kRsCpu *cpu);
  * and memory_init(); the table is static for the process lifetime today, so
  * no later refresh is needed. `count` is clamped to M68K_RS_MAX_MAPPED_RANGES.
  *
- * `scc_24bit_mirror`: pass non-zero when TwentyFourBitAddressing is active.
- * The Z8530 SCC then mirrors across every 16MB slice of the 32-bit space
- * (masked on the low 24 bits), which cannot be expressed as a fixed range
- * table entry; the bus checks that mask locally instead. In 32-bit mode the
- * caller should instead append the SCC's single 0x50000000-0x51000000
- * window as a normal range and pass zero here. */
+ * `scc_24bit_mirror`: legacy 24-bit-addressing flag, always 0 now that the
+ * emulated machine is fixed at 68040/32-bit addressing. The caller appends
+ * the SCC's single 0x50000000-0x51000000 window as a normal range instead.
+ * Kept as a parameter for ABI stability rather than changing this signature. */
 void m68k_rs_set_mapped_ranges(M68kRsCpu *cpu, const uint32_t *starts, const uint32_t *ends,
                                 uint32_t count, int scc_24bit_mirror);
 

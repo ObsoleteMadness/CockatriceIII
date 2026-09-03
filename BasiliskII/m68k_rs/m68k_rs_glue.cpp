@@ -133,8 +133,6 @@ static uint32 m68k_rs_hole_probe_addr(void)
  */
 static bool m68k_rs_holes_visible(void)
 {
-	if (TwentyFourBitAddressing)
-		return true;
 	const uint32 probe = m68k_rs_hole_probe_addr();
 	return !memory_is_mapped(probe, 1);
 }
@@ -299,10 +297,7 @@ static int m68k_rs_host_get_irq(void *ctx)
  * used to apply per-call: RAM/ROM/framebuffer commits, plus every registered
  * MMIO region (see RegisterMMIORegion() in cpu_emulation.h), which is always
  * legal even though it is not host-committed pages. A future MMIO device is
- * picked up here automatically once registered. In 24-bit mode MMIO mirrors
- * across every 16MB slice of the address space and cannot be expressed as a
- * fixed range, so that case is flagged for the bus to check locally instead
- * (see m68k_rs_set_mapped_ranges).
+ * picked up here automatically once registered.
  */
 static void m68k_rs_push_mapped_ranges(void)
 {
@@ -310,16 +305,13 @@ static void m68k_rs_push_mapped_ranges(void)
 	uint32 ends[M68K_RS_MAX_MAPPED_RANGES];
 	int n = memory_get_mapped_ranges(starts, ends, M68K_RS_MAX_MAPPED_RANGES);
 
-	int mmio_24bit_mirror = TwentyFourBitAddressing ? 1 : 0;
-	if (!TwentyFourBitAddressing) {
-		for (int i = 0; i < g_mmio_region_count && n < M68K_RS_MAX_MAPPED_RANGES; i++) {
-			starts[n] = g_mmio_regions[i].base;
-			ends[n] = g_mmio_regions[i].base + g_mmio_regions[i].length;
-			n++;
-		}
+	for (int i = 0; i < g_mmio_region_count && n < M68K_RS_MAX_MAPPED_RANGES; i++) {
+		starts[n] = g_mmio_regions[i].base;
+		ends[n] = g_mmio_regions[i].base + g_mmio_regions[i].length;
+		n++;
 	}
 
-	m68k_rs_set_mapped_ranges(s_cpu, starts, ends, (uint32_t)n, mmio_24bit_mirror);
+	m68k_rs_set_mapped_ranges(s_cpu, starts, ends, (uint32_t)n, 0);
 }
 
 /*
@@ -354,8 +346,8 @@ static uint8 *m68k_rs_host_fast_mem(void *ctx, uint32 *base, uint32 *len)
 	*base = 0;
 	if (s_fastmem_mode == M68K_RS_FASTMEM_LEGACY) {
 		/* Historic broad window; kept only for targeted A/B tests. */
-		*len = TwentyFourBitAddressing ? 0x00900000U : 0x50000000U;
-	} else if (s_fastmem_mode == M68K_RS_FASTMEM_MULTI && !TwentyFourBitAddressing && s_cpu) {
+		*len = 0x50000000U;
+	} else if (s_fastmem_mode == M68K_RS_FASTMEM_MULTI && s_cpu) {
 		/*
 		 * Multi-region selection without changing the Rust FastMem ABI:
 		 * publish one contiguous region per batch, choosing the region that
@@ -386,8 +378,6 @@ static uint8 *m68k_rs_host_fast_mem(void *ctx, uint32 *base, uint32 *len)
 		} else {
 			*len = 0x50000000U;
 		}
-	} else if (TwentyFourBitAddressing) {
-		*len = 0x00900000U;
 	} else if (RAMSize > 0) {
 		*len = RAMSize;
 	} else if (ROMBaseMac != 0) {

@@ -114,28 +114,18 @@ void ClearMMIORegions(void)
 }
 
 /*
- * (Re)registers the built-in MMIO devices for the current addressing mode.
+ * (Re)registers the built-in MMIO devices.
  *
- * SCC is the only registered device today. Its window depends on
- * TwentyFourBitAddressing, so this is rebuilt every time the window policy
- * is (re)applied rather than once at startup.
+ * SCC is the only registered device today. Its window is rebuilt every time
+ * the window policy is (re)applied rather than once at startup, so a future
+ * device can be added the same way without a separate init path.
  */
 static void memory_register_builtin_mmio(void)
 {
 	ClearMMIORegions();
-	if (TwentyFourBitAddressing) {
-		/* The Z8530 SCC is mirrored across two 1MB read/write windows:
-		 *   0x900000-0x9FFFFF  (SCC Read)
-		 *   0xB00000-0xBFFFFF  (SCC Write)
-		 * Either window dispatches both reads and writes to SCC_Access(),
-		 * matching the original map_banks(&scc_bank, ...) bank assignments. */
-		RegisterMMIORegion(0x00900000, 0x00100000, scc_bget, scc_bput);
-		RegisterMMIORegion(0x00b00000, 0x00100000, scc_bget, scc_bput);
-	} else {
-		/* In 32-bit mode the SCC occupies a full 16MB window at 0x50000000,
-		 * matching map_banks(&scc_bank, 0x5000, 0x100). */
-		RegisterMMIORegion(0x50000000, 0x01000000, scc_bget, scc_bput);
-	}
+	/* The SCC occupies a full 16MB window at 0x50000000, matching
+	 * map_banks(&scc_bank, 0x5000, 0x100). */
+	RegisterMMIORegion(0x50000000, 0x01000000, scc_bget, scc_bput);
 }
 
 /*
@@ -182,12 +172,8 @@ static void memory_apply_window_policy(void)
 	if (RAMSize > 0)
 		memory_commit_range(RAMBaseMac, RAMSize, MEMORY_PROT_READ | MEMORY_PROT_WRITE);
 
-	/*
-	 * Keep the same ROM commit policy as memory_init(): a full 8MB Quadra
-	 * window in 32-bit mode, minimum 1MB in 24-bit mode.
-	 */
-	uint32 rom_commit = TwentyFourBitAddressing ? (ROMSize > 0x100000 ? ROMSize : 0x100000)
-	                                            : (ROMSize > 0x00800000 ? ROMSize : 0x00800000);
+	/* Keep the same ROM commit policy as memory_init(): a full 8MB Quadra window. */
+	uint32 rom_commit = ROMSize > 0x00800000 ? ROMSize : 0x00800000;
 	memory_commit_range(ROMBaseMac, rom_commit, MEMORY_PROT_READ | MEMORY_PROT_WRITE);
 
 	if (MacFrameLayout != FLAYOUT_NONE && MacFrameSize > 0)
@@ -219,13 +205,7 @@ static PVOID s_veh = NULL;
  */
 uint32 scc_bget(uint32 addr)
 {
-	uint32 a24 = addr & 0x00ffffff;
-	// In 24-bit mode, SCC registers are at 0x00900000; in 32-bit mode at 0x50000000
-	if (TwentyFourBitAddressing) {
-		return SCC_Access(0, false, (a24 >> 1) & 3);
-	} else {
-		return SCC_Access(0, false, (addr >> 1) & 3);
-	}
+	return SCC_Access(0, false, (addr >> 1) & 3);
 }
 
 /*
@@ -237,13 +217,7 @@ uint32 scc_bget(uint32 addr)
  */
 void scc_bput(uint32 addr, uint32 b)
 {
-	uint32 a24 = addr & 0x00ffffff;
-	// Dispatch write to SCC register based on current addressing mode
-	if (TwentyFourBitAddressing) {
-		SCC_Access((uint8)b, true, (a24 >> 1) & 3);
-	} else {
-		SCC_Access((uint8)b, true, (addr >> 1) & 3);
-	}
+	SCC_Access((uint8)b, true, (addr >> 1) & 3);
 }
 
 /*

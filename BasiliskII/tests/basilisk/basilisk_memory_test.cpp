@@ -1,5 +1,5 @@
 /*
- * basilisk_memory_test.cpp - RAM/ROM banking, dummy-backed holes, 24-bit mirrors
+ * basilisk_memory_test.cpp - RAM/ROM banking, dummy-backed holes
  */
 
 #include <stdio.h>
@@ -52,13 +52,6 @@ int main(void)
 	CHECK(memory_is_mapped(MacFrameBaseMac + 0x01000000, 4), "Rest of NuBus slot is still dummy-backed");
 	MacFrameSize = 0;
 	MacFrameLayout = FLAYOUT_NONE;
-
-	TwentyFourBitAddressing = true;
-	memory_init();
-	WriteMacInt32(0x00002000, 0xAABBCCDD);
-	CHECK(ReadMacInt32(0xFF002000) == 0xAABBCCDD, "24-bit addressing mirror read");
-	TwentyFourBitAddressing = false;
-	memory_init();
 
 	printf("\nResults: %d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

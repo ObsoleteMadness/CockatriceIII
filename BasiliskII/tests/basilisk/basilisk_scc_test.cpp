@@ -1,5 +1,5 @@
 /*
- * basilisk_scc_test.cpp - Z8530 SCC registers, 32-bit/24-bit MMIO, 68k MOVE.B
+ * basilisk_scc_test.cpp - Z8530 SCC registers, MMIO, 68k MOVE.B
  */
 
 #include <stdio.h>
@@ -65,13 +65,6 @@ int main(void)
 	WriteMacInt8(0x50F00002, 0x0C);
 	uint32 cpu_upper = ReadMacInt8(0x50F00002);
 	CHECK(cpu_upper == 0x7E, "RR12 in upper 32-bit SCC window");
-
-	TwentyFourBitAddressing = true;
-	memory_init();
-	uint32 mmio_24_rr0 = ReadMacInt8(0x00900002);
-	CHECK((mmio_24_rr0 & 0x04) != 0, "24-bit MMIO ReadMacInt8(0x00900002) SCC Channel A");
-	TwentyFourBitAddressing = false;
-	memory_init();
 
 	printf("\nResults: %d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

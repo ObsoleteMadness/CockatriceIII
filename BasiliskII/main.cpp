@@ -75,31 +75,12 @@ if(yearoffset>0)
 printf("Offsetting the year by %d billion ticks\n",yearoffset);
 
 #if EMULATED_68K
-	// Set CPU and FPU type (UAE emulation)
-	switch (ROMVersion) {
-		case ROM_VERSION_64K:
-		case ROM_VERSION_PLUS:
-		case ROM_VERSION_CLASSIC:
-			CPUType = 0;
-			FPUType = 0;
-			TwentyFourBitAddressing = true;
-			break;
-		case ROM_VERSION_II:
-			CPUType = PrefsFindInt32("cpu");
-			if (CPUType < 2) CPUType = 2;
-			if (CPUType > 4) CPUType = 4;
-			/* 68040 integrates the FPU; Basilisk must advertise it to the Mac ROM. */
-			FPUType = (CPUType == 4) ? 1 : (PrefsFindBool("fpu") ? 1 : 0);
-			TwentyFourBitAddressing = true;
-			break;
-		case ROM_VERSION_32:
-			CPUType = PrefsFindInt32("cpu");
-			if (CPUType < 2) CPUType = 2;
-			if (CPUType > 4) CPUType = 4;
-			FPUType = (CPUType == 4) ? 1 : (PrefsFindBool("fpu") ? 1 : 0);
-			TwentyFourBitAddressing = false;
-			break;
-	}
+	// The emulated machine is always a fixed 68040 with 32-bit addressing.
+	// Classic-Mac targets (68000/68010/68020, 24-bit-addressing ROMs) are
+	// no longer supported; the "cpu" pref is ignored.
+	CPUType = 4;
+	FPUType = 1;
+	TwentyFourBitAddressing = false;
 	const char *engine_name = "Musashi";
 	const char *req_engine = PrefsFindString("cpu_emulator");
 	if (req_engine && strcmp(req_engine, "uae") == 0) {

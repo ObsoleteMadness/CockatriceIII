@@ -54,7 +54,7 @@ prefs_desc common_prefs_items[] = {
 	{"ramsize", TYPE_INT32, false},		// Size of Mac RAM in bytes (main_*.cpp)
 	{"frameskip", TYPE_INT32, false},	// Number of frames to skip in refreshed video modes (video_*.cpp)
 	{"modelid", TYPE_INT32, false},		// Mac Model ID (Gestalt Model ID minus 6) (rom_patches.cpp)
-	{"cpu", TYPE_INT32, false},			// CPU type (0 = 68000, 1 = 68010 etc.) (main.cpp)
+	{"cpu", TYPE_INT32, false},			// Unused: CPU is hardcoded to 68040 (main.cpp). Kept for prefs-file compatibility.
 	{"cpu_emulator", TYPE_STRING, false}, // CPU emulator backend (musashi | uae | m68k_rs)
 	{"jit", TYPE_BOOLEAN, false},		// Enable JIT compilation
 	{"jitfpu", TYPE_BOOLEAN, false},	// Enable JIT for FPU instructions
@@ -100,7 +100,7 @@ void PrefsInit(void)
 	PrefsAddInt32("ramsize", 64 * 1024 * 1024);
 	PrefsAddInt32("frameskip", 2);
 	PrefsAddInt32("modelid", 29);	// Quadra 800
-	PrefsAddInt32("cpu", 4);		// 68040
+	PrefsAddInt32("cpu", 4);		// Unused: CPU is hardcoded to 68040 (main.cpp)
 	PrefsAddString("cpu_emulator", "musashi"); // musashi | uae | m68k_rs
 	PrefsAddBool("jit", false);
 	PrefsAddBool("jitfpu", false);

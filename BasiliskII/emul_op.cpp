@@ -147,7 +147,7 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 					D(bug("Read XPRAM %02x->%02lx\n", reg, r->d[2]));
 				} else {
 					D(bug("Write XPRAM %02x<-%02lx\n", reg, r->d[2] & 0xff));
-					if (reg == 0x8a && !TwentyFourBitAddressing)
+					if (reg == 0x8a)
 						r->d[2] |= 0x05;	// 32bit mode is always enabled if possible
 					XPRAM[reg] = r->d[2];
 				}
