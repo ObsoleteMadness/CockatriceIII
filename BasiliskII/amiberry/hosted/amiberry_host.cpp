@@ -623,11 +623,23 @@ int amiberry_cpu_init(int cpu_type, int fpu_type, int jit, uint32_t cache_kb, in
 	 * computed-jump targets through R_MEMSTART/natmem_offset instead of the
 	 * separate baseaddr[] table, matching ARAnyM's WINUAE_ARANYM
 	 * get_n_addr_jmp(). Verified: no host crashes, no regs.pc_p desyncs,
-	 * across repeated boots. */
+	 * across repeated boots. 0 = direct (trust the flat mmap and skip the
+	 * cockatrice_mac_valid_addr() call per compiled access); canbang below
+	 * must also be true or check_prefs_changed_comp() (compemu_prefs.cpp)
+	 * forces these back to 1 (indirect) on the next prefs-apply.
+	 *
+	 * Only comptrustnaddr (address computation: get_n_addr/get_n_addr_jmp)
+	 * is direct here. That is the part the "verified" note above actually
+	 * covers. Flipping comptrustbyte/word/long to 0 as well exercises the
+	 * direct byte/word/long data load/store codegen (jnf_MEM_READ_OFF_x and
+	 * jnf_MEM_WRITE_OFF_x in compemu_midfunc_arm64_2.cpp) for the first
+	 * time ever in this port - doing so produced an immediate guest illegal
+	 * instruction on every boot, so it stays indirect until that path is
+	 * debugged on its own. */
 	currprefs.comptrustbyte = 1;
 	currprefs.comptrustword = 1;
 	currprefs.comptrustlong = 1;
-	currprefs.comptrustnaddr = 1;
+	currprefs.comptrustnaddr = 0;
 	currprefs.compnf = true;
 	/* Lazy flush: 68040 guests issue CINVA/CPUSHx routinely for DMA cache
 	 * coherency (every disk/network transfer), not because code changed.
@@ -638,11 +650,11 @@ int amiberry_cpu_init(int cpu_type, int fpu_type, int jit, uint32_t cache_kb, in
 	currprefs.cpu_compatible = false;
 	currprefs.address_space_24 = false;
 	currprefs.fpu_no_unimplemented = false;
-	canbang = false;
+	canbang = true;
 	jit_direct_compatible_memory = false;
 	/* memory_init() (amiberry_glue.cpp, before this call) has already
-	 * allocated Host_Mem_Base; wired for when the JIT direct-access bug
-	 * above is fixed and canbang goes back to true. */
+	 * allocated Host_Mem_Base; the JIT direct-access bugs above are fixed,
+	 * so canbang is on and comptrust* above is 0 (direct). */
 	natmem_offset = Host_Mem_Base;
 
 	/* Mac memory reaches the JIT through indirect addrbanks, so multi-access

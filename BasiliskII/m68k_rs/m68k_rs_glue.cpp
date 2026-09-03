@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <setjmp.h>
+#include <time.h>
 
 #include "sysdeps.h"
 #include "cpu_emulation.h"
@@ -31,9 +32,112 @@ static volatile bool s_cpu_reset_valid = false;
 static bool s_quit_requested = false;
 static M68kRsCpu *s_cpu = nullptr;
 
+/*
+ * FastMem mode selected from preferences (m68k_rs_fastmem):
+ *   off    - disable direct window (callback-only memory path)
+ *   ram    - expose RAM only (0..RAMSize), so holes/ROM/MMIO stay callbacked
+ *   multi  - select one direct region per batch (RAM/ROM/framebuffer) based
+ *            on current PC; accesses outside that region fall back callbacks
+ *   legacy - expose 0..SCC (historic wide window for A/B testing)
+ */
+enum M68kRsFastMemMode {
+	M68K_RS_FASTMEM_OFF = 0,
+	M68K_RS_FASTMEM_RAM,
+	M68K_RS_FASTMEM_MULTI,
+	M68K_RS_FASTMEM_LEGACY
+};
+static M68kRsFastMemMode s_fastmem_mode = M68K_RS_FASTMEM_OFF;
+static bool s_fastmem_forced_off = false;
+
 /* Set from UseJIT in init: true selects m68k_rs_run_batch (decoded-op cache,
  * fastmem window, trace JIT), false keeps the cycle-accurate interpreter. */
 static bool s_use_batch = false;
+
+/* Opt-in throughput logging (M68K_RS_PERF_LOG=1) for FastMem A/B benchmarking;
+ * prints instructions/sec every ~2s of wall clock instead of on every slice
+ * so it stays cheap enough to run during a real timing measurement. */
+static int s_perf_log_enabled = -1; /* -1 = unchecked, 0 = off, 1 = on */
+static uint64 s_perf_total_instructions = 0;
+static struct timespec s_perf_last_report;
+
+static void m68k_rs_perf_note(uint32 instructions)
+{
+	if (s_perf_log_enabled < 0)
+		s_perf_log_enabled = (getenv("M68K_RS_PERF_LOG") != nullptr) ? 1 : 0;
+	if (!s_perf_log_enabled)
+		return;
+
+	s_perf_total_instructions += instructions;
+
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (s_perf_last_report.tv_sec == 0 && s_perf_last_report.tv_nsec == 0)
+		s_perf_last_report = now;
+
+	double elapsed = (now.tv_sec - s_perf_last_report.tv_sec) +
+	                  (now.tv_nsec - s_perf_last_report.tv_nsec) / 1e9;
+	if (elapsed >= 2.0) {
+		printf("[m68k-rs][PERF] instructions=%llu elapsed=%.2fs ips=%.0f\n",
+		       (unsigned long long)s_perf_total_instructions, elapsed,
+		       (double)s_perf_total_instructions / elapsed);
+		fflush(stdout);
+		s_perf_total_instructions = 0;
+		s_perf_last_report = now;
+	}
+}
+
+/*
+ * Maps the m68k_rs_fastmem preference string onto an execution mode.
+ *
+ * Arguments:
+ *   value: Preference string (off/ram/legacy), may be null/empty.
+ *
+ * Returns:
+ *   Selected FastMem mode; unknown values fall back to OFF.
+ */
+static M68kRsFastMemMode m68k_rs_parse_fastmem_mode(const char *value)
+{
+	if (!value || !value[0])
+		return M68K_RS_FASTMEM_OFF;
+	if (strcmp(value, "ram") == 0)
+		return M68K_RS_FASTMEM_RAM;
+	if (strcmp(value, "multi") == 0)
+		return M68K_RS_FASTMEM_MULTI;
+	if (strcmp(value, "legacy") == 0)
+		return M68K_RS_FASTMEM_LEGACY;
+	return M68K_RS_FASTMEM_OFF;
+}
+
+/*
+ * Chooses a Mac address that should lie in an unmapped hole when hole trapping
+ * is configured correctly (between low RAM and ROM on 32-bit clean machines).
+ *
+ * Returns:
+ *   Guest address used for memory_is_mapped() probing.
+ */
+static uint32 m68k_rs_hole_probe_addr(void)
+{
+	/* Keep probe away from RAM end and ROM start boundaries. */
+	uint64 ram_end = (uint64)RAMBaseMac + (uint64)RAMSize;
+	if (ROMBaseMac > ram_end + 0x2000ULL)
+		return (uint32)(ram_end + 0x1000ULL);
+	return 0x10000000U;
+}
+
+/*
+ * Validates whether host memory layout exposes real unmapped holes.
+ *
+ * Returns:
+ *   true when a known hole address is unmapped (fault-producing),
+ *   false when the host maps it as ordinary memory.
+ */
+static bool m68k_rs_holes_visible(void)
+{
+	if (TwentyFourBitAddressing)
+		return true;
+	const uint32 probe = m68k_rs_hole_probe_addr();
+	return !memory_is_mapped(probe, 1);
+}
 
 /*
  * Slice budgets. The cycle path is budgeted in CPU cycles and polls interrupts
@@ -44,7 +148,7 @@ static bool s_use_batch = false;
  */
 enum {
 	M68K_RS_SLICE_CYCLES = 50000,
-	M68K_RS_SLICE_INSNS = 16384,
+	M68K_RS_SLICE_INSNS = 65536, //16384,
 	M68K_RS_NESTED_CYCLES = 5000,
 	M68K_RS_NESTED_INSNS = 2048
 };
@@ -189,6 +293,34 @@ static int m68k_rs_host_get_irq(void *ctx)
 }
 
 /*
+ * Builds the committed-range table pushed to the Rust bus so checked memory
+ * accesses (outside FastMem) can validate locally instead of calling back
+ * into the host per access. Mirrors the legality rule m68k_rs_host_is_mapped()
+ * used to apply per-call: RAM/ROM/framebuffer commits, plus the SCC MMIO
+ * window(s), which are always legal even though they are not host-committed
+ * pages. In 24-bit mode the SCC mirrors across every 16MB slice of the
+ * address space and cannot be expressed as a fixed range, so that case is
+ * flagged for the bus to check locally instead (see m68k_rs_set_mapped_ranges).
+ */
+static void m68k_rs_push_mapped_ranges(void)
+{
+	uint32 starts[M68K_RS_MAX_MAPPED_RANGES];
+	uint32 ends[M68K_RS_MAX_MAPPED_RANGES];
+	int n = memory_get_mapped_ranges(starts, ends, M68K_RS_MAX_MAPPED_RANGES);
+
+	int scc_24bit_mirror = 0;
+	if (TwentyFourBitAddressing) {
+		scc_24bit_mirror = 1;
+	} else if (n < M68K_RS_MAX_MAPPED_RANGES) {
+		starts[n] = 0x50000000;
+		ends[n] = 0x51000000;
+		n++;
+	}
+
+	m68k_rs_set_mapped_ranges(s_cpu, starts, ends, (uint32_t)n, scc_24bit_mirror);
+}
+
+/*
  * Publishes the flat Macintosh RAM window to the batch executor.
  *
  * UAE routes every access through memory_get_* → ReadMacInt/WriteMacInt so
@@ -208,13 +340,51 @@ static int m68k_rs_host_get_irq(void *ctx)
  */
 static uint8 *m68k_rs_host_fast_mem(void *ctx, uint32 *base, uint32 *len)
 {
+	uint32 pc;
+	uint32 rom_window;
+	uint32 fb_end;
+
 	(void)ctx;
 	if (!Host_Mem_Base)
 		return nullptr;
-	if (!getenv("M68K_RS_FASTMEM"))
+	if (s_fastmem_mode == M68K_RS_FASTMEM_OFF)
 		return nullptr;
 	*base = 0;
-	if (TwentyFourBitAddressing) {
+	if (s_fastmem_mode == M68K_RS_FASTMEM_LEGACY) {
+		/* Historic broad window; kept only for targeted A/B tests. */
+		*len = TwentyFourBitAddressing ? 0x00900000U : 0x50000000U;
+	} else if (s_fastmem_mode == M68K_RS_FASTMEM_MULTI && !TwentyFourBitAddressing && s_cpu) {
+		/*
+		 * Multi-region selection without changing the Rust FastMem ABI:
+		 * publish one contiguous region per batch, choosing the region that
+		 * currently contains PC. This keeps direct fetches in hot code
+		 * regions while preserving callback semantics outside that window.
+		 */
+		pc = m68k_rs_get_reg(s_cpu, M68K_RS_REG_PC);
+		rom_window = (ROMSize > 0x00800000U) ? ROMSize : 0x00800000U;
+		if (pc >= ROMBaseMac && pc < ROMBaseMac + rom_window) {
+			*base = ROMBaseMac;
+			*len = rom_window;
+		} else if (MacFrameLayout != FLAYOUT_NONE && MacFrameSize > 0) {
+			fb_end = MacFrameBaseMac + MacFrameSize;
+			if (fb_end > MacFrameBaseMac && pc >= MacFrameBaseMac && pc < fb_end) {
+				*base = MacFrameBaseMac;
+				*len = MacFrameSize;
+			} else if (RAMSize > 0) {
+				*len = RAMSize;
+			} else if (ROMBaseMac != 0) {
+				*len = ROMBaseMac;
+			} else {
+				*len = 0x50000000U;
+			}
+		} else if (RAMSize > 0) {
+			*len = RAMSize;
+		} else if (ROMBaseMac != 0) {
+			*len = ROMBaseMac;
+		} else {
+			*len = 0x50000000U;
+		}
+	} else if (TwentyFourBitAddressing) {
 		*len = 0x00900000U;
 	} else if (RAMSize > 0) {
 		*len = RAMSize;
@@ -270,6 +440,7 @@ static void m68k_rs_run_slice(int32 cycles, uint32 instructions)
 		} else {
 			result = m68k_rs_run_cycles(s_cpu, cycles);
 		}
+		m68k_rs_perf_note(result.instructions);
 		if (s_quit_requested)
 			return;
 		if (result.exit == M68K_RS_EXIT_HALTED) {
@@ -324,12 +495,45 @@ static bool m68k_rs_engine_init(void)
 	}
 
 	s_use_batch = UseJIT;
+	s_fastmem_mode = m68k_rs_parse_fastmem_mode(PrefsFindString("m68k_rs_fastmem"));
+	s_fastmem_forced_off = false;
+	/*
+	 * Host window policy for this engine instance:
+	 * - Batch + FastMem requested: require strict holes so out-of-range
+	 *   accesses fault instead of reading dummy zeros.
+	 * - Otherwise keep the historical flat dummy map.
+	 */
+	memory_set_flat_dummy_window(!(s_use_batch && s_fastmem_mode != M68K_RS_FASTMEM_OFF));
+	memory_init();
+	m68k_rs_push_mapped_ranges();
+	/*
+	 * Guard rail:
+	 * - FastMem only applies to the batch/JIT path.
+	 * - If host memory does not expose real holes, FastMem can turn expected
+	 *   bus-error probes into zero/garbage reads and break boot (Error 10 path).
+	 */
+	if (!s_use_batch && s_fastmem_mode != M68K_RS_FASTMEM_OFF) {
+		s_fastmem_mode = M68K_RS_FASTMEM_OFF;
+		s_fastmem_forced_off = true;
+	}
+	if (s_use_batch && s_fastmem_mode != M68K_RS_FASTMEM_OFF && !m68k_rs_holes_visible()) {
+		s_fastmem_mode = M68K_RS_FASTMEM_OFF;
+		s_fastmem_forced_off = true;
+	}
 	printf("[m68k-rs] execution path: %s (cranelift %s)\n",
 	       s_use_batch ? "batch/JIT" : "cycle-accurate interpreter",
 	       m68k_rs_jit_available() ? "compiled in" : "not compiled in");
+	printf("[m68k-rs] fastmem mode: %s\n",
+	       s_fastmem_mode == M68K_RS_FASTMEM_RAM ? "ram" :
+	       s_fastmem_mode == M68K_RS_FASTMEM_MULTI ? "multi" :
+	       s_fastmem_mode == M68K_RS_FASTMEM_LEGACY ? "legacy" : "off");
+	if (s_fastmem_forced_off) {
+		printf("[m68k-rs] fastmem guard rail: forced off (jit=%s, holes=%s)\n",
+		       s_use_batch ? "on" : "off",
+		       m68k_rs_holes_visible() ? "visible" : "collapsed");
+	}
 	fflush(stdout);
 
-	memory_init();
 	m68k_rs_pulse_reset(s_cpu);
 	return m68k_rs_init(s_cpu, m68k_rs_map_cpu_type()) != 0;
 }

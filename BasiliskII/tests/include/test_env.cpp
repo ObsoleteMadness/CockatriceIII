@@ -29,11 +29,9 @@ int g_fail = 0;
 const TestEngineConfig kTestEngineConfigs[] = {
 	{ "musashi", false, false, "musashi" },
 	{ "m68k_rs", false, false, "m68k_rs" },
-	{ "syn68k",  false, false, "syn68k" },
 	{ "uae",     false, false, "uae" },
 	{ "uae",     true,  false, "uae+jit" },
 	{ "uae",     true,  true,  "uae+jit+jitfpu" },
-	{ "emu68",   true,  false, "emu68" },
 };
 const int kTestEngineConfigCount = (int)(sizeof(kTestEngineConfigs) / sizeof(kTestEngineConfigs[0]));
 

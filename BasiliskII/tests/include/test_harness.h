@@ -45,12 +45,8 @@ extern int g_fail;
 }
 #endif
 
-#if defined(__APPLE__) && defined(__arm64__)
-extern "C" void emu68_jit_on_crash(uintptr_t pc, uintptr_t lr);
-#endif
-
 /*
- * Prints a crash dump (and Emu68 JIT context on Apple Silicon) then exits.
+ * Prints a crash dump then exits.
  *
  * Arguments:
  *   sig: POSIX signal number.
@@ -67,8 +63,6 @@ static void test_crash_handler(int sig, siginfo_t *info, void *ucontext)
 		       uc->uc_mcontext->__ss.__pc,
 		       uc->uc_mcontext->__ss.__lr,
 		       uc->uc_mcontext->__ss.__sp);
-		emu68_jit_on_crash((uintptr_t)uc->uc_mcontext->__ss.__pc,
-		                   (uintptr_t)uc->uc_mcontext->__ss.__lr);
 	}
 #else
 	(void)ucontext;
@@ -181,9 +175,5 @@ static void run_isolated(const char *name, Fn fn, int timeout_sec = TEST_DEFAULT
 	CHECK(false, msg);
 }
 #endif /* __cplusplus */
-
-#if defined(__APPLE__) && defined(__arm64__)
-extern "C" void emu68_jit_on_crash(uintptr_t pc, uintptr_t lr);
-#endif
 
 #endif /* TEST_HARNESS_H */

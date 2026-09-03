@@ -1,7 +1,7 @@
 /*
- * cpu_test_main.cpp - Runs the 680x0 suite on musashi, syn68k, UAE, and Emu68
+ * cpu_test_main.cpp - Runs the 680x0 suite on musashi, UAE, and m68k-rs
  *
- * Usage: cpu_tests [--engine musashi|m68k_rs|syn68k|uae|emu68|all]
+ * Usage: cpu_tests [--engine musashi|m68k_rs|uae|all]
  *
  * Each hang-prone test runs in run_isolated() (30s default). Known CPU
  * failures are still reported; they are not skipped except interrupt.bin/rtd.bin.
@@ -91,12 +91,10 @@ int main(int argc, char **argv)
 			run_isolated(label, [cfg]() { test_uae_cputest_smoke(cfg->label); }, 120);
 		}
 
-		if (strcmp(cfg->id, "syn68k") == 0) {
-			snprintf(label, sizeof(label), "[%s] syn68k-battery", cfg->label);
-			run_isolated(label, [cfg]() { test_syn68k_native_battery(cfg->label); }, 900);
-		}
-
 		test_rom_snippets(cfg->label);
+		test_rom_patch_apply(cfg->label);
+		test_rom_patch_execute(cfg->label);
+		test_interrupt_stress(cfg->label);
 	}
 
 	printf("\nCPU suite results: %d passed, %d failed\n", g_pass, g_fail);

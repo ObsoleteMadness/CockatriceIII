@@ -4,6 +4,7 @@ use m68k::{
     AddressBus, BatchExit, CpuCore, CpuType, CycleBatchControl, CycleBatchExit, CycleBoundaryEvent,
     FastMem,
 };
+use m68k::core::memory::{BusFault, BusFaultKind};
 use std::os::raw::{c_int, c_void};
 use std::ptr;
 
@@ -91,17 +92,140 @@ pub struct M68kRsCpu {
     stop_requested: bool,
 }
 
+/// Upper bound on committed ranges accepted from the host; must match
+/// `M68K_RS_MAX_MAPPED_RANGES` in cockatrice_m68k_rs.h and memory.cpp's
+/// `MEMORY_MAX_RANGES`.
+const MAX_MAPPED_RANGES: usize = 16;
+
 struct BasiliskBus {
     callbacks: *const M68kRsHostCallbacks,
+    /// Local cache of the host's committed-range table (RAM/ROM/framebuffer),
+    /// pushed once by `m68k_rs_set_mapped_ranges`. Checking membership here
+    /// instead of calling back into the host on every access removes an FFI
+    /// round trip from the hottest path in the interpreter: every checked
+    /// (non-FastMem) memory access used to cross into C++ twice, once for
+    /// `is_mapped` and once for the actual read/write.
+    mapped_ranges: [(u32, u32); MAX_MAPPED_RANGES],
+    mapped_range_count: usize,
+    /// TwentyFourBitAddressing fallback: the Z8530 SCC mirrors across every
+    /// 16MB slice of the address space (masked on the low 24 bits), which a
+    /// fixed range table entry cannot express. Checked only when the range
+    /// table misses, so the common 32-bit-addressing case (where the SCC's
+    /// single window is just another table entry) never touches this.
+    scc_24bit_mirror: bool,
 }
 
 impl BasiliskBus {
     fn callbacks(&self) -> &M68kRsHostCallbacks {
         unsafe { &*self.callbacks }
     }
+
+    /// Mirrors memory.cpp's `memory_is_mapped()`: every byte in
+    /// `[address, address+size)` must fall in some committed range, but the
+    /// first and last byte are allowed to be covered by different ranges
+    /// (matching the host's existing semantics exactly).
+    #[inline]
+    fn is_mapped_local(&self, address: u32, size: u32) -> bool {
+        if size == 0 {
+            return true;
+        }
+        let Some(last) = address.checked_add(size - 1) else {
+            return false;
+        };
+        let mut start_ok = false;
+        let mut last_ok = false;
+        for &(start, end) in &self.mapped_ranges[..self.mapped_range_count] {
+            if address >= start && address < end {
+                start_ok = true;
+            }
+            if last >= start && last < end {
+                last_ok = true;
+            }
+            if start_ok && last_ok {
+                return true;
+            }
+        }
+        // TwentyFourBitAddressing only: matches is_scc_addr()'s masked
+        // mirror check, which the fixed range table above cannot express.
+        self.scc_24bit_mirror && {
+            let a24 = address & 0x00ff_ffff;
+            (0x0090_0000..0x00a0_0000).contains(&a24) || (0x00b0_0000..0x00c0_0000).contains(&a24)
+        }
+    }
 }
 
 impl AddressBus for BasiliskBus {
+    fn try_read_byte(&mut self, address: u32) -> Result<u8, BusFault> {
+        if !self.is_mapped_local(address, 1) {
+            return Err(BusFault {
+                kind: BusFaultKind::BusError,
+                address,
+            });
+        }
+        Ok(self.read_byte(address))
+    }
+
+    fn try_read_word(&mut self, address: u32) -> Result<u16, BusFault> {
+        if !self.is_mapped_local(address, 2) {
+            return Err(BusFault {
+                kind: BusFaultKind::BusError,
+                address,
+            });
+        }
+        Ok(self.read_word(address))
+    }
+
+    fn try_read_long(&mut self, address: u32) -> Result<u32, BusFault> {
+        if !self.is_mapped_local(address, 4) {
+            return Err(BusFault {
+                kind: BusFaultKind::BusError,
+                address,
+            });
+        }
+        Ok(self.read_long(address))
+    }
+
+    fn try_write_byte(&mut self, address: u32, value: u8) -> Result<(), BusFault> {
+        if !self.is_mapped_local(address, 1) {
+            return Err(BusFault {
+                kind: BusFaultKind::BusError,
+                address,
+            });
+        }
+        self.write_byte(address, value);
+        Ok(())
+    }
+
+    fn try_write_word(&mut self, address: u32, value: u16) -> Result<(), BusFault> {
+        if !self.is_mapped_local(address, 2) {
+            return Err(BusFault {
+                kind: BusFaultKind::BusError,
+                address,
+            });
+        }
+        self.write_word(address, value);
+        Ok(())
+    }
+
+    fn try_write_long(&mut self, address: u32, value: u32) -> Result<(), BusFault> {
+        if !self.is_mapped_local(address, 4) {
+            return Err(BusFault {
+                kind: BusFaultKind::BusError,
+                address,
+            });
+        }
+        self.write_long(address, value);
+        Ok(())
+    }
+
+    fn try_read_immediate_word(&mut self, address: u32) -> Result<u16, BusFault> {
+        self.try_read_word(address)
+    }
+
+    fn try_read_immediate_long(&mut self, address: u32) -> Result<u32, BusFault> {
+        self.try_read_long(address)
+    }
+
     fn read_byte(&mut self, address: u32) -> u8 {
         let cb = self.callbacks();
         if let Some(f) = cb.read_byte {
@@ -240,11 +364,37 @@ pub unsafe extern "C" fn m68k_rs_create(callbacks: *const M68kRsHostCallbacks) -
         callbacks: cb,
         bus: BasiliskBus {
             callbacks: ptr::null(),
+            mapped_ranges: [(0, 0); MAX_MAPPED_RANGES],
+            mapped_range_count: 0,
+            scc_24bit_mirror: false,
         },
         stop_requested: false,
     });
     boxed.bus.callbacks = &boxed.callbacks;
     Box::into_raw(boxed)
+}
+
+/// Pushes the host's committed-range table into the bus's local cache (see
+/// [`BasiliskBus::is_mapped_local`]). `count` beyond `MAX_MAPPED_RANGES` is
+/// clamped; `starts`/`ends` must each have at least `count` valid entries.
+#[no_mangle]
+pub unsafe extern "C" fn m68k_rs_set_mapped_ranges(
+    cpu: *mut M68kRsCpu,
+    starts: *const u32,
+    ends: *const u32,
+    count: u32,
+    scc_24bit_mirror: c_int,
+) {
+    if cpu.is_null() || starts.is_null() || ends.is_null() {
+        return;
+    }
+    let cpu = &mut *cpu;
+    let n = (count as usize).min(MAX_MAPPED_RANGES);
+    for i in 0..n {
+        cpu.bus.mapped_ranges[i] = (*starts.add(i), *ends.add(i));
+    }
+    cpu.bus.mapped_range_count = n;
+    cpu.bus.scc_24bit_mirror = scc_24bit_mirror != 0;
 }
 
 #[no_mangle]

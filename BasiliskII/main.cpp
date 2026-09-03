@@ -104,8 +104,8 @@ printf("Offsetting the year by %d billion ticks\n",yearoffset);
 	const char *req_engine = PrefsFindString("cpu_emulator");
 	if (req_engine && strcmp(req_engine, "uae") == 0) {
 		engine_name = "Amiberry";
-	} else if (req_engine && strcmp(req_engine, "emu68") == 0) {
-		engine_name = "Emu68";
+	} else if (req_engine && strcmp(req_engine, "m68k_rs") == 0) {
+		engine_name = "m68k_rs";
 	} else {
 		engine_name = "Musashi";
 	}
@@ -115,9 +115,7 @@ printf("Offsetting the year by %d billion ticks\n",yearoffset);
 	       TwentyFourBitAddressing ? "24" : "32", engine_name);
 
 	bool jit_enabled = false;
-	if (strcmp(engine_name, "Emu68") == 0) {
-		jit_enabled = true;
-	} else if (strcmp(engine_name, "Amiberry") == 0 && PrefsFindBool("jit")) {
+	if (strcmp(engine_name, "Amiberry") == 0 && PrefsFindBool("jit")) {
 		jit_enabled = true;
 	}
 

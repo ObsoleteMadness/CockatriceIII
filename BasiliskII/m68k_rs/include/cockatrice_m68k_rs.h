@@ -89,6 +89,26 @@ typedef struct M68kRsRunResult {
 M68kRsCpu *m68k_rs_create(const M68kRsHostCallbacks *callbacks);
 void m68k_rs_destroy(M68kRsCpu *cpu);
 
+/* Upper bound on committed ranges accepted by m68k_rs_set_mapped_ranges();
+ * must match memory.cpp's MEMORY_MAX_RANGES. */
+#define M68K_RS_MAX_MAPPED_RANGES 16
+
+/* Pushes the host's committed-range table (RAM/ROM/framebuffer/etc, from
+ * memory_get_mapped_ranges()) into the bus's local cache so checked memory
+ * accesses (anything outside the FastMem window) validate locally instead
+ * of calling back into the host per access. Call once after m68k_rs_create()
+ * and memory_init(); the table is static for the process lifetime today, so
+ * no later refresh is needed. `count` is clamped to M68K_RS_MAX_MAPPED_RANGES.
+ *
+ * `scc_24bit_mirror`: pass non-zero when TwentyFourBitAddressing is active.
+ * The Z8530 SCC then mirrors across every 16MB slice of the 32-bit space
+ * (masked on the low 24 bits), which cannot be expressed as a fixed range
+ * table entry; the bus checks that mask locally instead. In 32-bit mode the
+ * caller should instead append the SCC's single 0x50000000-0x51000000
+ * window as a normal range and pass zero here. */
+void m68k_rs_set_mapped_ranges(M68kRsCpu *cpu, const uint32_t *starts, const uint32_t *ends,
+                                uint32_t count, int scc_24bit_mirror);
+
 int m68k_rs_init(M68kRsCpu *cpu, M68kRsCpuType cpu_type);
 void m68k_rs_pulse_reset(M68kRsCpu *cpu);
 void m68k_rs_invalidate_prefetch(M68kRsCpu *cpu);

@@ -84,9 +84,12 @@ enum {
 // Memory system lifecycle functions
 extern void memory_init(void);
 extern void memory_exit(void);
+extern void memory_set_flat_dummy_window(bool flat_dummy);
+extern void memory_reconfigure_window(void);
 extern void memory_commit_range(uint32 mac_addr, uint32 size, int prot);
 extern void memory_map_framebuffer(void);
 extern bool memory_is_mapped(uint32 addr, uint32 size);
+extern int memory_get_mapped_ranges(uint32 *out_start, uint32 *out_end, int max_ranges);
 extern void InitFrameBufferMapping(void);
 extern uint8 *get_real_address(uint32 addr);
 extern uint32 get_virtual_address(uint8 *addr);

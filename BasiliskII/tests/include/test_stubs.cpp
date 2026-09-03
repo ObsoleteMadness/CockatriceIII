@@ -135,6 +135,7 @@ void CheckLoad(uint32 type, int16 id, uint8 *p, uint32 size)
 	(void)size;
 }
 void ClearInterruptFlag(uint32 flag) { InterruptFlags &= ~flag; }
+void SetInterruptFlag(uint32 flag) { InterruptFlags |= flag; }
 void idle_wait(void) {}
 
 void FlushCodeCache(void *start, uint32 size)

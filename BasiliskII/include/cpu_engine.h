@@ -2,13 +2,13 @@
  *  cpu_engine.h - Unified 680x0 CPU Engine Abstraction Layer
  *
  *  CockatriceIII Multi-Engine Architecture
- *  Supports: Musashi (C core), Amiberry/UAE (680x0 + JIT), Emu68 (ARM64 JIT)
+ *  Supports: Musashi (C core), Amiberry/UAE (680x0 + JIT), m68k-rs (Rust)
  *
  *  (C) 2026 CockatriceIII Project
  *
  *  This header defines the abstract CPUEngine dispatch table and global
  *  registration API used by Cockatrice III to support multiple swappable
- *  680x0 CPU emulation cores (Musashi, Amiberry/UAE, Emu68).
+ *  680x0 CPU emulation cores (Musashi, Amiberry/UAE, m68k-rs).
  */
 
 #ifndef CPU_ENGINE_H
@@ -28,7 +28,7 @@ struct M68kRegisters;
  * Defines the complete lifecycle, execution, and interrupt contract for a CPU engine.
  */
 typedef struct CPUEngine {
-	const char *id;             /* Unique identifier: "musashi", "uae", "emu68" */
+	const char *id;             /* Unique identifier: "musashi", "uae", "m68k_rs" */
 	const char *name;           /* Human-readable description */
 	bool is_jit;                /* True if dynamic binary translator, false for interpreter */
 
@@ -181,8 +181,6 @@ uint32 cpu_engine_write_exec_return_frame(uint32 sp, uint32 *ret_addr_out);
 /* Built-in Engine Instances */
 extern const CPUEngine musashi_cpu_engine;
 extern const CPUEngine amiberry_cpu_engine;
-extern const CPUEngine emu68_cpu_engine;
-extern const CPUEngine syn68k_cpu_engine;
 extern const CPUEngine m68k_rs_cpu_engine;
 
 #ifdef __cplusplus

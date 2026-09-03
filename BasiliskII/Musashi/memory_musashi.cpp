@@ -5,7 +5,7 @@
  *  CockatriceIII Multi-Engine Architecture (C) 2026
  *
  *  Musashi fetches and stores through ReadMacInt8 / WriteMacInt8 so every
- *  engine (Musashi, UAE, Emu68, syn68k) shares one flat Host_Mem_Base window
+ *  engine (Musashi, UAE, m68k-rs) shares one flat Host_Mem_Base window
  *  and the same SCC MMIO + ROM write-protect rules in cpu_emulation.h.
  */
 

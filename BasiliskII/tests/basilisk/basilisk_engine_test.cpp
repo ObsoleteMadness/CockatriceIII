@@ -18,7 +18,7 @@ int main(void)
 	printf("=== basilisk_engine_test ===\n");
 
 	int count = GetRegisteredCPUEngineCount();
-	CHECK(count >= 5, "At least 5 CPU engines registered");
+	CHECK(count >= 3, "At least 3 CPU engines registered");
 
 	const CPUEngine *musashi = GetCPUEngine("musashi");
 	CHECK(musashi != NULL && strcmp(musashi->id, "musashi") == 0, "Musashi CPU engine found");
@@ -26,17 +26,9 @@ int main(void)
 	CHECK(m68k_rs != NULL && strcmp(m68k_rs->id, "m68k_rs") == 0, "m68k-rs CPU engine found");
 	const CPUEngine *uae = GetCPUEngine("uae");
 	CHECK(uae != NULL && strcmp(uae->id, "uae") == 0, "Amiberry/UAE CPU engine found");
-	const CPUEngine *emu68 = GetCPUEngine("emu68");
-	CHECK(emu68 != NULL && strcmp(emu68->id, "emu68") == 0, "Emu68 JIT engine found");
-	const CPUEngine *syn68k = GetCPUEngine("syn68k");
-	CHECK(syn68k != NULL && strcmp(syn68k->id, "syn68k") == 0, "syn68k CPU engine found");
 
-	if (emu68)
-		CHECK(emu68->is_jit == true, "Emu68 correctly flagged as JIT engine");
 	if (musashi)
 		CHECK(musashi->is_jit == false, "Musashi correctly flagged as non-JIT interpreter");
-	if (syn68k)
-		CHECK(syn68k->is_jit == false, "syn68k correctly flagged as non-JIT interpreter");
 	if (m68k_rs)
 		CHECK(m68k_rs->is_jit == false, "m68k-rs correctly flagged as non-JIT interpreter");
 
@@ -46,10 +38,6 @@ int main(void)
 	CHECK(GetActiveCPUEngine() == m68k_rs, "Active engine is m68k-rs");
 	CHECK(SetActiveCPUEngine("uae") == true, "SetActiveCPUEngine('uae') succeeded");
 	CHECK(GetActiveCPUEngine() == uae, "Active engine is Amiberry/UAE");
-	CHECK(SetActiveCPUEngine("emu68") == true, "SetActiveCPUEngine('emu68') succeeded");
-	CHECK(GetActiveCPUEngine() == emu68, "Active engine is Emu68");
-	CHECK(SetActiveCPUEngine("syn68k") == true, "SetActiveCPUEngine('syn68k') succeeded");
-	CHECK(GetActiveCPUEngine() == syn68k, "Active engine is syn68k");
 	SetActiveCPUEngine("musashi");
 	CHECK(GetActiveCPUEngine() == musashi, "Switched back to Musashi engine");
 

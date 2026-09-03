@@ -4,7 +4,7 @@
  *  Basilisk II (C) 1997-2008 Christian Bauer
  *  CockatriceIII Multi-Engine Architecture (C) 2026
  *
- *  Musashi, UAE, Emu68, and syn68k share one 4GB virtual window
+ *  Musashi, UAE, and m68k-rs share one 4GB virtual window
  *  (Host_Mem_Base) so Mac2HostAddr(addr) stays Host_Mem_Base + addr.
  *  Historic UAE kept the framebuffer and dummy NuBus slots out of the
  *  RAM translate; a RW-zero mmap of the whole 4GB made holes look like
@@ -59,6 +59,72 @@ static int s_nmapped = 0;
 static memory_fault_jmp_buf s_guard_jmp[MEMORY_GUARD_MAX];
 static int s_guard_depth = 0;
 static uint32 s_guest_fault_addr = 0;
+/* True: map the full 4GB window RW (legacy/JIT-safe mode). False: reserve the
+ * full window PROT_NONE and only commit RAM/ROM/framebuffer ranges. */
+static bool s_flat_dummy_window = true;
+
+/* Local helpers used by memory_apply_window_policy(). */
+static size_t memory_page_size(void);
+static void memory_note_range(uint32 start, uint32 end);
+static int memory_host_prot(int prot);
+
+/*
+ * Applies the selected host window policy to the live 4GB mapping and rebuilds
+ * committed-range bookkeeping.
+ */
+static void memory_apply_window_policy(void)
+{
+	if (!Host_Mem_Base)
+		return;
+
+	const uint64 window_size = 0x100000000ULL;
+	const int full_prot = s_flat_dummy_window
+		? (MEMORY_PROT_READ | MEMORY_PROT_WRITE)
+		: 0;
+
+#ifdef _WIN32
+	DWORD old_prot = 0;
+	if (!VirtualProtect(Host_Mem_Base, (SIZE_T)window_size, (DWORD)memory_host_prot(full_prot), &old_prot)) {
+		printf("[MEM] FATAL: VirtualProtect policy switch failed (err=%lu)\n",
+		       (unsigned long)GetLastError());
+		fflush(stdout);
+		return;
+	}
+#else
+	if (mprotect(Host_Mem_Base, (size_t)window_size, memory_host_prot(full_prot)) != 0) {
+		printf("[MEM] FATAL: mprotect policy switch failed (%s)\n", strerror(errno));
+		fflush(stdout);
+		return;
+	}
+#endif
+
+	s_nmapped = 0;
+	if (s_flat_dummy_window) {
+		memory_note_range(0, 0xffffffffU);
+		printf("[MEM] flat 4GB RW dummy window at %p (page %zu)\n",
+		       (void *)Host_Mem_Base, memory_page_size());
+		fflush(stdout);
+		return;
+	}
+
+	if (RAMSize > 0)
+		memory_commit_range(RAMBaseMac, RAMSize, MEMORY_PROT_READ | MEMORY_PROT_WRITE);
+
+	/*
+	 * Keep the same ROM commit policy as memory_init(): a full 8MB Quadra
+	 * window in 32-bit mode, minimum 1MB in 24-bit mode.
+	 */
+	uint32 rom_commit = TwentyFourBitAddressing ? (ROMSize > 0x100000 ? ROMSize : 0x100000)
+	                                            : (ROMSize > 0x00800000 ? ROMSize : 0x00800000);
+	memory_commit_range(ROMBaseMac, rom_commit, MEMORY_PROT_READ | MEMORY_PROT_WRITE);
+
+	if (MacFrameLayout != FLAYOUT_NONE && MacFrameSize > 0)
+		memory_commit_range(MacFrameBaseMac, MacFrameSize, MEMORY_PROT_READ | MEMORY_PROT_WRITE);
+
+	printf("[MEM] strict-hole 4GB PROT_NONE window at %p (page %zu)\n",
+	       (void *)Host_Mem_Base, memory_page_size());
+	fflush(stdout);
+}
 
 #ifndef _WIN32
 static struct sigaction s_old_sigsegv;
@@ -263,6 +329,30 @@ bool memory_is_mapped(uint32 addr, uint32 size)
 }
 
 /*
+ * Copies the current committed-range table so a caller can check
+ * memory_is_mapped() locally instead of paying a per-access callback (the
+ * m68k-rs FFI bridge's checked memory path does this: the table only
+ * changes at boot, but every guest memory access outside FastMem used to
+ * cross the host callback for this check).
+ *
+ * Arguments:
+ *   out_start / out_end: Parallel arrays, at least max_ranges entries.
+ *   max_ranges: Capacity of out_start/out_end.
+ *
+ * Returns:
+ *   Number of ranges copied (<= max_ranges).
+ */
+int memory_get_mapped_ranges(uint32 *out_start, uint32 *out_end, int max_ranges)
+{
+	int n = s_nmapped < max_ranges ? s_nmapped : max_ranges;
+	for (int i = 0; i < n; i++) {
+		out_start[i] = s_mapped[i].start;
+		out_end[i] = s_mapped[i].end;
+	}
+	return n;
+}
+
+/*
  * Commits the NuBus framebuffer bytes at MacFrameBaseMac.
  *
  * Classic video keeps the screen in RAM (FLAYOUT_NONE) so 0xA0000000 stays
@@ -353,6 +443,27 @@ void memory_raise_guest_fault(uint32 addr)
 #else
 	siglongjmp(s_guard_jmp[s_guard_depth - 1], 1);
 #endif
+}
+
+/*
+ * Selects the host window policy used by the next memory_init() call.
+ *
+ * Arguments:
+ *   flat_dummy: true keeps the whole 4GB RW dummy-backed (legacy behavior);
+ *               false enables PROT_NONE holes with range commits only.
+ */
+void memory_set_flat_dummy_window(bool flat_dummy)
+{
+	s_flat_dummy_window = flat_dummy;
+}
+
+/*
+ * Reapplies the selected host window policy to an already-created mapping.
+ * Safe to call after RAM/ROM/framebuffer metadata changes.
+ */
+void memory_reconfigure_window(void)
+{
+	memory_apply_window_policy();
 }
 
 /*
@@ -457,43 +568,36 @@ static LONG CALLBACK memory_veh(PEXCEPTION_POINTERS info)
 /*
  * Initializes the unified 4GB memory window.
  *
- * Commits the entire 4GB window as RW dummy-backed memory up front (demand
- * paged; touching a page is the only thing that costs real RSS) instead of
- * leaving everything outside RAM/ROM/framebuffer PROT_NONE. The JIT engines
- * (UAE/Amiberry compile_block, Emu68's translation-unit cache) dereference
- * guest pointers directly mid-compile without going through a bank-checked
- * accessor the way Musashi does; a SIGSEGV in the old PROT_NONE-hole scheme
- * would longjmp out of a JIT compiler mid-translation and leave its global
- * code-cache cursor / register-allocation state corrupted, which is what
- * produced the wild-pointer crashes and the Emu68 stuck-refaulting loop.
- * Real Mac hardware probes (NuBus declaration ROM scans) are already routed
- * around via ROM patches (see InstallSlotROM() / patch_rom_32() in
- * docs/basilisk-ii-boot-and-patch.md), so nothing in the normal boot path
- * depends on an unmapped address raising a genuine bus error. RAM, ROM, and
- * the framebuffer are still tracked as their own committed ranges below for
- * memory_is_mapped() bookkeeping; the guard/longjmp vector-2 injection path
- * stays in place as a safety net for addresses that fall entirely outside
- * this window.
+ * Mode A (flat dummy, default): commit/map the whole 4GB window RW. This keeps
+ * all hole reads/writes non-faulting and avoids longjmp exits from JIT compile
+ * paths that dereference guest pointers directly.
+ *
+ * Mode B (strict holes): reserve/map the full window PROT_NONE and commit only
+ * RAM/ROM/framebuffer ranges. This restores real unmapped-hole behavior (bus/
+ * address fault semantics via memory_try_handle_guest_fault()) for engines that
+ * can tolerate it.
  */
 void memory_init(void)
 {
 	if (!Host_Mem_Base) {
 #ifdef _WIN32
-		Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, 0x100000000ULL, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+		if (s_flat_dummy_window) {
+			Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, 0x100000000ULL, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+		} else {
+			Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, 0x100000000ULL, MEM_RESERVE, PAGE_NOACCESS);
+		}
 		if (Host_Mem_Base && !s_veh)
 			s_veh = AddVectoredExceptionHandler(1, memory_veh);
 #else
-		Host_Mem_Base = (uint8 *)mmap(NULL, 0x100000000ULL, PROT_READ | PROT_WRITE,
+		Host_Mem_Base = (uint8 *)mmap(NULL, 0x100000000ULL,
+					      s_flat_dummy_window ? (PROT_READ | PROT_WRITE) : PROT_NONE,
 					      MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
 		if (Host_Mem_Base == MAP_FAILED)
 			Host_Mem_Base = NULL;
 		memory_install_unix_fault();
 #endif
 		if (Host_Mem_Base) {
-			memory_note_range(0, 0xffffffffU);
-			printf("[MEM] reserved+committed 4GB dummy-backed RW window at %p (page %zu)\n",
-			       (void *)Host_Mem_Base, memory_page_size());
-			fflush(stdout);
+			memory_apply_window_policy();
 		}
 	}
 
@@ -509,18 +613,8 @@ void memory_init(void)
 	ROMBaseHost = Host_Mem_Base + ROMBaseMac;
 	MacFrameBaseHost = Host_Mem_Base + MacFrameBaseMac;
 
-	if (RAMSize > 0)
-		memory_commit_range(RAMBaseMac, RAMSize, MEMORY_PROT_READ | MEMORY_PROT_WRITE);
-
-	/*
-	 * Mac II / Quadra 32-bit clean memory map allocates an 8MB window for ROM
-	 * (0x40800000..0x40FFFFFF). NuBus Slot Manager declaration ROM probes and
-	 * boundary reads access beyond the 1MB loaded image, so commit the full 8MB
-	 * ROM window in 32-bit mode to prevent access faults during boot.
-	 */
-	uint32 rom_commit = TwentyFourBitAddressing ? (ROMSize > 0x100000 ? ROMSize : 0x100000)
-	                                            : (ROMSize > 0x00800000 ? ROMSize : 0x00800000);
-	memory_commit_range(ROMBaseMac, rom_commit, MEMORY_PROT_READ | MEMORY_PROT_WRITE);
+	/* Refresh the mapping policy and committed ranges on repeated init calls. */
+	memory_apply_window_policy();
 
 	if (old_rom_host && old_rom_host != ROMBaseHost && ROMSize > 0)
 		memmove(ROMBaseHost, old_rom_host, ROMSize);

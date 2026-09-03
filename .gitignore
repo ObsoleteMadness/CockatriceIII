@@ -81,6 +81,9 @@ BasiliskII/OSX64/CockatriceIII_Prefs
 BasiliskII/OSX64/CockatriceIII
 BasiliskII/OSX64/BasiliskII
 BasiliskII/OSX64/CockatriceIII_XPRAM
-**/obj/ 
+**/obj/
 **/.DS_Store
 BasiliskII/mingw/.cross-win/
+
+# Rust build artifacts
+target/

@@ -120,7 +120,7 @@ extern "C" int musashi_illg_callback(int opcode)
 		// Execute host emulation trap handler
 		EmulOp((uint16)opcode, &r);
 
-		// Write EmulOp results back; gate A7 like syn68k (live ISP, not struct default)
+		// Write EmulOp results back; gate A7 against the live ISP, not the struct default
 		for (int i = 0; i < 8; i++)
 			m68k_set_reg((m68k_register_t)(M68K_REG_D0 + i), r.d[i]);
 		for (int i = 0; i < 8; i++)

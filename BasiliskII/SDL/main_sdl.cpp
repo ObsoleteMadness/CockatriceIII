@@ -86,11 +86,6 @@ extern void slirp_tic(void);	//to keep slirp happy
 #include <execinfo.h>
 #include <string.h>
 
-#if defined(__APPLE__) && defined(__arm64__)
-extern "C" void emu68_jit_on_crash(uintptr_t pc, uintptr_t lr);
-extern "C" int emu68_hosted_try_skip_el1(uintptr_t pc, uint32_t insn);
-#endif
-
 static void crash_handler(int sig, siginfo_t *info, void *ucontext)
 {
 	printf("\n*** CRASH SIGNAL %d (%s) at faulting address %p ***\n", sig, sys_siglist[sig], info->si_addr);
@@ -99,17 +94,6 @@ static void crash_handler(int sig, siginfo_t *info, void *ucontext)
 	if (uc) {
 		uintptr_t pc = (uintptr_t)uc->uc_mcontext->__ss.__pc;
 		uintptr_t lr = (uintptr_t)uc->uc_mcontext->__ss.__lr;
-		if (sig == SIGILL) {
-			uint32_t insn = 0;
-			memcpy(&insn, (const void *)pc, sizeof(insn));
-			if (emu68_hosted_try_skip_el1(pc, insn)) {
-				printf("[Emu68] skipped leftover EL1 encoding 0x%08x at PC 0x%llx (not a substitute for clean codegen)\n",
-				       insn, (unsigned long long)pc);
-				fflush(stdout);
-				uc->uc_mcontext->__ss.__pc = pc + 4;
-				return;
-			}
-		}
 		printf("  PC: 0x%llx, LR: 0x%llx, SP: 0x%llx\n",
 		       (unsigned long long)pc,
 		       (unsigned long long)lr,
@@ -126,15 +110,6 @@ static void crash_handler(int sig, siginfo_t *info, void *ucontext)
 			if (uc->uc_mcontext->__ss.__x[i] == (uint64_t)fault)
 				printf("  x%02d matches faulting address\n", i);
 		}
-
-		// Emu68 pins 680x0 SR in v19.h[5] and the 4GB host memory window in v22.d[0]
-		const uint16_t *sr_lanes = (const uint16_t *)&uc->uc_mcontext->__ns.__v[19];
-		const uint64_t *host_mem = (const uint64_t *)&uc->uc_mcontext->__ns.__v[22];
-		printf("  v19.h[5] (JIT SR image)=0x%04x  v22.d[0] (HOST_MEM_BASE)=0x%llx\n",
-		       sr_lanes[5], (unsigned long long)host_mem[0]);
-
-		emu68_jit_on_crash((uintptr_t)uc->uc_mcontext->__ss.__pc,
-		                   (uintptr_t)uc->uc_mcontext->__ss.__lr);
 	}
 #else
 	(void)ucontext;

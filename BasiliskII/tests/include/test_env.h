@@ -21,7 +21,7 @@ extern int g_fail;
 }
 
 struct TestEngineConfig {
-	const char *id;      /* "musashi", "syn68k", "uae", "emu68" */
+	const char *id;      /* "musashi", "uae", "m68k_rs" */
 	bool jit;
 	bool jitfpu;
 	const char *label;   /* printed in CHECK messages, e.g. "uae+jit" */
@@ -46,8 +46,8 @@ bool test_engine_matches(const char *filter, const TestEngineConfig *cfg);
  * is chosen inside engine->init() from UseJIT / JITCacheSize.
  *
  * Arguments:
- *   id: Engine identifier ("musashi", "syn68k", "uae", or "emu68").
- *   jit: True to enable UseJIT (Musashi and syn68k ignore this).
+ *   id: Engine identifier ("musashi", "uae", or "m68k_rs").
+ *   jit: True to enable UseJIT (Musashi ignores this).
  *   jitfpu: True to enable UseJITFPU when JIT is enabled.
  *
  * Returns:

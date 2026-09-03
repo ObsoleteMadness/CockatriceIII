@@ -6,7 +6,7 @@
  *
  *  This file provides the central engine registry and global dispatchers
  *  routing Basilisk II CPU lifecycle calls, interrupts, and nested subroutine
- *  execution to the currently active CPU engine (Musashi, Amiberry/UAE, or Emu68).
+ *  execution to the currently active CPU engine (Musashi, Amiberry/UAE, or m68k-rs).
  */
 
 #include <stdio.h>
@@ -36,19 +36,15 @@ extern "C" uint32 cpu_engine_last_pc = 0;
 // Forward declarations for built-in CPU engines
 extern const CPUEngine musashi_cpu_engine;
 extern const CPUEngine amiberry_cpu_engine;
-extern const CPUEngine emu68_cpu_engine;
-extern const CPUEngine syn68k_cpu_engine;
 extern const CPUEngine m68k_rs_cpu_engine;
 
 // Engine registry state
 static const CPUEngine *s_engines[MAX_CPU_ENGINES] = {
 	&musashi_cpu_engine,
 	&amiberry_cpu_engine,
-	&emu68_cpu_engine,
-	&syn68k_cpu_engine,
 	&m68k_rs_cpu_engine
 };
-static int s_engine_count = 5;
+static int s_engine_count = 3;
 static const CPUEngine *s_active_engine = &musashi_cpu_engine;
 
 // Global JIT preference flags
@@ -157,7 +153,7 @@ bool cpu_engine_map_rom_base(void)
  * Computes the Basilisk interrupt level from SCC then InterruptFlags.
  *
  * UAE queries this every slice (intlev). Musashi latches it via m68k_set_irq
- * and clears on ack. Emu68/syn68k must not keep a stale IPL after the 60 Hz
+ * and clears on ack. m68k-rs must not keep a stale IPL after the 60 Hz
  * handler has already cleared InterruptFlags.
  *
  * Returns:
@@ -308,7 +304,7 @@ void RegisterCPUEngine(const CPUEngine *engine)
  * Looks up a registered CPU engine by its unique string identifier.
  *
  * Arguments:
- *   id: Engine identifier (e.g. "musashi", "uae", "emu68").
+ *   id: Engine identifier (e.g. "musashi", "uae", "m68k_rs").
  *
  * Returns:
  *   Pointer to the matching CPUEngine, or NULL if not found.
@@ -331,7 +327,7 @@ const CPUEngine *GetCPUEngine(const char *id)
  * Sets the currently active CPU engine by its identifier.
  *
  * Arguments:
- *   id: Engine identifier ("musashi", "uae", "emu68").
+ *   id: Engine identifier ("musashi", "uae", "m68k_rs").
  *
  * Returns:
  *   true if the engine was found and activated, false otherwise.
@@ -394,8 +390,6 @@ static void EnsureEnginesRegistered(void)
 	if (s_engine_count == 0) {
 		RegisterCPUEngine(&musashi_cpu_engine);
 		RegisterCPUEngine(&amiberry_cpu_engine);
-		RegisterCPUEngine(&emu68_cpu_engine);
-		RegisterCPUEngine(&syn68k_cpu_engine);
 		RegisterCPUEngine(&m68k_rs_cpu_engine);
 	}
 }
@@ -420,10 +414,9 @@ bool Init680x0(void)
 		requested = "musashi";
 	}
 
-	// uae, emu68, syn68k, and m68k_rs must not silently fall back to Musashi
+	// uae and m68k_rs must not silently fall back to Musashi
 	if (!SetActiveCPUEngine(requested)) {
-		if (strcmp(requested, "uae") == 0 || strcmp(requested, "emu68") == 0 ||
-		    strcmp(requested, "syn68k") == 0 || strcmp(requested, "m68k_rs") == 0) {
+		if (strcmp(requested, "uae") == 0 || strcmp(requested, "m68k_rs") == 0) {
 			printf("[CPU-ENGINE] FATAL: Requested engine '%s' is not available\n", requested);
 			return false;
 		}
@@ -441,11 +434,10 @@ bool Init680x0(void)
 	if (cachesize > 0)
 		JITCacheSize = (uint32)cachesize;
 
-	// Engines with no translator at all ignore the flag. m68k_rs honours it:
+	// Musashi has no translator at all and ignores the flag. m68k_rs honours it:
 	// UseJIT selects its batch executor (decoded-op cache, direct-RAM window,
 	// trace JIT) over the cycle-accurate interpreter.
-	if (s_active_engine && (strcmp(s_active_engine->id, "musashi") == 0 ||
-	    strcmp(s_active_engine->id, "syn68k") == 0)) {
+	if (s_active_engine && strcmp(s_active_engine->id, "musashi") == 0) {
 		UseJIT = false;
 	}
 

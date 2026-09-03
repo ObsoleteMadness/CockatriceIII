@@ -1,6 +1,0 @@
-[submodule "emu68"]
-	path = BasiliskII/Emu68/upstream
-	url = https://github.com/michalsc/Emu68.git
-[submodule "BasiliskII/vendor/m68k-rs"]
-	path = BasiliskII/vendor/m68k-rs
-	url = https://github.com/benletchford/m68k-rs.git

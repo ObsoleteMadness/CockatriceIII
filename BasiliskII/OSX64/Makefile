@@ -42,26 +42,11 @@ LDFLAGS += $(TARGET_ARCH)
 SDL_CFLAGS := $(shell $(SDL_PREFIX)/bin/sdl-config --cflags 2>/dev/null || echo "-I$(SDL_PREFIX)/include/SDL -D_THREAD_SAFE")
 SDL_LIBS := $(shell $(SDL_PREFIX)/bin/sdl-config --libs 2>/dev/null || echo "-L$(SDL_PREFIX)/lib -lSDL -Wl,-framework,Cocoa")
 
-# Emu68 includes: hosted first (A64.h wrap, config endian), then upstream.
-# Translator objects also put these before Musashi so M68k.h is Emu68's.
-# syn68k dynamic binary translation core
-SYN68K_DIR = ../syn68k
-SYN68K_RUNTIME = $(SYN68K_DIR)/runtime
-SYN68K_SYNGEN = $(SYN68K_DIR)/syngen
-SYN68K_INCLUDES = -I$(SYN68K_DIR)/include -I$(SYN68K_RUNTIME)/include -I$(SYN68K_RUNTIME)
-SYN68K_DEFS = -DRUNTIME -DNONNATIVE -DNONDIRECT
-
-EMU68_INCLUDES = -I../Emu68/hosted -I../Emu68/include \
-	-I../Emu68/upstream/include -I../Emu68/upstream/include/aarch64 \
-	-I../Emu68/upstream/src
 CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I../bridge/darwin \
 	-I../m68k_rs/include \
-	$(EMU68_INCLUDES) -I/opt/homebrew/include -I/usr/local/include $(SDL_CFLAGS)
-EMU68_CORE_CPPFLAGS = $(EMU68_INCLUDES) -I../include -I. -I../Unix -I../SDL -I../bridge/darwin \
-	-I../Musashi -I../Musashi/softfloat -I/opt/homebrew/include -I/usr/local/include $(SDL_CFLAGS) \
-	-include ../Emu68/include/RegLock.h -include ../Emu68/hosted/A64.h
+	-I/opt/homebrew/include -I/usr/local/include $(SDL_CFLAGS)
 
-HOST_CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I../bridge/darwin -I../Emu68/hosted -I../Emu68/include
+HOST_CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I../bridge/darwin
 HOST_CFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-deprecated-non-prototype
 HOST_CXXFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-writable-strings -Wno-multichar -Wno-deprecated-declarations -Wno-format -Wno-c++11-narrowing
 DEFS = -DHAVE_CONFIG_H -D_REENTRANT
@@ -76,46 +61,8 @@ M68K_RS_TARGET = $(OBJ_DIR)/m68k_rs_target
 M68K_RS_LIB = $(M68K_RS_TARGET)/release/libcockatrice_m68k_rs.a
 
 SYSSRCS = sdlmain.m ../bridge/darwin/macos_menu_bridge.mm ../SDL/sdl_pcap.cpp ../SDL/audio_sdl.cpp ../dummy/scsi_dummy.cpp ../dummy/prefs_editor_dummy.cpp
-EMU68_UPSTREAM = ../Emu68/upstream
-EMU68_GEN = obj/emu68_gen
-EMU68_PREP = ../Emu68/hosted/prep_translator.py
-# Math .c is unmodified upstream; -include hosted/math/libm.h for Clang fsqrt.
-EMU68_MATH_SRCS = $(EMU68_UPSTREAM)/src/math/96bit.c $(EMU68_UPSTREAM)/src/math/exp10.c $(EMU68_UPSTREAM)/src/math/sin.c \
-    $(EMU68_UPSTREAM)/src/math/cos.c $(EMU68_UPSTREAM)/src/math/tan.c $(EMU68_UPSTREAM)/src/math/__sin.c $(EMU68_UPSTREAM)/src/math/__cos.c \
-    $(EMU68_UPSTREAM)/src/math/__tan.c $(EMU68_UPSTREAM)/src/math/__rem_pio2.c $(EMU68_UPSTREAM)/src/math/__rem_pio2_large.c \
-    $(EMU68_UPSTREAM)/src/math/__expo2.c $(EMU68_UPSTREAM)/src/math/acos.c $(EMU68_UPSTREAM)/src/math/asin.c $(EMU68_UPSTREAM)/src/math/atan.c \
-    $(EMU68_UPSTREAM)/src/math/atanh.c $(EMU68_UPSTREAM)/src/math/cosh.c $(EMU68_UPSTREAM)/src/math/exp.c $(EMU68_UPSTREAM)/src/math/expm1.c \
-    $(EMU68_UPSTREAM)/src/math/floor.c $(EMU68_UPSTREAM)/src/math/log.c $(EMU68_UPSTREAM)/src/math/log10.c $(EMU68_UPSTREAM)/src/math/log1p.c \
-    $(EMU68_UPSTREAM)/src/math/log2.c $(EMU68_UPSTREAM)/src/math/modf.c $(EMU68_UPSTREAM)/src/math/pow.c $(EMU68_UPSTREAM)/src/math/remquo.c \
-    $(EMU68_UPSTREAM)/src/math/sincos.c $(EMU68_UPSTREAM)/src/math/sinh.c $(EMU68_UPSTREAM)/src/math/tanh.c
-EMU68_ADAPTER_CPP_SRCS = ../Emu68/emu68_glue.cpp
-EMU68_ADAPTER_C_SRCS = ../Emu68/hosted/emu68_hosted.c \
-    ../Emu68/hosted/emu68_exception.c ../Emu68/hosted/emu68_lru.c \
-    ../Emu68/hosted/emu68_support.c ../Emu68/hosted/emu68_emit_exception.c \
-    ../Emu68/hosted/emu68_mem.c
-EMU68_ADAPTER_SRCS = $(EMU68_ADAPTER_CPP_SRCS) $(EMU68_ADAPTER_C_SRCS)
-# Translator: submodule sources, preprocessed into $(EMU68_GEN) (alias/WFI/dual-map).
-EMU68_PREP_SRCS = $(EMU68_GEN)/M68k_Translator.c $(EMU68_GEN)/M68k_MOVE.c \
-    $(EMU68_GEN)/M68k_LINE0.c $(EMU68_GEN)/M68k_LINE4.c $(EMU68_GEN)/M68k_LINE5.c \
-    $(EMU68_GEN)/M68k_LINE6.c $(EMU68_GEN)/M68k_LINE8.c $(EMU68_GEN)/M68k_LINE9.c \
-    $(EMU68_GEN)/M68k_LINEB.c $(EMU68_GEN)/M68k_LINEC.c $(EMU68_GEN)/M68k_LINED.c \
-    $(EMU68_GEN)/M68k_LINEE.c $(EMU68_GEN)/M68k_LINEF.c $(EMU68_GEN)/M68k_EA.c \
-    $(EMU68_GEN)/M68k_MULDIV.c $(EMU68_GEN)/M68k_SR.c $(EMU68_GEN)/aarch64/RegisterAllocator64.c \
-    $(EMU68_GEN)/M68k_CC.c $(EMU68_GEN)/md5.c $(EMU68_GEN)/tlsf.c
-EMU68_CORE_SRCS = $(EMU68_PREP_SRCS) $(EMU68_MATH_SRCS)
-EMU68_SRCS = $(EMU68_ADAPTER_SRCS) $(EMU68_CORE_SRCS)
 
-SYN68K_C_SRCS = $(SYN68K_RUNTIME)/alloc.c $(SYN68K_RUNTIME)/backpatch.c $(SYN68K_RUNTIME)/block.c \
-    $(SYN68K_RUNTIME)/blockinfo.c $(SYN68K_RUNTIME)/callback.c $(SYN68K_RUNTIME)/checksum.c \
-    $(SYN68K_RUNTIME)/deathqueue.c $(SYN68K_RUNTIME)/destroyblock.c $(SYN68K_RUNTIME)/diagnostics.c \
-    $(SYN68K_RUNTIME)/hash.c $(SYN68K_RUNTIME)/init.c $(SYN68K_RUNTIME)/interrupt.c \
-    $(SYN68K_RUNTIME)/mapindex.c $(SYN68K_RUNTIME)/mapinfo.c $(SYN68K_RUNTIME)/native.c \
-    $(SYN68K_RUNTIME)/opcode_dummy.c $(SYN68K_RUNTIME)/profile.c $(SYN68K_RUNTIME)/rangetree.c \
-    $(SYN68K_RUNTIME)/recompile.c $(SYN68K_RUNTIME)/syn68k.c $(SYN68K_RUNTIME)/translate.c \
-    $(SYN68K_RUNTIME)/trap.c
-SYN68K_SRCS = $(SYN68K_DIR)/syn68k_glue.cpp $(SYN68K_C_SRCS)
-
-CPUSRCS = ../cpu_engine.cpp ../cpu_glue.cpp ../memory.cpp ../Musashi/musashi_glue.cpp ../Musashi/memory_musashi.cpp ../amiberry/amiberry_glue.cpp ../m68k_rs/m68k_rs_glue.cpp $(EMU68_SRCS) $(SYN68K_SRCS) ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c
+CPUSRCS = ../cpu_engine.cpp ../cpu_glue.cpp ../memory.cpp ../Musashi/musashi_glue.cpp ../Musashi/memory_musashi.cpp ../amiberry/amiberry_glue.cpp ../m68k_rs/m68k_rs_glue.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c
 
 # Amiberry 680x0 CPU + JIT (ARM64 and x86-64 backends selected by the compiler).
 AMIBERRY_DIR = ../amiberry
@@ -179,7 +126,7 @@ SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../
 
 all: $(APP)
 
-# SCC, EmulOp, heartbeat, syn68k trap traces, and D(bug(...)) from debug.h.
+# SCC, EmulOp, heartbeat, and D(bug(...)) from debug.h.
 # clean-objects so TUs that already compiled with DEBUG 0 pick up the flags.
 debug:
 	$(MAKE) clean-objects
@@ -215,34 +162,6 @@ define SRCS_LIST_TO_OBJS
 endef
 OBJS = $(SRCS_LIST_TO_OBJS)
 
-define EMU68_CORE_LIST_TO_OBJS
-	$(addprefix $(OBJ_DIR)/, $(addsuffix .o, $(foreach file, $(EMU68_CORE_SRCS), \
-	$(basename $(notdir $(file))))))
-endef
-EMU68_CORE_OBJS = $(EMU68_CORE_LIST_TO_OBJS)
-$(EMU68_CORE_OBJS): CPPFLAGS = $(EMU68_CORE_CPPFLAGS)
-
-define EMU68_ADAPTER_C_LIST_TO_OBJS
-	$(addprefix $(OBJ_DIR)/, $(addsuffix .o, $(foreach file, $(EMU68_ADAPTER_C_SRCS), \
-	$(basename $(notdir $(file))))))
-endef
-EMU68_ADAPTER_C_OBJS = $(EMU68_ADAPTER_C_LIST_TO_OBJS)
-$(EMU68_ADAPTER_C_OBJS): CPPFLAGS = $(EMU68_CORE_CPPFLAGS)
-
-define EMU68_MATH_LIST_TO_OBJS
-	$(addprefix $(OBJ_DIR)/, $(addsuffix .o, $(foreach file, $(EMU68_MATH_SRCS), \
-	$(basename $(notdir $(file))))))
-endef
-EMU68_MATH_OBJS = $(EMU68_MATH_LIST_TO_OBJS)
-EMU68_MATH_LIBM_OBJS = $(filter-out $(OBJ_DIR)/exp10.o $(OBJ_DIR)/log.o $(OBJ_DIR)/log10.o $(OBJ_DIR)/log2.o, $(EMU68_MATH_OBJS))
-$(EMU68_MATH_LIBM_OBJS): CPPFLAGS += -include ../Emu68/hosted/math/libm.h
-
-$(EMU68_GEN)/%.c: $(EMU68_UPSTREAM)/src/%.c $(EMU68_PREP)
-	@mkdir -p $(dir $@)
-	python3 $(EMU68_PREP) $< $@
-
-.PRECIOUS: $(EMU68_GEN)/%.c $(EMU68_GEN)/aarch64/%.c
-
 SRC_PATHS += $(sort $(foreach file, $(SRCS), $(dir $(file))))
 VPATH :=
 VPATH += $(addprefix :, $(subst  ,:, $(filter-out $($(subst, :, ,$(VPATH))), $(SRC_PATHS))))
@@ -262,7 +181,7 @@ $(APP): $(OBJ_DIR) ../slirp/libslirp.a $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB)
 clean-objects:
 	rm -rf $(APP) $(OBJ_DIR) core* *.core *~ *.bak
 	mkdir -p $(OBJ_DIR)
-	rm -rf $(EMU68_GEN) $(M68K_RS_TARGET)
+	rm -rf $(M68K_RS_TARGET)
 	$(MAKE) -C ../slirp clean
 
 $(M68K_RS_LIB): $(M68K_RS_DIR)/Cargo.toml $(M68K_RS_DIR)/src/lib.rs ../vendor/m68k-rs/Cargo.toml ../vendor/m68k-rs/src/core/op_cache.rs
@@ -273,12 +192,6 @@ mostlyclean: clean-objects
 
 clean: mostlyclean
 	rm -f cpuemu.cpp cpudefs.cpp cpustbl.cpp cputbl.h
-
-$(OBJ_DIR)/%.o: $(EMU68_GEN)/%.c
-	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
-
-$(OBJ_DIR)/RegisterAllocator64.o: $(EMU68_GEN)/aarch64/RegisterAllocator64.c
-	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/%.o : %.c
 	$(CC) $(CPPFLAGS) $(DEFS) $(CFLAGS) -c $< -o $@
@@ -324,17 +237,4 @@ $(OBJ_DIR)/amiberry_hosted_host.o: $(AMIBERRY_DIR)/hosted/amiberry_host.cpp
 
 $(OBJ_DIR)/amiberry_hosted_memory.o: $(AMIBERRY_DIR)/hosted/amiberry_memory.cpp
 	$(CXX) $(AMIBERRY_CPPFLAGS) $(DEFS) $(AMIBERRY_CXXFLAGS) -c $< -o $@
-
-$(SYN68K_SYNGEN)/syngen: $(wildcard $(SYN68K_SYNGEN)/*.c)
-	$(CC) -O2 -DSYNGEN -DNONNATIVE -DNONDIRECT -I$(SYN68K_SYNGEN)/include -I$(SYN68K_DIR)/include $(wildcard $(SYN68K_SYNGEN)/*.c) -o $@
-
-$(SYN68K_RUNTIME)/syn68k.c $(SYN68K_RUNTIME)/mapindex.c $(SYN68K_RUNTIME)/mapinfo.c: $(SYN68K_SYNGEN)/syngen $(SYN68K_RUNTIME)/68k.scm $(SYN68K_RUNTIME)/syn68k_header.h $(SYN68K_RUNTIME)/68k.defines.scm
-	cd $(SYN68K_RUNTIME) && ../syngen/syngen 68k.scm
-
-$(OBJ_DIR)/syn68k_glue.o $(OBJ_DIR)/syn68k.o $(OBJ_DIR)/block.o $(OBJ_DIR)/diagnostics.o $(OBJ_DIR)/hash.o \
-$(OBJ_DIR)/rangetree.o $(OBJ_DIR)/translate.o $(OBJ_DIR)/alloc.o $(OBJ_DIR)/blockinfo.o \
-$(OBJ_DIR)/trap.o $(OBJ_DIR)/destroyblock.o $(OBJ_DIR)/callback.o $(OBJ_DIR)/init.o \
-$(OBJ_DIR)/interrupt.o $(OBJ_DIR)/profile.o $(OBJ_DIR)/deathqueue.o $(OBJ_DIR)/checksum.o \
-$(OBJ_DIR)/native.o $(OBJ_DIR)/backpatch.o $(OBJ_DIR)/recompile.o $(OBJ_DIR)/mapindex.o \
-$(OBJ_DIR)/mapinfo.o $(OBJ_DIR)/opcode_dummy.o: CPPFLAGS += $(SYN68K_INCLUDES) $(SYN68K_DEFS) -Wno-parentheses-equality -Wno-unused-value -Wno-constant-logical-operand
 

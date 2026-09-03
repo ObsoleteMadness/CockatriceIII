@@ -12,7 +12,7 @@ make test-cpu
 
 ## Layout
 
-- `cpu/` — Musashi opcode battery plus instruction/FPU/exception/ROM-snippet tests, run on musashi, syn68k, UAE, and Emu68. UAE also runs vendored [WinUAE cputest](../amiberry/cputest/README.md) smoke; syn68k runs its native CRC battery.
+- `cpu/` — Musashi opcode battery plus instruction/FPU/exception/ROM-snippet tests, run on musashi, UAE, and m68k-rs. UAE also runs vendored [WinUAE cputest](../amiberry/cputest/README.md) smoke.
 - `basilisk/` — memory, engine registry, EmulOp, ROM patches, SCSI, SCC, disk images.
 
 Hang-prone work is isolated with a **30 second** timeout (`run_isolated()` and `run_with_timeout.sh`). Override with `TEST_TIMEOUT`.
