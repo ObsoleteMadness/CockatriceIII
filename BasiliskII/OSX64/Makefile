@@ -43,7 +43,7 @@ SDL_CFLAGS := $(shell $(SDL_PREFIX)/bin/sdl-config --cflags 2>/dev/null || echo 
 SDL_LIBS := $(shell $(SDL_PREFIX)/bin/sdl-config --libs 2>/dev/null || echo "-L$(SDL_PREFIX)/lib -lSDL -Wl,-framework,Cocoa")
 
 CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I../bridge/darwin \
-	-I../m68k_rs/include \
+	-I../m68k_rs/include -I../jit_support \
 	-I/opt/homebrew/include -I/usr/local/include $(SDL_CFLAGS)
 
 HOST_CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I../bridge/darwin
@@ -62,13 +62,13 @@ M68K_RS_LIB = $(M68K_RS_TARGET)/release/libcockatrice_m68k_rs.a
 
 SYSSRCS = sdlmain.m ../bridge/darwin/macos_menu_bridge.mm ../SDL/sdl_pcap.cpp ../SDL/audio_sdl.cpp ../dummy/scsi_dummy.cpp ../dummy/prefs_editor_dummy.cpp
 
-CPUSRCS = ../cpu_engine.cpp ../cpu_glue.cpp ../memory.cpp ../Musashi/musashi_glue.cpp ../Musashi/memory_musashi.cpp ../amiberry/amiberry_glue.cpp ../m68k_rs/m68k_rs_glue.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c
+CPUSRCS = ../cpu_engine.cpp ../cpu_glue.cpp ../memory.cpp ../Musashi/musashi_glue.cpp ../Musashi/memory_musashi.cpp ../amiberry/amiberry_glue.cpp ../m68k_rs/m68k_rs_glue.cpp ../jit_support/jit_host_darwin.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c
 
 # Amiberry 680x0 CPU + JIT (ARM64 and x86-64 backends selected by the compiler).
 AMIBERRY_DIR = ../amiberry
 AMIBERRY_CPPFLAGS = -I$(AMIBERRY_DIR)/hosted -I$(AMIBERRY_DIR) -I$(AMIBERRY_DIR)/src/include \
 	-I$(AMIBERRY_DIR)/src -I$(AMIBERRY_DIR)/src/jit -I$(AMIBERRY_DIR)/src/threaddep \
-	-I$(AMIBERRY_DIR)/src/softfloat -I. \
+	-I$(AMIBERRY_DIR)/src/softfloat -I../jit_support -I. \
 	-DHAVE_CONFIG_H -DJIT -DUSE_JIT_FPU -DFPUEMU -DWITH_SOFTFLOAT
 AMIBERRY_CXXFLAGS = $(CXXFLAGS) -std=c++17 -Wno-unused -Wno-deprecated-declarations \
 	-Wno-format -Wno-c++11-narrowing -fno-strict-aliasing -ferror-limit=0

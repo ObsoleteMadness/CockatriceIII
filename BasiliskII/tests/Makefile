@@ -37,7 +37,7 @@ DEFS = -DHAVE_CONFIG_H -D_REENTRANT \
 	-DUAE_CPUTEST_BIN_PATH=\"$(abspath $(OBJ_DIR)/uae_cputest)\"
 
 INCLUDES = -Iinclude -I$(OSX64) -I../include -I$(MUSASHI) -I$(MUSASHI)/softfloat \
-	-I../Unix -I../dummy -I../amiberry -I../SDL -I../m68k_rs/include
+	-I../Unix -I../dummy -I../amiberry -I../SDL -I../m68k_rs/include -I../jit_support
 
 CPPFLAGS = $(DEFS) $(INCLUDES)
 
@@ -148,6 +148,8 @@ $(OBJ_DIR)/amiberry_glue.o: ../amiberry/amiberry_glue.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/m68k_rs_glue.o: ../m68k_rs/m68k_rs_glue.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OBJ_DIR)/jit_host_darwin.o: ../jit_support/jit_host_darwin.cpp | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/m68kcpu.o: $(MUSASHI)/m68kcpu.c $(MUSASHI)/m68kops.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -164,7 +166,7 @@ CORE_OBJS = \
 	$(OBJ_DIR)/emul_op.o $(OBJ_DIR)/toolbox_traps.o $(OBJ_DIR)/scc.o $(OBJ_DIR)/scsi.o $(OBJ_DIR)/scsi_dummy.o \
 	$(OBJ_DIR)/disk.o $(OBJ_DIR)/macos_util.o $(OBJ_DIR)/rom_patches.o \
 	$(OBJ_DIR)/musashi_glue.o $(OBJ_DIR)/memory_musashi.o \
-	$(OBJ_DIR)/amiberry_glue.o $(OBJ_DIR)/m68k_rs_glue.o \
+	$(OBJ_DIR)/amiberry_glue.o $(OBJ_DIR)/m68k_rs_glue.o $(OBJ_DIR)/jit_host_darwin.o \
 	$(OBJ_DIR)/m68kcpu.o $(OBJ_DIR)/m68kops.o $(OBJ_DIR)/m68kdasm.o $(OBJ_DIR)/softfloat.o
 
 LIB_OBJS = $(CORE_OBJS)

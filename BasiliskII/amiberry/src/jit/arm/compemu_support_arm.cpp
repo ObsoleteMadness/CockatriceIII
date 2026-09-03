@@ -770,44 +770,25 @@ static void prepare_for_call_1(void);
 static void prepare_for_call_2(void);
 
 STATIC_INLINE void flush_cpu_icache(void *from, void *to);
-STATIC_INLINE void jit_begin_write_window(void);
-STATIC_INLINE void jit_end_write_window(void);
 #endif
 STATIC_INLINE void write_jmp_target(uae_u32 *jmpaddr, uintptr a);
 
-/* pthread_jit_write_protect_np() toggles the W^X state per-thread, so the
- * nesting counter that gates it must be per-thread too. With the QEMU PPC
- * plugin a second thread (the TCG vCPU) drives the JIT via SMC/block
- * invalidation (write_jmp_target) at the same time the main thread is inside
- * compile_block(). A shared global counter lets the two threads' begin/end
- * pairs interleave, so the main thread's "restore execute mode" is skipped and
- * it faults (EXC_BAD_ACCESS code=2) the instant it runs the freshly compiled
- * block. thread_local keeps each thread's window depth and W^X state coherent. */
-static thread_local int jit_write_window_depth = 0;
+/* W^X toggling and icache flushing live in jit_support/jit_host.{h,cpp},
+ * shared with any other JIT backend instead of each one keeping a private
+ * copy. See jit_host.h for why the write-window nesting counter has to be
+ * per-thread: with the QEMU PPC plugin, a second thread (the TCG vCPU)
+ * drives the JIT via SMC/block invalidation (write_jmp_target) at the same
+ * time the main thread is inside compile_block(). */
+#include "jit_host.h"
 
 STATIC_INLINE void jit_begin_write_window(void)
 {
-	jit_write_window_depth++;
-#if defined(__APPLE__) && defined(CPU_AARCH64)
-	if (jit_write_window_depth == 1) {
-		uae_vm_jit_write_protect(false);
-	}
-#endif
+	jit_host_begin_write();
 }
 
 STATIC_INLINE void jit_end_write_window(void)
 {
-	if (jit_write_window_depth <= 0) {
-		write_log("JIT: write window underflow\n");
-		jit_write_window_depth = 0;
-		return;
-	}
-	jit_write_window_depth--;
-#if defined(__APPLE__) && defined(CPU_AARCH64)
-	if (jit_write_window_depth == 0) {
-		uae_vm_jit_write_protect(true);
-	}
-#endif
+	jit_host_end_write();
 }
 
 uae_u32 m68k_pc_offset;
