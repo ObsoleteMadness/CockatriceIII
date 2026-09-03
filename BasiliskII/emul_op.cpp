@@ -226,9 +226,14 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 			r->d[0] = PrimeTime(r->a[0], r->d[0]);
 			break;
 
-		case M68K_EMUL_OP_MICROSECONDS: 	// Microseconds() replacement
-			Microseconds(r->a[0], r->d[0]);
+		case M68K_EMUL_OP_MICROSECONDS: {	// Microseconds() replacement
+			// A0 points to the UnsignedWide result; registers are unaffected
+			uint32 hi, lo;
+			Microseconds(hi, lo);
+			WriteMacInt32(r->a[0], hi);
+			WriteMacInt32(r->a[0] + 4, lo);
 			break;
+		}
 
 		case M68K_EMUL_OP_INSTALL_DRIVERS: {// Patch to install our own drivers during startup
 			// Install drivers

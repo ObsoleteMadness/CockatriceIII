@@ -239,6 +239,7 @@ $(OBJ_DIR)/cputestgen.ini: ../amiberry/cputest/cockatrice_cputest.ini | $(OBJ_DI
 $(OBJ_DIR)/uae_cputest: $(CPUTEST_OBJS) $(OBJ_DIR)/cputestgen.ini | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(CPUTEST_OBJS) -lz -lm
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
+	@mkdir -p $(OBJ_DIR)/data
 
 uae_cputest: $(OBJ_DIR)/uae_cputest
 
