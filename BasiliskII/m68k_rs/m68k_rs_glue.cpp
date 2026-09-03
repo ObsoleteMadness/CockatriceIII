@@ -296,11 +296,13 @@ static int m68k_rs_host_get_irq(void *ctx)
  * Builds the committed-range table pushed to the Rust bus so checked memory
  * accesses (outside FastMem) can validate locally instead of calling back
  * into the host per access. Mirrors the legality rule m68k_rs_host_is_mapped()
- * used to apply per-call: RAM/ROM/framebuffer commits, plus the SCC MMIO
- * window(s), which are always legal even though they are not host-committed
- * pages. In 24-bit mode the SCC mirrors across every 16MB slice of the
- * address space and cannot be expressed as a fixed range, so that case is
- * flagged for the bus to check locally instead (see m68k_rs_set_mapped_ranges).
+ * used to apply per-call: RAM/ROM/framebuffer commits, plus every registered
+ * MMIO region (see RegisterMMIORegion() in cpu_emulation.h), which is always
+ * legal even though it is not host-committed pages. A future MMIO device is
+ * picked up here automatically once registered. In 24-bit mode MMIO mirrors
+ * across every 16MB slice of the address space and cannot be expressed as a
+ * fixed range, so that case is flagged for the bus to check locally instead
+ * (see m68k_rs_set_mapped_ranges).
  */
 static void m68k_rs_push_mapped_ranges(void)
 {
@@ -308,16 +310,16 @@ static void m68k_rs_push_mapped_ranges(void)
 	uint32 ends[M68K_RS_MAX_MAPPED_RANGES];
 	int n = memory_get_mapped_ranges(starts, ends, M68K_RS_MAX_MAPPED_RANGES);
 
-	int scc_24bit_mirror = 0;
-	if (TwentyFourBitAddressing) {
-		scc_24bit_mirror = 1;
-	} else if (n < M68K_RS_MAX_MAPPED_RANGES) {
-		starts[n] = 0x50000000;
-		ends[n] = 0x51000000;
-		n++;
+	int mmio_24bit_mirror = TwentyFourBitAddressing ? 1 : 0;
+	if (!TwentyFourBitAddressing) {
+		for (int i = 0; i < g_mmio_region_count && n < M68K_RS_MAX_MAPPED_RANGES; i++) {
+			starts[n] = g_mmio_regions[i].base;
+			ends[n] = g_mmio_regions[i].base + g_mmio_regions[i].length;
+			n++;
+		}
 	}
 
-	m68k_rs_set_mapped_ranges(s_cpu, starts, ends, (uint32_t)n, scc_24bit_mirror);
+	m68k_rs_set_mapped_ranges(s_cpu, starts, ends, (uint32_t)n, mmio_24bit_mirror);
 }
 
 /*

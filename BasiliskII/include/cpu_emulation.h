@@ -106,7 +106,87 @@ extern uint32 scc_bget(uint32 addr);
 extern void scc_bput(uint32 addr, uint32 b);
 
 /*
+ * Generic Memory-Mapped I/O Region Registry
+ *
+ * SCC is the first (and currently only) registered device, but the table
+ * itself is not SCC-specific: a future device (VIA, ADB, ...) becomes a
+ * RegisterMMIORegion() call instead of another hand-edited branch in
+ * ReadMacInt/WriteMacInt. Read/write handlers operate at byte granularity,
+ * matching the existing SCC access pattern; 16/32-bit accesses issue two/four
+ * handler calls the same way scc_bget/scc_bput already did.
+ */
+typedef uint32 (*mmio_read_fn)(uint32 addr);
+typedef void (*mmio_write_fn)(uint32 addr, uint32 value);
+
+#define MMIO_MAX_REGIONS 4
+
+typedef struct MMIORegion {
+	uint32 base;			/* Mac address of first byte in the region. */
+	uint32 length;			/* Region length in bytes. */
+	mmio_read_fn read;		/* Byte read handler; NULL if write-only. */
+	mmio_write_fn write;	/* Byte write handler; NULL if read-only. */
+} MMIORegion;
+
+extern MMIORegion g_mmio_regions[MMIO_MAX_REGIONS];
+extern int g_mmio_region_count;
+
+/*
+ * Registers a memory-mapped I/O region with dedicated byte read/write handlers.
+ *
+ * Arguments:
+ *   base: Mac address of the first byte in the region.
+ *   length: Region length in bytes.
+ *   read: Byte read handler, or NULL for a write-only region.
+ *   write: Byte write handler, or NULL for a read-only region.
+ */
+extern void RegisterMMIORegion(uint32 base, uint32 length, mmio_read_fn read, mmio_write_fn write);
+
+// Clears every registered MMIO region (used when the address map is rebuilt).
+extern void ClearMMIORegions(void);
+
+/*
+ * Looks up the registered MMIO region (if any) covering a Macintosh address.
+ *
+ * Applies the same 24-bit mirroring rule as Mac2HostAddr() so a region
+ * registered at its canonical (masked) base still matches every mirror.
+ *
+ * Arguments:
+ *   addr: 32-bit Macintosh address.
+ *
+ * Returns:
+ *   Pointer to the matching MMIORegion, or NULL if addr is not MMIO.
+ */
+static inline const MMIORegion *FindMMIORegion(uint32 addr)
+{
+	uint32 lookup = TwentyFourBitAddressing ? (addr & 0x00ffffff) : addr;
+	for (int i = 0; i < g_mmio_region_count; i++) {
+		const MMIORegion *r = &g_mmio_regions[i];
+		if (lookup >= r->base && lookup < r->base + r->length)
+			return r;
+	}
+	return NULL;
+}
+
+/*
+ * Checks if a Macintosh guest address falls in a registered MMIO region.
+ *
+ * Arguments:
+ *   addr: 32-bit Macintosh address.
+ *
+ * Returns:
+ *   true if address is an MMIO access, false otherwise.
+ */
+static inline bool is_mmio_addr(uint32 addr)
+{
+	return FindMMIORegion(addr) != NULL;
+}
+
+/*
  * Checks if a Macintosh guest address falls in the Z8530 SCC MMIO range.
+ *
+ * Kept for existing callers; SCC is currently the only registered MMIO
+ * region so this is equivalent to is_mmio_addr(). See memory.cpp's
+ * memory_register_builtin_mmio() for the registered SCC windows.
  *
  * Arguments:
  *   addr: 32-bit Macintosh address.
@@ -116,25 +196,7 @@ extern void scc_bput(uint32 addr, uint32 b);
  */
 static inline bool is_scc_addr(uint32 addr)
 {
-	if (TwentyFourBitAddressing) {
-		/* In 24-bit mode the Z8530 SCC is mirrored across two 1MB read/write windows:
-		 *   0x900000–0x9FFFFF  (SCC Read)
-		 *   0xB00000–0xBFFFFF  (SCC Write)
-		 * These correspond to the original map_banks(&scc_bank, 0x90, 0x10)
-		 * and map_banks(&scc_bank, 0xb0, 0x10) bank assignments. */
-		uint32 a24 = addr & 0x00ffffff;
-		return ((a24 >= 0x00900000 && a24 < 0x00a00000) ||
-		        (a24 >= 0x00b00000 && a24 < 0x00c00000));
-	} else {
-		/* In 32-bit mode the SCC occupies a full 16MB window at 0x50000000.
-		 * This matches map_banks(&scc_bank, 0x5000, 0x100):
-		 *   start = 0x5000 bank-units  → 0x5000 * 0x10000 = 0x50000000
-		 *   size  = 0x100  bank-units  → 0x100  * 0x10000 = 0x01000000 (16MB)
-		 * On a Quadra 800 (and similar 32-bit Macs) the ltlk driver accesses
-		 * the Z8530 at 0x50F00000+, well above the erroneously-short 0x50100000
-		 * limit that was previously used. */
-		return (addr >= 0x50000000 && addr < 0x51000000);
-	}
+	return is_mmio_addr(addr);
 }
 
 /*
@@ -183,9 +245,10 @@ static inline uint32 Host2MacAddr(uint8 *addr)
  */
 static inline uint32 ReadMacInt8(uint32 addr)
 {
-	// Route MMIO addresses to SCC serial controller
-	if (is_scc_addr(addr))
-		return scc_bget(addr);
+	// Route MMIO addresses to their registered handler
+	const MMIORegion *r = FindMMIORegion(addr);
+	if (r && r->read)
+		return r->read(addr);
 	return (uint32)*(uint8 *)Mac2HostAddr(addr);
 }
 
@@ -200,9 +263,10 @@ static inline uint32 ReadMacInt8(uint32 addr)
  */
 static inline uint32 ReadMacInt16(uint32 addr)
 {
-	// Route MMIO addresses to SCC serial controller
-	if (is_scc_addr(addr))
-		return (scc_bget(addr) << 8) | scc_bget(addr + 1);
+	// Route MMIO addresses to their registered handler
+	const MMIORegion *r = FindMMIORegion(addr);
+	if (r && r->read)
+		return (r->read(addr) << 8) | r->read(addr + 1);
 	return do_get_mem_word((uint16 *)Mac2HostAddr(addr));
 }
 
@@ -217,8 +281,8 @@ static inline uint32 ReadMacInt16(uint32 addr)
  */
 static inline uint32 ReadMacInt32(uint32 addr)
 {
-	// Route MMIO addresses to SCC serial controller
-	if (is_scc_addr(addr))
+	// Route MMIO addresses to their registered handler
+	if (is_mmio_addr(addr))
 		return (ReadMacInt16(addr) << 16) | ReadMacInt16(addr + 2);
 	return do_get_mem_long((uint32 *)Mac2HostAddr(addr));
 }
@@ -232,9 +296,10 @@ static inline uint32 ReadMacInt32(uint32 addr)
  */
 static inline void WriteMacInt8(uint32 addr, uint32 b)
 {
-	// Route MMIO addresses to SCC serial controller
-	if (is_scc_addr(addr)) {
-		scc_bput(addr, b);
+	// Route MMIO addresses to their registered handler
+	const MMIORegion *r = FindMMIORegion(addr);
+	if (r && r->write) {
+		r->write(addr, b);
 		return;
 	}
 	// Protect ROM region from guest writes
@@ -252,10 +317,11 @@ static inline void WriteMacInt8(uint32 addr, uint32 b)
  */
 static inline void WriteMacInt16(uint32 addr, uint32 w)
 {
-	// Route MMIO addresses to SCC serial controller
-	if (is_scc_addr(addr)) {
-		scc_bput(addr, w >> 8);
-		scc_bput(addr + 1, w & 0xff);
+	// Route MMIO addresses to their registered handler
+	const MMIORegion *r = FindMMIORegion(addr);
+	if (r && r->write) {
+		r->write(addr, w >> 8);
+		r->write(addr + 1, w & 0xff);
 		return;
 	}
 	// Protect ROM region from guest writes
@@ -273,8 +339,8 @@ static inline void WriteMacInt16(uint32 addr, uint32 w)
  */
 static inline void WriteMacInt32(uint32 addr, uint32 l)
 {
-	// Route MMIO addresses to SCC serial controller
-	if (is_scc_addr(addr)) {
+	// Route MMIO addresses to their registered handler
+	if (is_mmio_addr(addr)) {
 		WriteMacInt16(addr, l >> 16);
 		WriteMacInt16(addr + 2, l & 0xffff);
 		return;

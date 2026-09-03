@@ -16,6 +16,12 @@
  *  CPU run becomes 680x0 vector 2 (access fault). 68k instruction fetch
  *  is a data load, so committed pages are PROT_READ|PROT_WRITE without
  *  PROT_EXEC — host W^X still applies; NX is not a 68k execute/data split.
+ *
+ *  Memory-mapped I/O is a generic registration table (RegisterMMIORegion(),
+ *  see cpu_emulation.h), not a hardcoded address check: ReadMacInt/WriteMacInt
+ *  dispatch through FindMMIORegion() so adding a device is a registration
+ *  call, not another hand-edited accessor branch. SCC is the first (and
+ *  currently only) registered device; see memory_register_builtin_mmio().
  */
 
 #include <stdio.h>
@@ -43,6 +49,10 @@
 // Global 4GB Flat Host Memory Window Base Pointer
 uint8 *Host_Mem_Base = NULL;
 
+// Registered MMIO regions (see FindMMIORegion() in cpu_emulation.h)
+MMIORegion g_mmio_regions[MMIO_MAX_REGIONS];
+int g_mmio_region_count = 0;
+
 /* Host page size; Apple Silicon is 16KB, Windows/x86 typically 4KB. */
 static size_t s_page_size = 0;
 
@@ -67,6 +77,66 @@ static bool s_flat_dummy_window = true;
 static size_t memory_page_size(void);
 static void memory_note_range(uint32 start, uint32 end);
 static int memory_host_prot(int prot);
+static void memory_register_builtin_mmio(void);
+
+/*
+ * Registers a memory-mapped I/O region. See cpu_emulation.h for the intended
+ * usage: read/write handlers operate at byte granularity, and a NULL handler
+ * marks a read-only or write-only region.
+ *
+ * Arguments:
+ *   base: Mac address of the first byte in the region.
+ *   length: Region length in bytes.
+ *   read: Byte read handler, or NULL for a write-only region.
+ *   write: Byte write handler, or NULL for a read-only region.
+ */
+void RegisterMMIORegion(uint32 base, uint32 length, mmio_read_fn read, mmio_write_fn write)
+{
+	if (g_mmio_region_count >= MMIO_MAX_REGIONS) {
+		printf("[MEM] FATAL: MMIO region table full, cannot register 0x%08X+0x%X\n", base, length);
+		fflush(stdout);
+		return;
+	}
+	MMIORegion *r = &g_mmio_regions[g_mmio_region_count++];
+	r->base = base;
+	r->length = length;
+	r->read = read;
+	r->write = write;
+}
+
+/*
+ * Clears every registered MMIO region. Called before memory_register_builtin_mmio()
+ * rebuilds the table so a stale entry never outlives an addressing-mode change.
+ */
+void ClearMMIORegions(void)
+{
+	g_mmio_region_count = 0;
+}
+
+/*
+ * (Re)registers the built-in MMIO devices for the current addressing mode.
+ *
+ * SCC is the only registered device today. Its window depends on
+ * TwentyFourBitAddressing, so this is rebuilt every time the window policy
+ * is (re)applied rather than once at startup.
+ */
+static void memory_register_builtin_mmio(void)
+{
+	ClearMMIORegions();
+	if (TwentyFourBitAddressing) {
+		/* The Z8530 SCC is mirrored across two 1MB read/write windows:
+		 *   0x900000-0x9FFFFF  (SCC Read)
+		 *   0xB00000-0xBFFFFF  (SCC Write)
+		 * Either window dispatches both reads and writes to SCC_Access(),
+		 * matching the original map_banks(&scc_bank, ...) bank assignments. */
+		RegisterMMIORegion(0x00900000, 0x00100000, scc_bget, scc_bput);
+		RegisterMMIORegion(0x00b00000, 0x00100000, scc_bget, scc_bput);
+	} else {
+		/* In 32-bit mode the SCC occupies a full 16MB window at 0x50000000,
+		 * matching map_banks(&scc_bank, 0x5000, 0x100). */
+		RegisterMMIORegion(0x50000000, 0x01000000, scc_bget, scc_bput);
+	}
+}
 
 /*
  * Applies the selected host window policy to the live 4GB mapping and rebuilds
@@ -76,6 +146,8 @@ static void memory_apply_window_policy(void)
 {
 	if (!Host_Mem_Base)
 		return;
+
+	memory_register_builtin_mmio();
 
 	const uint64 window_size = 0x100000000ULL;
 	const int full_prot = s_flat_dummy_window
