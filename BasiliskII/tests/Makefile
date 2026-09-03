@@ -260,25 +260,25 @@ $(OBJ_DIR)/basilisk_scc_test.o: basilisk/basilisk_scc_test.cpp | $(OBJ_DIR)
 $(OBJ_DIR)/basilisk_disk_test.o: basilisk/basilisk_disk_test.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 
-basilisk_memory_test: $(OBJ_DIR)/basilisk_memory_test.o $(OBJ_DIR)/libcockatrice_test.a
+basilisk_memory_test: $(OBJ_DIR)/basilisk_memory_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
-basilisk_engine_test: $(OBJ_DIR)/basilisk_engine_test.o $(OBJ_DIR)/libcockatrice_test.a
+basilisk_engine_test: $(OBJ_DIR)/basilisk_engine_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
-basilisk_emulop_test: $(OBJ_DIR)/basilisk_emulop_test.o $(OBJ_DIR)/libcockatrice_test.a
+basilisk_emulop_test: $(OBJ_DIR)/basilisk_emulop_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
-basilisk_patches_test: $(OBJ_DIR)/basilisk_patches_test.o $(OBJ_DIR)/libcockatrice_test.a
+basilisk_patches_test: $(OBJ_DIR)/basilisk_patches_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
-basilisk_scsi_test: $(OBJ_DIR)/basilisk_scsi_test.o $(OBJ_DIR)/libcockatrice_test.a
+basilisk_scsi_test: $(OBJ_DIR)/basilisk_scsi_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
-basilisk_scc_test: $(OBJ_DIR)/basilisk_scc_test.o $(OBJ_DIR)/libcockatrice_test.a
+basilisk_scc_test: $(OBJ_DIR)/basilisk_scc_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
-basilisk_disk_test: $(OBJ_DIR)/basilisk_disk_test.o $(OBJ_DIR)/libcockatrice_test.a
+basilisk_disk_test: $(OBJ_DIR)/basilisk_disk_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
 

@@ -68,3 +68,17 @@ pub use core::types::{
     BatchExit, BatchResult, CpuType, CycleBatchControl, CycleBatchExit, CycleBatchResult,
     CycleBoundaryEvent, HleHandler, NoOpHleHandler, Size, StepResult,
 };
+
+/// True once the calling thread's Cranelift trace-JIT module exists and
+/// initialized successfully. Forces that state into existence on first call,
+/// on the calling thread.
+///
+/// Always `false` without the `jit` feature. With it, still `false` if
+/// `cranelift-jit`'s `JITBuilder::new()` failed at runtime -- e.g. the
+/// process lacks permission to allocate executable memory --
+/// [`CpuCore::run_batch`] runs on the portable trace executor either way;
+/// this reports which one a given thread actually got, which compiling the
+/// `jit` feature in does not.
+pub fn jit_native_active() -> bool {
+    core::trace_jit::native_jit_active()
+}

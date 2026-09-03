@@ -515,6 +515,17 @@ static bool m68k_rs_engine_init(void)
 	printf("[m68k-rs] execution path: %s (cranelift %s)\n",
 	       s_use_batch ? "batch/JIT" : "cycle-accurate interpreter",
 	       m68k_rs_jit_available() ? "compiled in" : "not compiled in");
+	if (s_use_batch && m68k_rs_jit_available()) {
+		/*
+		 * Forces cranelift-jit's JITBuilder::new() to run now, on this
+		 * thread, so a runtime failure to allocate executable memory
+		 * (silently swallowed upstream, falling back to the portable
+		 * trace executor) is visible in the boot log instead of just
+		 * showing up as unexplained slowness later.
+		 */
+		printf("[m68k-rs] cranelift native codegen: %s\n",
+		       m68k_rs_jit_native_active() ? "active" : "unavailable (falling back to the portable trace executor)");
+	}
 	printf("[m68k-rs] fastmem mode: %s\n",
 	       s_fastmem_mode == M68K_RS_FASTMEM_RAM ? "ram" :
 	       s_fastmem_mode == M68K_RS_FASTMEM_MULTI ? "multi" :
@@ -652,6 +663,8 @@ extern const CPUEngine m68k_rs_cpu_engine = {
 	"m68k_rs",
 	"m68k-rs (Rust interpreter)",
 	false,
+	CPU_MEM_STRATEGY_CALLBACK,
+	CPU_ENGINE_TIER_PERFORMANCE,
 	m68k_rs_engine_init,
 	m68k_rs_engine_exit,
 	m68k_rs_engine_start,

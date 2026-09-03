@@ -24,6 +24,29 @@ extern "C" {
 struct M68kRegisters;
 
 /*
+ * How an engine reaches guest memory. Declared per-engine so callers (test
+ * harness, future prefs UI) can tell without reading glue code whether an
+ * engine's accesses are bounds-checked against the region table (Callback)
+ * or whether it inlines Host_Mem_Base-relative pointer arithmetic itself
+ * (DirectPointer) and relies on guard-page faulting for bad addresses.
+ */
+typedef enum {
+	CPU_MEM_STRATEGY_CALLBACK,       /* Read/WriteMacInt* on every access */
+	CPU_MEM_STRATEGY_DIRECT_POINTER  /* Inlines Host_Mem_Base + addr itself */
+} CPUMemStrategy;
+
+/*
+ * Correctness-vs-speed classification. Musashi is the permanent golden
+ * reference every other engine's output is checked against; UAE and m68k-rs
+ * are speed/compatibility tradeoff options. This makes that policy explicit
+ * in code instead of by convention.
+ */
+typedef enum {
+	CPU_ENGINE_TIER_GOLDEN,      /* Correctness reference */
+	CPU_ENGINE_TIER_PERFORMANCE  /* Speed/compatibility tradeoff */
+} CPUEngineTier;
+
+/*
  * CPU Engine Definition Interface
  * Defines the complete lifecycle, execution, and interrupt contract for a CPU engine.
  */
@@ -31,6 +54,8 @@ typedef struct CPUEngine {
 	const char *id;             /* Unique identifier: "musashi", "uae", "m68k_rs" */
 	const char *name;           /* Human-readable description */
 	bool is_jit;                /* True if dynamic binary translator, false for interpreter */
+	CPUMemStrategy mem_strategy; /* How this engine accesses guest memory */
+	CPUEngineTier tier;          /* Golden correctness reference vs. performance tradeoff */
 
 	/* Lifecycle functions */
 	bool (*init)(void);         /* Initialize engine and allocate code/memory caches */

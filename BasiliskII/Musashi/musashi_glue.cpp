@@ -364,6 +364,8 @@ extern const CPUEngine musashi_cpu_engine = {
 	"musashi",
 	"Musashi 680x0 C Core (Version 4.5+)",
 	false, // Interpreter
+	CPU_MEM_STRATEGY_CALLBACK,
+	CPU_ENGINE_TIER_GOLDEN,
 	musashi_init,
 	musashi_exit,
 	musashi_start,

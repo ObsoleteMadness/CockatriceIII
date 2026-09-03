@@ -306,6 +306,8 @@ extern const CPUEngine amiberry_cpu_engine = {
 	"uae",
 	"Amiberry 680x0 Engine (interpreter + ARM64/x86-64 JIT)",
 	false,
+	CPU_MEM_STRATEGY_DIRECT_POINTER,
+	CPU_ENGINE_TIER_PERFORMANCE,
 	winuae_init,
 	winuae_exit,
 	winuae_start,

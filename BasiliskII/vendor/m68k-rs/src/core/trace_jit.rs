@@ -144,6 +144,24 @@ fn with_trace_jit<R>(f: impl FnOnce(&mut TraceJit) -> R) -> R {
     TRACE_JIT.with_borrow_mut(|slot| f(slot.get_or_insert_with(TraceJit::new)))
 }
 
+/// True once the calling thread's Cranelift `JITModule` exists (forces
+/// creation on first call). False when the `jit` feature isn't compiled in,
+/// or when it is but `JITBuilder::new()` failed at runtime -- e.g. no
+/// executable-memory permission on the platform -- and `TraceJit::new()`'s
+/// `.ok()` silently fell back to the portable trace executor. Compiling the
+/// feature in says nothing about whether native codegen actually works on
+/// this machine; this does.
+pub(crate) fn native_jit_active() -> bool {
+    #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+    {
+        with_trace_jit(|jit| jit.module.is_some())
+    }
+    #[cfg(any(not(feature = "jit"), target_family = "wasm"))]
+    {
+        false
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JitDirectReg {
     Data(u8),

@@ -491,6 +491,19 @@ pub extern "C" fn m68k_rs_jit_available() -> c_int {
     if cfg!(feature = "jit") { 1 } else { 0 }
 }
 
+/// Reports whether Cranelift's native trace compiler actually initialized
+/// on the calling thread, as opposed to merely being compiled in.
+///
+/// `m68k_rs_jit_available()` only reflects the `jit` Cargo feature; it stays
+/// 1 even if `cranelift-jit`'s `JITBuilder::new()` fails at runtime (e.g. no
+/// executable-memory permission) and the crate silently falls back to its
+/// portable trace executor. This call forces that check now, on whichever
+/// thread calls it, and reports the real outcome.
+#[no_mangle]
+pub extern "C" fn m68k_rs_jit_native_active() -> c_int {
+    if m68k::jit_native_active() { 1 } else { 0 }
+}
+
 /// Throughput entry point: run up to `max_instructions` guest instructions
 /// through the decoded-op cache, the fastmem window, and the trace JIT.
 ///

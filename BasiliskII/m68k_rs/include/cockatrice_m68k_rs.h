@@ -128,6 +128,13 @@ M68kRsRunResult m68k_rs_run_batch(M68kRsCpu *cpu, uint32_t max_instructions);
  * either way; without it hot traces run on the portable executor. */
 int m68k_rs_jit_available(void);
 
+/* Non-zero only once Cranelift's JITBuilder actually initialized on the
+ * calling thread. m68k_rs_jit_available() reflects the build's Cargo
+ * feature and stays true even if that init silently failed at runtime (the
+ * crate falls back to its portable trace executor either way); this forces
+ * the real check on whichever thread calls it. */
+int m68k_rs_jit_native_active(void);
+
 #ifdef __cplusplus
 }
 #endif

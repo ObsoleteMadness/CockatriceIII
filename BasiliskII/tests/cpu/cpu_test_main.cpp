@@ -14,6 +14,16 @@
 #include "cpu_tests.h"
 #include "cpu_engine.h"
 
+static const char *mem_strategy_name(CPUMemStrategy s)
+{
+	return s == CPU_MEM_STRATEGY_DIRECT_POINTER ? "direct_pointer" : "callback";
+}
+
+static const char *tier_name(CPUEngineTier t)
+{
+	return t == CPU_ENGINE_TIER_GOLDEN ? "golden" : "performance";
+}
+
 int main(int argc, char **argv)
 {
 	test_install_crash_handler();
@@ -37,6 +47,13 @@ int main(int argc, char **argv)
 		printf("\n=== CPU engine: %s (id=%s jit=%s jitfpu=%s) ===\n",
 		       cfg->label, cfg->id, cfg->jit ? "true" : "false",
 		       cfg->jitfpu ? "true" : "false");
+
+		const CPUEngine *engine_info = GetCPUEngine(cfg->id);
+		if (engine_info) {
+			printf("    mem_strategy=%s tier=%s\n",
+			       mem_strategy_name(engine_info->mem_strategy),
+			       tier_name(engine_info->tier));
+		}
 
 		char init_msg[160];
 		snprintf(init_msg, sizeof(init_msg), "activate_cpu_engine('%s', jit=%s) succeeded",
