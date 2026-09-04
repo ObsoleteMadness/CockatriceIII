@@ -410,6 +410,14 @@ void cockatrice_report_cpu_exception(const char *engine, int vector, uint32 pc)
 		printf("[SYSTEM-ERROR-REGS] A0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
 		       ctx_ptr->a[0], ctx_ptr->a[1], ctx_ptr->a[2], ctx_ptr->a[3],
 		       ctx_ptr->a[4], ctx_ptr->a[5], ctx_ptr->a[6], ctx_ptr->a[7]);
+		/* Exception snapshot is before the illegal frame is pushed, so A7
+		 * is the live stack. A7-4 is the long RTS just popped (TheZone
+		 * 0x2000 when a compiled return landed in the system heap). */
+		printf("[SYSTEM-ERROR-STACK] A7-4: %08X  A7:",
+		       ReadMacInt32(ctx_ptr->a[7] - 4));
+		for (int i = 0; i < 8; i++)
+			printf(" %08X", ReadMacInt32(ctx_ptr->a[7] + (uint32)i * 4));
+		printf("\n");
 	}
 
 	/* Bytes straddling the fault PC: distinguishes plausible-but-wrong

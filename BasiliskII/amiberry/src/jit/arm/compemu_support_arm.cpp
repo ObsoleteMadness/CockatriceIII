@@ -206,6 +206,36 @@ static inline bool jit_opcode_needs_compile_fallback(uae_u32 opcode)
             return false;
     }
 }
+
+/*
+ * Compiled JSR/BSR bake start_pc+(comp_pc_p-start_pc_p) as the return
+ * address; RTS pops it. Direct-RAM boots die with RTS-to-TheZone
+ * (PC=0x2000, A7-4=0x2000) while ROM stacked returns stay correct — so
+ * either a baked retadd of 0x2000 or a compiled RTS through a zone
+ * pointer. Run these through the interpreter so the live 68k PC is
+ * used. JMP/RTE go with them so a compiled jump cannot skip the
+ * interpreter return.
+ *
+ * Arguments:
+ *   opcode: 16-bit 68k opcode being compiled.
+ *
+ * Returns:
+ *   True when this opcode must call the C handler instead of native code.
+ */
+static inline bool jit_opcode_use_interpreter(uae_u32 opcode)
+{
+    switch (table68k[opcode].mnemo) {
+        case i_JSR:
+        case i_BSR:
+        case i_RTS:
+        case i_RTD:
+        case i_JMP:
+        case i_RTE:
+            return true;
+        default:
+            return false;
+    }
+}
 #endif
 
 //#if DEBUG
@@ -2020,11 +2050,19 @@ static void fflags_into_flags_internal(void)
 static inline int isinrom(uintptr addr)
 {
 #ifdef UAE
-    if (addr >= (uintptr)kickmem_bank.baseaddr &&
-        addr < (uintptr)kickmem_bank.baseaddr + 8 * 65536) {
+    /* allocated_size is the mapped ROM length when the host is not Amiga
+     * kickstart (Cockatrice points kickmem_bank at Mac ROM). The 512KB
+     * default is classic Kickstart 1.x/2.x. */
+    uae_u32 kick_len = kickmem_bank.allocated_size
+        ? kickmem_bank.allocated_size : (8 * 65536);
+    if (kickmem_bank.baseaddr &&
+        addr >= (uintptr)kickmem_bank.baseaddr &&
+        addr < (uintptr)kickmem_bank.baseaddr + kick_len) {
         return 1;
     }
-    /* Treat UAE Boot ROM (rtarea) as ROM too for ARM64 JIT safety guards. */
+    /* Treat UAE Boot ROM (rtarea) as ROM too for ARM64 JIT safety guards.
+     * Hosted Mac has no rtarea: leave baseaddr NULL so low RAM is not
+     * mistaken for ROM. */
     if (rtarea_bank.baseaddr &&
         addr >= (uintptr)rtarea_bank.baseaddr &&
         addr < (uintptr)rtarea_bank.baseaddr + 65536) {
@@ -2491,7 +2529,10 @@ void writebyte(int address, int source)
 
 void writeword(int address, int source)
 {
-    if ((special_mem & S_WRITE) || distrust_word() || jit_n_addr_unsafe)
+    /* A7 (vreg 15) is often only word-aligned on Mac ROM (MOVE.W SR,-(SP)).
+     * File Manager then does long stack traffic; a native STR to 2-mod-4
+     * was a suspect for leaving TheZone (0x2000) in the RTS slot. */
+    if ((special_mem & S_WRITE) || distrust_word() || jit_n_addr_unsafe || address == 15)
         writemem_special(address, source, SIZEOF_VOID_P * 4);
     else
         writemem_real(address, source, 2);
@@ -2499,7 +2540,7 @@ void writeword(int address, int source)
 
 void writelong(int address, int source)
 {
-    if ((special_mem & S_WRITE) || distrust_long() || jit_n_addr_unsafe)
+    if ((special_mem & S_WRITE) || distrust_long() || jit_n_addr_unsafe || address == 15)
         writemem_special(address, source, SIZEOF_VOID_P * 3);
     else
         writemem_real(address, source, 4);
@@ -2508,7 +2549,7 @@ void writelong(int address, int source)
 // Now the same for clobber variant
 void writeword_clobber(int address, int source)
 {
-    if ((special_mem & S_WRITE) || distrust_word() || jit_n_addr_unsafe)
+    if ((special_mem & S_WRITE) || distrust_word() || jit_n_addr_unsafe || address == 15)
         writemem_special(address, source, SIZEOF_VOID_P * 4);
     else
         writemem_real(address, source, 2);
@@ -2517,7 +2558,7 @@ void writeword_clobber(int address, int source)
 
 void writelong_clobber(int address, int source)
 {
-    if ((special_mem & S_WRITE) || distrust_long() || jit_n_addr_unsafe)
+    if ((special_mem & S_WRITE) || distrust_long() || jit_n_addr_unsafe || address == 15)
         writemem_special(address, source, SIZEOF_VOID_P * 3);
     else
         writemem_real(address, source, 4);
@@ -2561,7 +2602,7 @@ void readbyte(int address, int dest)
 
 void readword(int address, int dest)
 {
-    if ((special_mem & S_READ) || distrust_word() || jit_n_addr_unsafe)
+    if ((special_mem & S_READ) || distrust_word() || jit_n_addr_unsafe || address == 15)
         readmem_special(address, dest, SIZEOF_VOID_P * 1);
     else
         readmem_real(address, dest, 2);
@@ -2569,7 +2610,7 @@ void readword(int address, int dest)
 
 void readlong(int address, int dest)
 {
-    if ((special_mem & S_READ) || distrust_long() || jit_n_addr_unsafe)
+    if ((special_mem & S_READ) || distrust_long() || jit_n_addr_unsafe || address == 15)
         readmem_special(address, dest, SIZEOF_VOID_P * 0);
     else
         readmem_real(address, dest, 4);
@@ -2641,8 +2682,15 @@ void calc_disp_ea_020(int base, uae_u32 dp, int target)
             if (!ignorebase)
                 arm_ADD_l(target, base);
             arm_ADD_l_ri(target, addbase);
-            if (dp & 0x03)
+            if (dp & 0x03) {
+                /* Memory-indirect fetch into the same vreg. Quadra File
+                 * Manager does jsr ([$400, Dn.w*4]); a direct dest==addr
+                 * LDR used to drop the table address. Helpers copy it. */
+                int old_special = special_mem;
+                special_mem |= S_READ;
                 readlong(target, target);
+                special_mem = old_special;
+            }
         } else { /* do the getlong first, then add regd */
             if (!ignorebase) {
                 mov_l_rr(target, base);
@@ -2650,8 +2698,12 @@ void calc_disp_ea_020(int base, uae_u32 dp, int target)
             } else {
                 mov_l_ri(target, addbase);
             }
-            if (dp & 0x03)
+            if (dp & 0x03) {
+                int old_special = special_mem;
+                special_mem |= S_READ;
                 readlong(target, target);
+                special_mem = old_special;
+            }
 
             if (!ignorereg) {
                 disp_ea20_target_add(target, reg, regd_shift, ((dp & 0x800) == 0));
@@ -3580,6 +3632,17 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
         int i;
         int r;
         int was_comp = 0;
+        /* JSR/BSR bake start_pc + (comp_pc_p - start_pc_p) into the return
+         * address. execute_normal sets those from regs.pc/pc_oldp, but
+         * endblock_pc_isconst used to write only pc_p, so the pair can
+         * describe a previous block. Derive both from this block's host
+         * fetch pointer minus NATMEM — the same rule as x86 FIXED_ADDRESSING. */
+        start_pc_p = (uae_u8 *)pc_hist[0].location;
+#ifdef NATMEM_OFFSET
+        start_pc = (uae_u32)((uintptr)start_pc_p - (uintptr)NATMEM_OFFSET);
+#else
+        start_pc = regs.pc;
+#endif
         uae_u8 liveflags[MAXRUN + 1];
         bool trace_in_rom = isinrom((uintptr)pc_hist[0].location) != 0;
 #if defined(CPU_AARCH64)
@@ -3795,7 +3858,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 
 
                 failure = 1; // gb-- defaults to failure state
-                if (comptbl[opcode] && optlev > 1) {
+                if (comptbl[opcode] && optlev > 1 && !jit_opcode_use_interpreter(opcode)) {
                     failure = 0;
                     if (!was_comp) {
                         comp_pc_p = (uae_u8*)pc_hist[i].location;

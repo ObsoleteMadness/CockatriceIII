@@ -7971,8 +7971,20 @@ MIDFUNC(2,jnf_MEM_WRITE_OFF_l,(RR4 adr, RR4 l))
 MENDFUNC(2,jnf_MEM_WRITE_OFF_l,(RR4 adr, RR4 l))
 
 
+/* Direct load when dest and address are the same vreg (MOVE.L (An),An
+ * and calc_disp_ea_020's readlong(target,target)). writereg() calls
+ * make_exclusive(r, 0), which splits a shared physical register
+ * without copying; the LDR index would then be garbage. rmw() keeps
+ * the address. */
 MIDFUNC(2,jnf_MEM_READ_OFF_b,(W4 d, RR4 adr))
 {
+	if (d == adr) {
+		d = rmw(d);
+		LDRB_wXx(d, d, R_MEMSTART);
+		unlock2(d);
+		return;
+	}
+
 	adr = readreg(adr);
 	d = writereg(d);
 
@@ -7985,6 +7997,14 @@ MENDFUNC(2,jnf_MEM_READ_OFF_b,(W4 d, RR4 adr))
 
 MIDFUNC(2,jnf_MEM_READ_OFF_w,(W4 d, RR4 adr))
 {
+	if (d == adr) {
+		d = rmw(d);
+		LDRH_wXx(REG_WORK1, d, R_MEMSTART);
+		REV16_ww(d, REG_WORK1);
+		unlock2(d);
+		return;
+	}
+
 	adr = readreg(adr);
 	d = writereg(d);
 
@@ -7998,6 +8018,14 @@ MENDFUNC(2,jnf_MEM_READ_OFF_w,(W4 d, RR4 adr))
 
 MIDFUNC(2,jnf_MEM_READ_OFF_l,(W4 d, RR4 adr))
 {
+	if (d == adr) {
+		d = rmw(d);
+		LDR_wXx(REG_WORK1, d, R_MEMSTART);
+		REV_ww(d, REG_WORK1);
+		unlock2(d);
+		return;
+	}
+
 	adr = readreg(adr);
 	d = writereg(d);
 

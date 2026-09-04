@@ -103,6 +103,35 @@ static evt_t s_slice_cycles;
 static const evt_t kSliceLimit = (evt_t)40000 * CYCLE_UNIT;
 
 /*
+ * Returns CYCLE_UNIT ticks the ARM64/x86 JIT has already subtracted from
+ * pissoff since the last budget reload.
+ *
+ * Compiled blocks decrement countdown (pissoff) at each endblock and only
+ * call do_cycles_slow via do_nothing() when the budget expires. Until then
+ * currcycle is stale, so Time Manager and the hosted timeslice must fold
+ * this delta in. reload restores the chain budget so the next compiled
+ * block can jump to its successor instead of returning to C.
+ *
+ * Arguments:
+ *   reload: True to reset pissoff to pissoff_value after reading (end of a
+ *           JIT chain / new slice). False for a read-only snapshot.
+ *
+ * Returns:
+ *   Ticks consumed since the last reload, or 0 when JIT is off.
+ */
+static int jit_consumed_cycles(bool reload)
+{
+	int consumed;
+
+	if (!currprefs.cachesize || pissoff_value <= 0)
+		return 0;
+	consumed = pissoff_value - pissoff;
+	if (reload)
+		pissoff = pissoff_value;
+	return consumed > 0 ? consumed : 0;
+}
+
+/*
  * Writes a UAE-style log line to stdout so JIT/CPU diagnostics are visible
  * in the Cockatrice console without Amiberry's GUI logger.
  */
@@ -135,14 +164,29 @@ void uae_time_calibrate(void) {}
 /*
  * Advances the hosted cycle clock. After enough cycles, raise MODE_CHANGE so
  * m68k_run() returns to Basilisk's event/interrupt loop (there is no Agnus hsync).
+ *
+ * JIT path: compiled endblocks subtract from pissoff and chain to the next
+ * native block while the countdown stays non-negative. do_nothing() then
+ * calls this with cycles_to_add==0; we fold the consumed countdown into
+ * currcycle and reload the budget. A zero pissoff_value (the old hosted
+ * default) made the first endblock go negative, so every compiled block
+ * returned to C — JIT was slower than the interpreter.
+ *
+ * Arguments:
+ *   cycles_to_add: Interpreter cycle credit, or 0 from JIT do_nothing().
  */
 void do_cycles_slow(int cycles_to_add)
 {
+	if (currprefs.cachesize && cycles_to_add == 0)
+		cycles_to_add = jit_consumed_cycles(true);
 	currcycle += cycles_to_add;
 	s_slice_cycles += cycles_to_add;
 	if (s_slice_cycles > kSliceLimit) {
 		s_slice_cycles = 0;
 		set_special(SPCFLAG_MODE_CHANGE);
+		/* Stop compiled chaining until the next execute_slice reloads. */
+		if (currprefs.cachesize)
+			pissoff = -1;
 	}
 }
 
@@ -374,12 +418,18 @@ uaecptr cpuboard_get_reset_pc(uaecptr *stack)
 /* Defined in BasiliskII/memory.cpp: base of the flat 4GB Host_Mem_Base
  * mmap that backs every Mac guest address (Mac2HostAddr(addr) == this + addr). */
 extern unsigned char *Host_Mem_Base;
+extern uint32_t RAMBaseMac;
+extern uint32_t RAMSize;
+extern uint32_t ROMBaseMac;
+extern uint32_t ROMSize;
+extern uint32_t MacFrameSize;
 
 addrbank dummy_bank;
 addrbank kickmem_bank;
 addrbank rtarea_bank;
 static addrbank mac_bank;         /* SCC MMIO window only: must stay indirect. */
-static addrbank mac_direct_bank;  /* Everything else: flat Host_Mem_Base, JIT can go direct. */
+static addrbank mac_direct_bank;  /* RAM/framebuffer: flat Host_Mem_Base, JIT can go direct. */
+static addrbank mac_rom_bank;     /* ROM: direct reads, helper writes (WriteMacInt drops them). */
 addrbank *mem_banks[MEMORY_BANKS];
 uae_u8 *baseaddr[MEMORY_BANKS];
 uae_u8 ce_banktype[65536];
@@ -426,38 +476,54 @@ static int REGPARAM2 mac_check(uaecptr addr, uae_u32 size)
 }
 
 /*
- * Fills mac_direct_bank/mac_bank with Macintosh accessors. Every 64K slot
- * defaults to mac_direct_bank (flat Host_Mem_Base, JIT compiles direct
- * loads/stores); only the SCC MMIO windows are pointed at mac_bank, whose
- * jit_read_flag/jit_write_flag force the JIT back to indirect (checked)
- * access for any block that touches them. Ranges mirror is_scc_addr() in
- * BasiliskII/include/cpu_emulation.h: both 24-bit mirrors are marked
- * regardless of current addressing mode, since a 32-bit-clean ROM can still
- * briefly run 24-bit during early boot.
- *   0x00900000-0x009FFFFF, 0x00B00000-0x00BFFFFF : 24-bit SCC mirrors
- *   0x50000000-0x50FFFFFF                        : 32-bit SCC window
- * dummy_bank stays a true unmapped sentinel: UAE Exception() treats
- * SSP in dummy_bank as CPU_HALT_SSP_IN_NON_EXISTING_ADDRESS, so the Mac
- * RAM bank must be a different addrbank object.
+ * Maps [start, start+size) onto bank in 64K UAE slots. start is rounded
+ * down and the end up so a range that straddles a bank boundary is covered.
  *
- * mem_banks[] alone is NOT enough for the JIT's direct path: computed-jump
- * targets (JMP/JSR (An), see jnf_MEM_GETADR_JMP_OFF in
- * compemu_midfunc_arm64_2.cpp) translate guest->host addresses via the
- * *separate* per-bank baseaddr[] array, not via R_MEMSTART/natmem_offset.
- * Skipping put_mem_bank() left baseaddr[] all-zero, so any computed jump
- * stored the raw (untranslated) guest address into regs.pc_p, which then
- * segfaulted on the next fetch. put_mem_bank() populates both arrays
- * consistently; mac_direct_bank.baseaddr = Host_Mem_Base with realstart=0
- * makes baseaddr[i] + addr == Host_Mem_Base + addr for every slot, matching
- * mac_xlate()/Mac2HostAddr() exactly.
+ * Arguments:
+ *   start: Guest address of the first byte.
+ *   size: Length in bytes; no-op when zero.
+ *   bank: addrbank already filled with accessors and JIT flags.
+ */
+static void amiberry_map_bank_range(uint32_t start, uint32_t size, addrbank *bank)
+{
+	if (size == 0 || !bank)
+		return;
+	uint32_t a0 = start & ~0xffffu;
+	uint64_t end = ((uint64_t)start + size + 0xffffu) & ~0xffffull;
+	if (end > 0x100000000ull)
+		end = 0x100000000ull;
+	for (uint64_t a = a0; a < end; a += 0x10000)
+		put_mem_bank((uaecptr)a, bank, 0);
+}
+
+/*
+ * Describes Macintosh memory to UAE the way Amiga chip/fast/kick/IO banks
+ * describe Amiga memory: only real RAM (and the framebuffer) are direct-JIT
+ * NATMEM, ROM is read-direct/write-helper, everything else is dummy/IO so
+ * execute_normal profiling sets special_mem and those ops stay on C helpers.
+ *
+ * Previously every 64K slot was mac_direct_bank and kickmem/rtarea aliased
+ * Host_Mem_Base, so UAE treated all 4GB as RAM and the first 512KB of Mac
+ * RAM as Kickstart. Direct JIT then compiled LDR/STR for I/O holes and
+ * isinrom() skipped trap demotion in low RAM — the illegal at guest 0x2000
+ * (Basilisk's temporary boot stack) is that Amiga-shaped map, not a missing
+ * Mac memory primitive.
+ *
+ * put_mem_bank() fills mem_banks[] and baseaddr[]. mac_*.baseaddr =
+ * Host_Mem_Base with realstart=0 makes baseaddr[i]+addr == Host_Mem_Base+addr
+ * (Mac2HostAddr). dummy keeps the same baseaddr so a compiled xlate of a
+ * hole still lands in the 4GB window instead of a poison pointer.
+ *
+ * SCC windows (is_scc_addr): 0x90xxxx, 0xB0xxxx, 0x5000xxxx.
  */
 static void amiberry_init_mac_banks(void)
 {
 	memset(&dummy_bank, 0, sizeof(dummy_bank));
 	memset(&mac_bank, 0, sizeof(mac_bank));
 	memset(&mac_direct_bank, 0, sizeof(mac_direct_bank));
+	memset(&mac_rom_bank, 0, sizeof(mac_rom_bank));
 
-	for (addrbank *b : { &mac_bank, &mac_direct_bank }) {
+	for (addrbank *b : { &dummy_bank, &mac_bank, &mac_direct_bank, &mac_rom_bank }) {
 		b->lget = mac_lget;
 		b->wget = mac_wget;
 		b->bget = mac_bget;
@@ -468,7 +534,14 @@ static void amiberry_init_mac_banks(void)
 		b->check = mac_check;
 		b->lgeti = mac_lget;
 		b->wgeti = mac_wget;
+		b->baseaddr = Host_Mem_Base;
 	}
+
+	dummy_bank.jit_read_flag = S_READ;
+	dummy_bank.jit_write_flag = S_WRITE;
+	dummy_bank.flags = ABFLAG_NONE | ABFLAG_INDIRECT;
+	dummy_bank.label = _T("none");
+	dummy_bank.name = _T("Macintosh unmapped");
 
 	mac_bank.jit_read_flag = S_READ;
 	mac_bank.jit_write_flag = S_WRITE;
@@ -478,27 +551,47 @@ static void amiberry_init_mac_banks(void)
 
 	mac_direct_bank.jit_read_flag = 0;
 	mac_direct_bank.jit_write_flag = 0;
-	mac_direct_bank.flags = ABFLAG_RAM;
-	mac_direct_bank.label = _T("mac");
-	mac_direct_bank.name = _T("Macintosh");
-	mac_direct_bank.baseaddr = Host_Mem_Base;
+	mac_direct_bank.flags = ABFLAG_RAM | ABFLAG_DIRECTACCESS;
+	mac_direct_bank.label = _T("ram");
+	mac_direct_bank.name = _T("Macintosh RAM");
+	mac_direct_bank.allocated_size = RAMSize;
+	mac_direct_bank.start = RAMBaseMac;
 
-	kickmem_bank = mac_direct_bank;
-	rtarea_bank = mac_direct_bank;
+	mac_rom_bank.jit_read_flag = 0;
+	mac_rom_bank.jit_write_flag = S_WRITE;
+	mac_rom_bank.flags = ABFLAG_ROM;
+	mac_rom_bank.label = _T("rom");
+	mac_rom_bank.name = _T("Macintosh ROM");
+	mac_rom_bank.allocated_size = ROMSize;
+	mac_rom_bank.start = ROMBaseMac;
+
+	/* isinrom() uses kickmem_bank.baseaddr as a host-pointer range. Point it
+	 * at Mac ROM, not at Host_Mem_Base (Amiga Kickstart at guest 0). */
+	kickmem_bank = mac_rom_bank;
+	kickmem_bank.baseaddr = Host_Mem_Base ? Host_Mem_Base + ROMBaseMac : NULL;
+	kickmem_bank.allocated_size = ROMSize;
+	/* No UAE boot ROM in this address space. */
+	memset(&rtarea_bank, 0, sizeof(rtarea_bank));
 
 	for (int i = 0; i < MEMORY_BANKS; i++)
-		put_mem_bank((uaecptr)i << 16, &mac_direct_bank, 0);
-	for (int i = 0x90; i < 0xA0; i++)
-		put_mem_bank((uaecptr)i << 16, &mac_bank, 0);
-	for (int i = 0xB0; i < 0xC0; i++)
-		put_mem_bank((uaecptr)i << 16, &mac_bank, 0);
-	for (int i = 0x5000; i < 0x5100; i++)
-		put_mem_bank((uaecptr)i << 16, &mac_bank, 0);
+		put_mem_bank((uaecptr)i << 16, &dummy_bank, 0);
+	amiberry_map_bank_range(RAMBaseMac, RAMSize, &mac_direct_bank);
+	amiberry_map_bank_range(ROMBaseMac, ROMSize, &mac_rom_bank);
+	/* Quadra NuBus framebuffer (cpu_emulation.h MacFrameBaseMac). */
+	if (MacFrameSize > 0)
+		amiberry_map_bank_range(0xa0000000u, MacFrameSize, &mac_direct_bank);
+	amiberry_map_bank_range(0x00900000u, 0x00100000u, &mac_bank);
+	amiberry_map_bank_range(0x00B00000u, 0x00100000u, &mac_bank);
+	amiberry_map_bank_range(0x50000000u, 0x01000000u, &mac_bank);
+
+	highest_ram = RAMSize;
+	write_log("[UAE] Mac banks: RAM %08X+%u ROM %08X+%u FB +%u (dummy elsewhere)\n",
+		RAMBaseMac, RAMSize, ROMBaseMac, ROMSize, MacFrameSize);
 }
 
-addrbank *get_mem_bank_real(uaecptr)
+addrbank *get_mem_bank_real(uaecptr addr)
 {
-	return &mac_bank;
+	return &get_mem_bank(addr);
 }
 
 void expansion_cpu_fallback(void) {}
@@ -617,29 +710,20 @@ int amiberry_cpu_init(int cpu_type, int fpu_type, int jit, uint32_t cache_kb, in
 		currprefs.fpu_model = 0;
 
 	/* Direct/trusted JIT memory access. Mac memory is a flat 4GB
-	 * Host_Mem_Base mmap (see memory.cpp) and both address-translation bugs
-	 * that direct mode originally exposed are fixed: comp_hardflush above,
-	 * and jnf_MEM_GETADR_JMP_OFF (compemu_midfunc_arm64_2.cpp) now routes
-	 * computed-jump targets through R_MEMSTART/natmem_offset instead of the
-	 * separate baseaddr[] table, matching ARAnyM's WINUAE_ARANYM
-	 * get_n_addr_jmp(). Verified: no host crashes, no regs.pc_p desyncs,
-	 * across repeated boots. 0 = direct (trust the flat mmap and skip the
-	 * cockatrice_mac_valid_addr() call per compiled access); canbang below
-	 * must also be true or check_prefs_changed_comp() (compemu_prefs.cpp)
-	 * forces these back to 1 (indirect) on the next prefs-apply.
+	 * Host_Mem_Base mmap (see memory.cpp). 0 = compile LDR/STR via
+	 * R_MEMSTART (jnf_MEM_READ_OFF_x / jnf_MEM_WRITE_OFF_x) instead of a
+	 * C helper per access. canbang must stay true or check_prefs_changed_comp()
+	 * (compemu_prefs.cpp) forces these back to 1 (indirect) on prefs-apply.
 	 *
-	 * Only comptrustnaddr (address computation: get_n_addr/get_n_addr_jmp)
-	 * is direct here. That is the part the "verified" note above actually
-	 * covers. Flipping comptrustbyte/word/long to 0 as well exercises the
-	 * direct byte/word/long data load/store codegen (jnf_MEM_READ_OFF_x and
-	 * jnf_MEM_WRITE_OFF_x in compemu_midfunc_arm64_2.cpp) for the first
-	 * time ever in this port - doing so produced an immediate guest illegal
-	 * instruction on every boot, so it stays indirect until that path is
-	 * debugged on its own. */
+	 * An earlier flip of byte/word/long to 0 hit guest ILLEGAL because MOVEM
+	 * burst (jnf_MVMEL_*) ran while jit_n_addr_bank_unsafe was still 0 and
+	 * clobbered the RTS slot. That guard is on below; SCC banks keep both
+	 * jit flags; ROM banks keep jit_write_flag so helper stores still drop. */
+	/* Sanity: full helper path (special_mem_default follows byte). */
 	currprefs.comptrustbyte = 1;
 	currprefs.comptrustword = 1;
 	currprefs.comptrustlong = 1;
-	currprefs.comptrustnaddr = 0;
+	currprefs.comptrustnaddr = 1;
 	currprefs.compnf = true;
 	/* Lazy flush: 68040 guests issue CINVA/CPUSHx routinely for DMA cache
 	 * coherency (every disk/network transfer), not because code changed.
@@ -651,30 +735,30 @@ int amiberry_cpu_init(int cpu_type, int fpu_type, int jit, uint32_t cache_kb, in
 	currprefs.address_space_24 = false;
 	currprefs.fpu_no_unimplemented = false;
 	canbang = true;
-	jit_direct_compatible_memory = false;
+	jit_direct_compatible_memory = true;
 	/* memory_init() (amiberry_glue.cpp, before this call) has already
-	 * allocated Host_Mem_Base; the JIT direct-access bugs above are fixed,
-	 * so canbang is on and comptrust* above is 0 (direct). */
+	 * allocated Host_Mem_Base; canbang is on and comptrust* is 0 (direct). */
 	natmem_offset = Host_Mem_Base;
 
-	/* Mac memory reaches the JIT through indirect addrbanks, so multi-access
-	 * opcodes (MOVEM in both directions, MOVE16) must fall back to the
-	 * per-access helpers instead of being compiled as native burst accesses:
-	 * a runtime data address can land in an indirect bank even when the
-	 * instruction history carries no special-memory marker.
-	 * jit_opcode_needs_compile_fallback() (compemu_support_arm.cpp) already
-	 * implements exactly that, but it is gated on jit_n_addr_bank_unsafe,
-	 * which nothing ever assigned - so the guard was dead code and MOVEM
-	 * compiled to a burst that corrupted guest memory (a MOVEM.L (A6)+
-	 * register restore then RTS'd through a clobbered slot). */
+	/* MOVEM/MOVE16 stay on per-access helpers: a runtime data address can
+	 * land in an SCC/ROM bank even when the instruction history has no
+	 * special-memory marker. Native burst previously corrupted guest memory
+	 * (MOVEM.L (A6)+ then RTS through a clobbered slot). */
 	jit_n_addr_bank_unsafe = 1;
 
 	if (jit && cache_kb > 0) {
 		currprefs.cachesize = (int)cache_kb;
 		currprefs.compfpu = (jitfpu != 0 && currprefs.fpu_model != 0);
+		/* Positive countdown so compiled endblocks chain to the next native
+		 * block instead of returning to C after every translation. Match the
+		 * hosted timeslice so one JIT chain ≈ one Basilisk event-loop slice. */
+		pissoff_value = (int)kSliceLimit;
+		pissoff = pissoff_value;
 	} else {
 		currprefs.cachesize = 0;
 		currprefs.compfpu = false;
+		pissoff_value = 0;
+		pissoff = 0;
 	}
 	changed_prefs = currprefs;
 	quit_program = 0;
@@ -691,10 +775,12 @@ int amiberry_cpu_init(int cpu_type, int fpu_type, int jit, uint32_t cache_kb, in
 	/* Wire cpufunctbl[] and x_get_iword; Amiberry does this in m68k_go() only. */
 	m68k_prepare();
 	m68k_reset();
-	write_log("[UAE] Amiberry %d init (fpu=%d mmu_model=%d jit=%s compfpu=%s cache=%d KB)\n",
+	write_log("[UAE] Amiberry %d init (fpu=%d mmu_model=%d jit=%s compfpu=%s cache=%d KB countdown=%d trust b=%d w=%d l=%d n=%d)\n",
 		currprefs.cpu_model, currprefs.fpu_model, currprefs.mmu_model,
 		currprefs.cachesize ? "yes" : "no",
-		currprefs.compfpu ? "yes" : "no", currprefs.cachesize);
+		currprefs.compfpu ? "yes" : "no", currprefs.cachesize, pissoff_value,
+		currprefs.comptrustbyte, currprefs.comptrustword,
+		currprefs.comptrustlong, currprefs.comptrustnaddr);
 	return 1;
 }
 
@@ -764,7 +850,6 @@ extern "C" void cockatrice_uae_fline_trap(uint32_t opcode, uint32_t pc, int from
 			printf("    A%d=0x%08X", i, (unsigned)m68k_areg(regs, i));
 		printf("\n");
 	}
-	extern uint32_t ROMBaseMac;
 	extern uint32_t cpu_engine_last_pc;
 	if (pc >= ROMBaseMac && pc < ROMBaseMac + 0x100) {
 		uint32_t sp = m68k_areg(regs, 7);
@@ -859,6 +944,10 @@ int amiberry_cpu_nested_quit_requested(void)
 void amiberry_cpu_execute_slice(void)
 {
 	unset_special(SPCFLAG_MODE_CHANGE);
+	/* Reload the JIT chain budget; the previous slice may have left pissoff
+	 * at -1 after hitting kSliceLimit. */
+	if (currprefs.cachesize && pissoff_value > 0)
+		pissoff = pissoff_value;
 	m68k_run();
 }
 
@@ -936,12 +1025,18 @@ void amiberry_cpu_set_sr(uint16_t sr)
 /*
  * Maps Amiberry currcycle onto 40 MHz 68040 nanoseconds.
  *
+ * Includes in-flight JIT countdown (compiled blocks that have not yet
+ * returned through do_nothing), so PrimeTime/RmvTime see DBF work that
+ * still sits in pissoff.
+ *
  * Returns:
- *   (currcycle * 25) / CYCLE_UNIT, clamped at 0 if currcycle is negative.
+ *   ((currcycle + jit_consumed) * 25) / CYCLE_UNIT, or 0 if nothing has run.
  */
 uint64_t amiberry_cpu_emulated_ns(void)
 {
-	if (currcycle <= 0)
+	evt_t total = currcycle + (evt_t)jit_consumed_cycles(false);
+
+	if (total <= 0)
 		return 0;
-	return ((uint64_t)currcycle * 25ull) / (uint64_t)CYCLE_UNIT;
+	return ((uint64_t)total * 25ull) / (uint64_t)CYCLE_UNIT;
 }
