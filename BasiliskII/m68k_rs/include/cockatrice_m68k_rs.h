@@ -135,6 +135,13 @@ int m68k_rs_jit_available(void);
  * the real check on whichever thread calls it. */
 int m68k_rs_jit_native_active(void);
 
+/* Returns the most recent 68k exception vector taken since the last call,
+ * clearing it (so each is reported once), or -1 if none was taken. Every
+ * vector dispatch sets this -- interrupts and A-line/Toolbox trap dispatch
+ * included, which are not faults -- so the caller must filter to the small
+ * set that indicates a genuine fault before logging. */
+int32_t m68k_rs_take_last_exception_vector(M68kRsCpu *cpu);
+
 #ifdef __cplusplus
 }
 #endif

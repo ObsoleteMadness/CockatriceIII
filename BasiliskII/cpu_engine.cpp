@@ -121,6 +121,33 @@ void cpu_engine_note_pc(uint32 pc)
 }
 
 /*
+ * Names match the classic Mac OS System Error alert box, whose numeric
+ * "error type" is this vector number minus one (e.g. vector 11 == Type 10,
+ * "Line 1111 Trap").
+ */
+static const char *cpu_exception_name(int vector)
+{
+	switch (vector) {
+		case 2:  return "Bus Error";
+		case 3:  return "Address Error";
+		case 4:  return "Illegal Instruction";
+		case 5:  return "Zero Divide";
+		case 6:  return "CHK Trap";
+		case 7:  return "TRAPV";
+		case 8:  return "Privilege Violation";
+		case 11: return "Line 1111 Trap";
+		default: return "?";
+	}
+}
+
+void cockatrice_report_cpu_exception(const char *engine, int vector, uint32 pc)
+{
+	printf("[SYSTEM-ERROR] %s: 68k exception vector=%d (Mac bomb Type %d: %s) at PC=0x%08X\n",
+	       engine, vector, vector - 1, cpu_exception_name(vector), pc);
+	fflush(stdout);
+}
+
+/*
  * Maps ROMVersion onto the Macintosh ROM base used by every CPU engine.
  *
  * RAMBaseMac is always 0 in this tree. Unknown ROM words are fatal so a

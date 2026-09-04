@@ -59,7 +59,8 @@
 
 void EmulOp(uint16 opcode, M68kRegisters *r)
 {
-	D(bug("EmulOp %04x\n", opcode));
+	if (opcode != M68K_EMUL_OP_IRQ)
+		D(bug("EmulOp %04x\n", opcode));
 	switch (opcode) {
 		case M68K_EMUL_BREAK: {				// Breakpoint
 			printf("*** Breakpoint\n");

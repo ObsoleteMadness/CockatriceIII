@@ -3531,10 +3531,28 @@ kludge_me_do:
 	exception_check_trace (nr);
 }
 
+/*
+ * Unconditionally logs a genuine 68k fault so it's visible independent of
+ * which CPU engine is active (see cpu_engine.h for the full rationale).
+ * Forward-declared locally, matching how Musashi's own equivalent hook is
+ * wired, to avoid pulling BasiliskII's cpu_engine.h (and its differently-
+ * named memory.h/debug.h) into amiberry's own headers of the same name.
+ */
+extern "C" void cockatrice_report_cpu_exception(const char *engine, int vector, uint32_t pc);
+
+static inline bool cockatrice_is_reportable_exception(int nr)
+{
+	// Skip vector 9 (trace, debugger use) and vector 10 (line-1010,
+	// legitimate Toolbox trap dispatch -- thousands/sec, would drown this out).
+	return (nr >= 2 && nr <= 8) || nr == 11;
+}
+
 // address = format $2 stack frame address field
 static void ExceptionX (int nr, uaecptr address, uaecptr oldpc)
 {
 	uaecptr pc = m68k_getpc();
+	if (cockatrice_is_reportable_exception(nr))
+		cockatrice_report_cpu_exception("uae", nr, (uint32_t)pc);
 	regs.exception = nr;
 	regs.loop_mode = 0;
 

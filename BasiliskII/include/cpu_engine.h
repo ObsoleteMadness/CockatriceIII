@@ -135,6 +135,28 @@ extern uint32 cpu_engine_last_pc;
 void cpu_engine_note_pc(uint32 pc);
 
 /*
+ * Unconditionally logs a 68k exception that reached the CPU's vector dispatch,
+ * for the small set of vectors that indicate a genuine fault (as opposed to
+ * ordinary A-line/Toolbox trap dispatch, which also runs through the same
+ * mechanism thousands of times per second and would drown this out). Each of
+ * these vectors is exactly one Mac OS System Error "bomb" type (bomb type =
+ * vector - 1), so this is engine-independent ground truth for "did Mac OS
+ * just crash" without needing to read Mac OS's own DSErrCode global.
+ *
+ * Every CPU core (Musashi, UAE, m68k-rs) funnels every exception through one
+ * central dispatch point already; call this from there for vectors 2-8 and
+ * 11 (bus error, address error, illegal instruction, zero divide, CHK,
+ * TRAPV, privilege violation, line-1111). Skip vector 9 (trace, debugger
+ * use) and vector 10 (line-1010, legitimate Toolbox trap dispatch).
+ *
+ * Arguments:
+ *   engine: Short engine id ("musashi", "uae", "m68k_rs").
+ *   vector: 68k exception vector number (2-11).
+ *   pc: Guest PC of the faulting instruction.
+ */
+void cockatrice_report_cpu_exception(const char *engine, int vector, uint32 pc);
+
+/*
  * Sets RAMBaseMac = 0 and ROMBaseMac from ROMVersion.
  *
  * Returns:

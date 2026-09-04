@@ -448,6 +448,26 @@ pub unsafe extern "C" fn m68k_rs_get_reg(cpu: *const M68kRsCpu, reg: M68kRsReg) 
     }
 }
 
+/// Returns the most recent 68k exception vector taken since the last call
+/// (any vector -- interrupts and A-line/Toolbox trap dispatch included,
+/// which fire constantly and are not by themselves faults), clearing it so
+/// each vector is reported at most once. Returns -1 if none was taken.
+///
+/// The host is expected to filter to the small set of vectors that indicate
+/// a genuine fault (2-8, 11) before logging -- see
+/// `cockatrice_report_cpu_exception()` in cpu_engine.cpp, which every CPU
+/// engine in this tree funnels through for that purpose.
+#[no_mangle]
+pub unsafe extern "C" fn m68k_rs_take_last_exception_vector(cpu: *mut M68kRsCpu) -> i32 {
+    if cpu.is_null() {
+        return -1;
+    }
+    match (*cpu).core.last_exception_vector.take() {
+        Some(v) => v as i32,
+        None => -1,
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn m68k_rs_set_reg(cpu: *mut M68kRsCpu, reg: M68kRsReg, value: u32) {
     if cpu.is_null() {

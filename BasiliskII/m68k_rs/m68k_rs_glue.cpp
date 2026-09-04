@@ -395,6 +395,23 @@ static uint8 *m68k_rs_host_fast_mem(void *ctx, uint32 *base, uint32 *len)
  *   cycles: budget for the cycle-accurate interpreter path.
  *   instructions: budget for the batch path (also its interrupt poll interval).
  */
+/*
+ * Every vector dispatch (interrupts and A-line/Toolbox trap dispatch
+ * included) sets the core's last-exception-vector field, so this filters to
+ * the small set that indicates a genuine fault before logging -- see
+ * cockatrice_report_cpu_exception() in cpu_engine.cpp for the shared,
+ * engine-independent "did Mac OS just bomb" rationale.
+ */
+static void m68k_rs_check_exception_vector(void)
+{
+	int32_t vector = m68k_rs_take_last_exception_vector(s_cpu);
+	if (vector < 0)
+		return;
+	bool reportable = (vector >= 2 && vector <= 8) || vector == 11;
+	if (reportable)
+		cockatrice_report_cpu_exception("m68k_rs", vector, m68k_rs_get_reg(s_cpu, M68K_RS_REG_PC));
+}
+
 static void m68k_rs_run_slice(int32 cycles, uint32 instructions)
 {
 #ifdef M68K_RS_BATCH_TRACE
@@ -432,6 +449,7 @@ static void m68k_rs_run_slice(int32 cycles, uint32 instructions)
 		} else {
 			result = m68k_rs_run_cycles(s_cpu, cycles);
 		}
+		m68k_rs_check_exception_vector();
 		m68k_rs_perf_note(result.instructions);
 		if (s_quit_requested)
 			return;

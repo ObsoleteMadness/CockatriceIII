@@ -1845,11 +1845,22 @@ static inline void m68ki_stack_frame_1011(uint sr, uint vector, uint pc)
 }
 
 
-/* Used for Group 2 exceptions.
+/*
+ * Unconditionally logs a genuine 68k fault (as opposed to ordinary A-line
+ * Toolbox trap dispatch, which shares this same jump-vector mechanism
+ * thousands of times per second and would drown this out). See
+ * cpu_engine.h for the full rationale; this is the engine-independent
+ * "did Mac OS just bomb" signal.
+ */
+extern void cockatrice_report_cpu_exception(const char *engine, int vector, uint32 pc);
+
+/* Used for Group 2 exceptions (Zero Divide, CHK, TRAPV).
  * These stack a type 2 frame on the 020.
  */
 static inline void m68ki_exception_trap(uint vector)
 {
+	cockatrice_report_cpu_exception("musashi", vector, ADDRESS_68K(REG_PC));
+
 	uint sr = m68ki_init_exception();
 
 	if(CPU_TYPE_IS_010_LESS(CPU_TYPE))
@@ -1922,6 +1933,8 @@ static inline void m68ki_exception_privilege_violation(void)
 	}
 	#endif /* M68K_EMULATE_ADDRESS_ERROR */
 
+	cockatrice_report_cpu_exception("musashi", EXCEPTION_PRIVILEGE_VIOLATION, ADDRESS_68K(REG_PPC));
+
 	m68ki_stack_frame_0000(REG_PPC, sr, EXCEPTION_PRIVILEGE_VIOLATION);
 	m68ki_jump_vector(EXCEPTION_PRIVILEGE_VIOLATION);
 
@@ -1949,6 +1962,8 @@ static inline void m68ki_exception_bus_error(void)
 		return;
 	}
 	CPU_RUN_MODE = RUN_MODE_BERR_AERR_RESET_WSF;
+
+	cockatrice_report_cpu_exception("musashi", EXCEPTION_BUS_ERROR, ADDRESS_68K(REG_PPC));
 
 	/* Use up some clock cycles and undo the instruction's cycles */
 	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_BUS_ERROR] - CYC_INSTRUCTION[REG_IR]);
@@ -1999,6 +2014,7 @@ static inline void m68ki_exception_1111(void)
 	printf("[CPU-LINEF] Unhandled Line-F Opcode 0x%04X at PC=0x%08X (PPC=0x%08X, SR=0x%04X, A7=0x%08X)\n",
 	       REG_IR, ADDRESS_68K(REG_PC), ADDRESS_68K(REG_PPC), m68ki_get_sr(), REG_A[7]);
 	cockatrice_m68k_low_heap_fault(REG_IR, ADDRESS_68K(REG_PC), "line-f");
+	cockatrice_report_cpu_exception("musashi", EXCEPTION_1111, ADDRESS_68K(REG_PPC));
 	fflush(stdout);
 
 	sr = m68ki_init_exception();
@@ -2027,6 +2043,7 @@ static inline void m68ki_exception_illegal(void)
 
 	printf("[CPU-ILLEGAL] Unhandled Illegal Opcode 0x%04X at PC=0x%08X (PPC=0x%08X, SR=0x%04X, A7=0x%08X)\n",
 	       REG_IR, ADDRESS_68K(REG_PC), ADDRESS_68K(REG_PPC), m68ki_get_sr(), REG_A[7]);
+	cockatrice_report_cpu_exception("musashi", EXCEPTION_ILLEGAL_INSTRUCTION, ADDRESS_68K(REG_PPC));
 	fflush(stdout);
 
 	sr = m68ki_init_exception();
@@ -2072,6 +2089,8 @@ static inline void m68ki_exception_address_error(void)
 		return;
 	}
 	CPU_RUN_MODE = RUN_MODE_BERR_AERR_RESET_WSF;
+
+	cockatrice_report_cpu_exception("musashi", EXCEPTION_ADDRESS_ERROR, ADDRESS_68K(REG_PPC));
 
 	/* Note: This is implemented for 68000 only! */
 	m68ki_stack_frame_buserr(sr);
