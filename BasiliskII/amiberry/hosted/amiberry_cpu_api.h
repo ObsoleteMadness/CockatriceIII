@@ -93,6 +93,15 @@ uint16_t amiberry_cpu_get_sr(void);
 void amiberry_cpu_set_sr(uint16_t sr);
 
 /*
+ * Nanoseconds of 680x0 work implied by Amiberry currcycle.
+ *
+ * currcycle is in CYCLE_UNIT ticks. Scale as a 40 MHz 68040 (25 ns/clock)
+ * so ~400 interpreter DBF iterations are tens of Mac microseconds rather
+ * than zero CLOCK_REALTIME microseconds.
+ */
+uint64_t amiberry_cpu_emulated_ns(void);
+
+/*
  * Macintosh memory callbacks implemented by amiberry_glue.cpp (Basilisk banks).
  * The Amiberry memory bridge calls these instead of Amiga chip RAM.
  */

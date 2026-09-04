@@ -3539,6 +3539,7 @@ kludge_me_do:
  * named memory.h/debug.h) into amiberry's own headers of the same name.
  */
 extern "C" void cockatrice_report_cpu_exception(const char *engine, int vector, uint32_t pc);
+extern "C" void cockatrice_set_cpu_exception_context(const char *engine, unsigned short opcode, unsigned int pc, unsigned int ppc, unsigned short sr, const unsigned int *d, const unsigned int *a);
 
 static inline bool cockatrice_is_reportable_exception(int nr)
 {
@@ -3547,12 +3548,42 @@ static inline bool cockatrice_is_reportable_exception(int nr)
 	return (nr >= 2 && nr <= 8) || nr == 11;
 }
 
+/*
+ * Snapshots UAE registers and reports a genuine 68k fault.
+ *
+ * DIVU/DIVS increment PC before Exception_cpu(), so m68k_getpc() is the
+ * following instruction. regs.instruction_pc is the faulting opcode and is
+ * what the host dump should highlight.
+ *
+ * Arguments:
+ *   nr: 68k exception vector.
+ *   pc: Current PC (often already advanced past the faulting instruction).
+ */
+static void cockatrice_uae_report_exception(int nr, uaecptr pc)
+{
+	unsigned int d[8], a[8];
+	int i;
+	uaecptr fault_pc;
+
+	if (!cockatrice_is_reportable_exception(nr))
+		return;
+
+	for (i = 0; i < 8; i++) {
+		d[i] = (unsigned int)m68k_dreg(regs, i);
+		a[i] = (unsigned int)m68k_areg(regs, i);
+	}
+	MakeSR();
+	fault_pc = regs.instruction_pc ? regs.instruction_pc : pc;
+	cockatrice_set_cpu_exception_context("uae", (unsigned short)regs.opcode,
+		(unsigned int)fault_pc, (unsigned int)pc, (unsigned short)regs.sr, d, a);
+	cockatrice_report_cpu_exception("uae", nr, (uint32_t)fault_pc);
+}
+
 // address = format $2 stack frame address field
 static void ExceptionX (int nr, uaecptr address, uaecptr oldpc)
 {
 	uaecptr pc = m68k_getpc();
-	if (cockatrice_is_reportable_exception(nr))
-		cockatrice_report_cpu_exception("uae", nr, (uint32_t)pc);
+	cockatrice_uae_report_exception(nr, pc);
 	regs.exception = nr;
 	regs.loop_mode = 0;
 

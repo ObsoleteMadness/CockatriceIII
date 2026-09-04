@@ -74,6 +74,14 @@ typedef struct CPUEngine {
 
 	/* Code Cache / JIT Translation Invalidation */
 	void (*invalidate_code)(uint32 addr, uint32 size); /* Invalidate code in address range */
+
+	/*
+	 * Optional monotonic emulated-time counter in nanoseconds.
+	 * NULL if the engine does not expose a cycle clock. Time Manager
+	 * uses the delta between PrimeTime and RmvTime so a sub-microsecond
+	 * guest spin still consumes Mac µs on a fast host interpreter.
+	 */
+	uint64 (*emulated_ns)(void);
 } CPUEngine;
 
 /*
@@ -135,6 +143,51 @@ extern uint32 cpu_engine_last_pc;
 void cpu_engine_note_pc(uint32 pc);
 
 /*
+ * Appends a Macintosh PC to a small per-instruction ring buffer used to
+ * reconstruct the control-flow path leading into the first fatal exception
+ * (see cockatrice_report_cpu_exception()). Cheap enough to call from a
+ * per-instruction hook; call sites should install it unconditionally rather
+ * than gating it behind a debug pref.
+ */
+void cpu_engine_note_pc_trace(uint32 pc);
+
+/*
+ * Captured CPU register snapshot attached to a fatal exception report.
+ *
+ * Fields:
+ *   valid: 1 when D/A/SR/opcode/PC/PPC were captured at fault time.
+ *   opcode: Faulting 16-bit instruction word.
+ *   pc: Guest PC where opcode was fetched.
+ *   ppc: Previous PC (engine-specific prefetch/program-counter tracking).
+ *   sr: Status register at fault.
+ *   d[0..7], a[0..7]: Full integer register file.
+ */
+typedef struct CPUExceptionContext {
+	uint32 valid;
+	uint16 opcode;
+	uint16 sr;
+	uint32 pc;
+	uint32 ppc;
+	uint32 d[8];
+	uint32 a[8];
+} CPUExceptionContext;
+
+/*
+ * Stores a per-exception register snapshot for the next
+ * cockatrice_report_cpu_exception() call.
+ *
+ * Arguments:
+ *   engine: Engine id ("musashi", "uae", "m68k_rs") that captured the context.
+ *   opcode: 16-bit faulting opcode.
+ *   pc: Current guest PC.
+ *   ppc: Previous guest PC.
+ *   sr: 16-bit status register.
+ *   d: Pointer to D0..D7 values.
+ *   a: Pointer to A0..A7 values.
+ */
+void cockatrice_set_cpu_exception_context(const char *engine, uint16 opcode, uint32 pc, uint32 ppc, uint16 sr, const uint32 *d, const uint32 *a);
+
+/*
  * Unconditionally logs a 68k exception that reached the CPU's vector dispatch,
  * for the small set of vectors that indicate a genuine fault (as opposed to
  * ordinary A-line/Toolbox trap dispatch, which also runs through the same
@@ -155,6 +208,18 @@ void cpu_engine_note_pc(uint32 pc);
  *   pc: Guest PC of the faulting instruction.
  */
 void cockatrice_report_cpu_exception(const char *engine, int vector, uint32 pc);
+
+/*
+ * Records that the host 60Hz tick thread (SDL/main_sdl.cpp's one_tickbbbb())
+ * just fired SetInterruptFlag()/TriggerInterrupt()/slirp_tic()/LocalTalkTick()
+ * against live guest state, asynchronous to whatever the CPU thread is doing.
+ *
+ * Purely diagnostic: cockatrice_report_cpu_exception() logs how long ago the
+ * last tick fired relative to a crash, to test whether the shared low-heap
+ * System Error boot crash correlates with tick-thread timing. Call once per
+ * tick, right alongside the other tick-thread side effects it is tracking.
+ */
+void cpu_engine_note_tick(void);
 
 /*
  * Sets RAMBaseMac = 0 and ROMBaseMac from ROMVersion.
@@ -200,6 +265,16 @@ bool cpu_engine_should_commit_a7(uint32 old_a7, uint32 new_a7);
  *   sp: Candidate A7 from the CPU core.
  */
 uint32 cpu_engine_clamp_sp(uint32 sp);
+
+/*
+ * Nanoseconds of emulated 680x0 work since reset, or 0 if the active
+ * engine has no cycle clock.
+ *
+ * Time Manager RmvTime() adds the PrimeTime→RmvTime delta to wall time
+ * so calibration spins that finish in one host microsecond still show
+ * elapsed Mac µs. Engines that leave emulated_ns NULL are unchanged.
+ */
+uint64 cpu_engine_emulated_ns(void);
 
 /*
  * Writes a 4-byte Execute68kTrap stub: [trap][M68K_EXEC_RETURN] at sp-4.

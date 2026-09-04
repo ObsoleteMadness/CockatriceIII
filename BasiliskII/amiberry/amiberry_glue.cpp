@@ -220,6 +220,17 @@ static void winuae_invalidate_code(uint32 addr, uint32 size)
 	amiberry_cpu_invalidate_code(addr, size);
 }
 
+/*
+ * Reports Amiberry currcycle as 40 MHz nanoseconds for Time Manager.
+ *
+ * Returns:
+ *   Emulated ns since CPU reset, or 0 before the first cycle.
+ */
+static uint64 winuae_emulated_ns(void)
+{
+	return (uint64)amiberry_cpu_emulated_ns();
+}
+
 static void winuae_execute_68k_trap(uint16 trap, struct M68kRegisters *r)
 {
 	uint32 oldpc = amiberry_cpu_get_pc();
@@ -317,5 +328,6 @@ extern const CPUEngine amiberry_cpu_engine = {
 	winuae_trigger_interrupt,
 	winuae_trigger_nmi,
 	winuae_intlev,
-	winuae_invalidate_code
+	winuae_invalidate_code,
+	winuae_emulated_ns
 };

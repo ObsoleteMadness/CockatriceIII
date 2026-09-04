@@ -55,10 +55,10 @@ int main(void)
 	r.a[0] = wide_addr;
 	r.d[0] = 0x12345678;
 	EmulOp(M68K_EMUL_OP_MICROSECONDS, &r);
-	CHECK(r.a[0] == wide_addr, "Microseconds EmulOp preserved A0 pointer");
-	CHECK(r.d[0] == 0x12345678, "Microseconds EmulOp preserved D0");
-	CHECK(ReadMacInt32(wide_addr) != 0xDEADBEEF || ReadMacInt32(wide_addr + 4) != 0xDEADBEEF,
-		"Microseconds EmulOp wrote 64-bit time at A0");
+	CHECK(r.a[0] != wide_addr || r.d[0] != 0x12345678,
+		"Microseconds EmulOp returns 64-bit time in A0/D0");
+	CHECK(ReadMacInt32(wide_addr) == 0xDEADBEEF && ReadMacInt32(wide_addr + 4) == 0xDEADBEEF,
+		"Microseconds EmulOp does not write through A0");
 
 	printf("\nResults: %d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

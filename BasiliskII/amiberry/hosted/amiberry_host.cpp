@@ -932,3 +932,16 @@ void amiberry_cpu_set_sr(uint16_t sr)
 	regs.sr = sr;
 	MakeFromSR();
 }
+
+/*
+ * Maps Amiberry currcycle onto 40 MHz 68040 nanoseconds.
+ *
+ * Returns:
+ *   (currcycle * 25) / CYCLE_UNIT, clamped at 0 if currcycle is negative.
+ */
+uint64_t amiberry_cpu_emulated_ns(void)
+{
+	if (currcycle <= 0)
+		return 0;
+	return ((uint64_t)currcycle * 25ull) / (uint64_t)CYCLE_UNIT;
+}

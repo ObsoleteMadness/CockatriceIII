@@ -337,6 +337,7 @@ static void one_tickbbbb(...)
 
 	// Trigger 60Hz interrupt
 	if (ROMVersion != ROM_VERSION_CLASSIC || HasMacStarted()) {
+		cpu_engine_note_tick();
 		SetInterruptFlag(INTFLAG_60HZ);
 		TriggerInterrupt();
 		slirp_tic();

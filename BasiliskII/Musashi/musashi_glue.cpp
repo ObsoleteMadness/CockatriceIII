@@ -375,5 +375,6 @@ extern const CPUEngine musashi_cpu_engine = {
 	musashi_trigger_interrupt,
 	musashi_trigger_nmi,
 	musashi_intlev,
+	nullptr,
 	nullptr
 };

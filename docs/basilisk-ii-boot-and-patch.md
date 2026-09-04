@@ -20,6 +20,11 @@ Quick guide for humans and agents debugging Mac ROM boot in Cockatrice III
 Historical architecture notes (addressing modes, ILLEGAL-opcode trick) live
 in `BasiliskII/docs/TECH`. This file is the Cockatrice-specific boot path.
 
+Quadra / 32-bit ROM System Error bombs (Type 10 Line-F at `0x65AAx`, UAE
+interpreter Type 4 after WLSC) are documented in
+[quadra-32bit-boot-crashes.md](quadra-32bit-boot-crashes.md). Those are
+EmulOp ABI and Time Manager glue, not ROM or SCSI resource-patch bugs.
+
 ---
 
 ## 1. What this emulator actually boots
@@ -375,7 +380,9 @@ and `basilisk_patches_test`.
 ### 10.3 Drivers
 
 8. **`M68K_EMUL_OP_INSTALL_DRIVERS` (`0x710A`)** → `InstallDrivers(pb)`:
-   - `SetOSTrapAddress(Microseconds, 0xa093)`
+   - `SetOSTrapAddress(Microseconds, 0xa093)` — ROM stub is `EMUL_OP + RTS`;
+     results live in **A0 (hi) / D0 (lo)**, not an `UnsignedWide*` through A0
+     (see [quadra-32bit-boot-crashes.md](quadra-32bit-boot-crashes.md))
    - `DrvrInstallRsrvMem` + `HLock` + `Open` for `.Disk` at `sony_offset+0x100`
    - `SetToolTrap(PutScrapPatch, 0xa9fe)`
    - Allocate fake ASC registers (`NewPtrSysClear`), set `ASCBase` at `0xcc0`
@@ -544,13 +551,14 @@ From `PrefsInit()` / `InitAll()` / `PatchROM()`:
 | `rom` | ROM file loaded into `ROMBaseHost` |
 | `ramsize` | `RAMSize`; BootGlobs and MemTop |
 | `cpu` / `fpu` | `CPUType` / `FPUType`; UniversalInfo FPU-optional flag; SANE PTEST patch |
-| `cpu_emulator` | musashi / uae / emu68 / syn68k |
+| `cpu_emulator` | musashi / uae / m68k_rs |
 | `modelid` | UniversalInfo `productKind` |
 | `bootdrive` / `bootdriver` | XPRAM `0x78..0x7b` |
 | `disk` | Images opened in `DiskInit()` |
 | `ltoudp` | Keep LocalTalk / skip SERD overlay |
 | `idlewait` | `patch_idle_time()` on System resources |
 | `screen` | `VideoInit()` window size (Mac II) |
+| `dump_memory` / `dump_file` | Optional RAM snapshot on CPU System Error |
 
 ---
 

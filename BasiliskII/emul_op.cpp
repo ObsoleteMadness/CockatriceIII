@@ -227,14 +227,16 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 			r->d[0] = PrimeTime(r->a[0], r->d[0]);
 			break;
 
-		case M68K_EMUL_OP_MICROSECONDS: {	// Microseconds() replacement
-			// A0 points to the UnsignedWide result; registers are unaffected
-			uint32 hi, lo;
-			Microseconds(hi, lo);
-			WriteMacInt32(r->a[0], hi);
-			WriteMacInt32(r->a[0] + 4, lo);
+		case M68K_EMUL_OP_MICROSECONDS:	// Microseconds() replacement
+			/*
+			 * The ROM stub is EMUL_OP + RTS (see rom_patches.cpp). Callers of
+			 * trap $A093 expect the 64-bit count in A0 (hi) and D0 (lo), which
+			 * is also original Basilisk II behavior. Writing through A0 as an
+			 * UnsignedWide* (commit 23e7721) left A0 as a heap/data pointer
+			 * and produced the 32-bit boot Type 10 at 0x65AAx.
+			 */
+			Microseconds(r->a[0], r->d[0]);
 			break;
-		}
 
 		case M68K_EMUL_OP_INSTALL_DRIVERS: {// Patch to install our own drivers during startup
 			// Install drivers

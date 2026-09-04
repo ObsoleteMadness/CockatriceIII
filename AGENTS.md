@@ -17,6 +17,11 @@ first. It maps the host call chain (`SDL_main` → `InitAll` → `CheckROM` →
 `Init680x0` → `PatchROM` → `Start680x0`) onto `EmulOp()` / `CheckLoad()`
 and lists expected console progress.
 
+When debugging Quadra / 32-bit ROM **Type 10** (Line-F at `0x65AAx`) or UAE
+interpreter **Type 4** (zero divide in TimeDBRA calibration), read
+[docs/quadra-32bit-boot-crashes.md](docs/quadra-32bit-boot-crashes.md). Those
+are EmulOp ABI and Time Manager glue, not ROM/SCSI patch bugs.
+
 When debugging CPU engine opcode battery failures or `Execute68k` / `0x7100`
 handling, read [docs/cpu-engine-opcode-fixes.md](docs/cpu-engine-opcode-fixes.md)
 for the UAE and Emu68 fixes already landed (syn68k is still open).

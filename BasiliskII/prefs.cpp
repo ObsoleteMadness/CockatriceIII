@@ -67,6 +67,8 @@ prefs_desc common_prefs_items[] = {
 	{"idlewait",TYPE_BOOLEAN,true},		// enable idle..
 	{"yearoffset",TYPE_INT16,false},	// remove x billion seconds from the clock
 	{"ltoudp", TYPE_BOOLEAN, false},	// Enable LocalTalk over UDP (LToUDP)
+	{"dump_memory", TYPE_BOOLEAN, false}, // Write RAM snapshot on unhandled CPU system error
+	{"dump_file", TYPE_STRING, false},	// Output path for binary crash memory dump
 	{"scsi_debug", TYPE_BOOLEAN, false}, // Enable verbose SCSI and CD-ROM logging
 	{NULL, TYPE_END, false}	// End of list
 };
@@ -111,6 +113,8 @@ void PrefsInit(void)
 	PrefsAddBool("nosound", false);
 	PrefsAddBool("nogui", false);
 	PrefsAddBool("ltoudp", false);
+	PrefsAddBool("dump_memory", false);
+	PrefsAddString("dump_file", "/tmp/memory.bin");
 	PrefsAddBool("scsi_debug", true);
 	PrefsAddString("screen","win/1152/870");	//fantastic monitor for the era
 	PrefsAddString("rom","Quadra800.rom");

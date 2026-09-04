@@ -31,6 +31,7 @@
 #include "main.h"
 #include "macos_util.h"
 #include "timer.h"
+#include "cpu_engine.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -53,8 +54,37 @@ enum {	// TMTask struct
 struct TMDesc {
 	uint32 task;		// Mac address of associated TMTask
 	tm_time_t wakeup;	// Time this task is scheduled for execution
+	uint64 emu_ns;		// cpu_engine_emulated_ns() at PrimeTime
 	bool in_use;		// Flag: descriptor in use
 };
+
+/*
+ * Advances a host timestamp by emulated 680x0 nanoseconds.
+ *
+ * UAE's interpreter can finish the ROM TimeDBRA calibration spin (four
+ * DBF loops of TimeDBRA=100) in the same CLOCK_REALTIME microsecond as
+ * the overhead-only PrimeTime/RmvTime pair. Remaining then equals the
+ * full delay, elapsed-overhead is 0, and DIVU.W D5,D1 raises vector 5.
+ * Folding the engine cycle clock into RmvTime makes the spin consume
+ * tens of Mac µs while leaving wall-clock TimerInterrupt expiry alone.
+ *
+ * Arguments:
+ *   t: Wall-clock sample to advance in place.
+ *   ns: PrimeTime→RmvTime delta from cpu_engine_emulated_ns().
+ */
+static void timer_advance_by_emulated_ns(tm_time_t &t, uint64 ns)
+{
+	int32 us;
+	tm_time_t extra;
+
+	if (ns == 0)
+		return;
+	us = (int32)(ns / 1000);
+	if (us <= 0)
+		us = 1;
+	timer_mac2host_time(extra, -us);
+	timer_add_time(t, t, extra);
+}
 
 const int NUM_DESCS = 64;		// Maximum number of descriptors
 static TMDesc desc[NUM_DESCS];
@@ -211,6 +241,9 @@ int16 RmvTime(uint32 tm)
 		// Compute remaining time
 		tm_time_t remaining, current;
 		timer_current_time(current);
+		uint64 now_emu = cpu_engine_emulated_ns();
+		uint64 delta_ns = (now_emu >= desc[i].emu_ns) ? (now_emu - desc[i].emu_ns) : 0;
+		timer_advance_by_emulated_ns(current, delta_ns);
 		timer_sub_time(remaining, desc[i].wakeup, current);
 		WriteMacInt32(tm + tmCount, timer_host2mac_time(remaining));
 	} else
@@ -237,6 +270,8 @@ int16 PrimeTime(uint32 tm, int32 time)
 		printf("FATAL: PrimeTime(): Descriptor not found\n");
 		return 0;
 	}
+
+	desc[i].emu_ns = cpu_engine_emulated_ns();
 
 	// Extended task?
 	if (ReadMacInt16(tm + qType) & 0x4000) {

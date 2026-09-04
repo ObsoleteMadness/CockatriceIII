@@ -692,5 +692,6 @@ extern const CPUEngine m68k_rs_cpu_engine = {
 	m68k_rs_engine_trigger_interrupt,
 	m68k_rs_engine_trigger_nmi,
 	m68k_rs_engine_intlev,
+	nullptr,
 	nullptr
 };

@@ -11,6 +11,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <atomic>
+#include <errno.h>
 #include "sysdeps.h"
 #include "cpu_emulation.h"
 #include "cpu_engine.h"
@@ -121,6 +124,136 @@ void cpu_engine_note_pc(uint32 pc)
 }
 
 /*
+ * Ring buffer of recently-executed guest PCs, written from a per-instruction
+ * hook. Dumped once (see cockatrice_report_cpu_exception()) so the very first
+ * fault of a run can be traced back to how the CPU got there -- later faults
+ * in a crash loop reuse the same buffer contents and are not re-dumped, to
+ * keep log volume bounded.
+ */
+#define PC_TRACE_SIZE 4096
+static uint32 s_pc_trace[PC_TRACE_SIZE];
+static uint32 s_pc_trace_index = 0;
+static uint32 s_pc_trace_count = 0;
+static std::atomic<bool> s_pc_trace_dumped{false};
+
+void cpu_engine_note_pc_trace(uint32 pc)
+{
+	s_pc_trace[s_pc_trace_index] = pc;
+	s_pc_trace_index = (s_pc_trace_index + 1) % PC_TRACE_SIZE;
+	if (s_pc_trace_count < PC_TRACE_SIZE)
+		s_pc_trace_count++;
+}
+
+/*
+ * Prints the PC ring buffer's contents in execution order (oldest first), the
+ * first time this is called. No-op on every subsequent call so a crash loop
+ * doesn't repeat the same trace millions of times.
+ */
+static void cpu_engine_dump_pc_trace_once(void)
+{
+	if (s_pc_trace_dumped.exchange(true, std::memory_order_relaxed))
+		return;
+
+	uint32 count = s_pc_trace_count;
+	uint32 start = (count < PC_TRACE_SIZE) ? 0 : s_pc_trace_index;
+	printf("[SYSTEM-ERROR-PCTRACE] last %u guest PCs executed before this fault (oldest first):\n", count);
+	for (uint32 i = 0; i < count; i++) {
+		uint32 idx = (start + i) % PC_TRACE_SIZE;
+		printf(" %08X", s_pc_trace[idx]);
+		if ((i % 8) == 7)
+			printf("\n");
+	}
+	printf("\n");
+}
+
+/*
+ * Tick-thread correlation diagnostics (see cpu_engine_note_tick() in
+ * cpu_engine.h). Plain atomics, not a lock: this only needs to answer "how
+ * long ago did the tick thread last touch shared state", not provide a
+ * consistent snapshot of it.
+ */
+static std::atomic<uint64_t> s_tick_count{0};
+static std::atomic<double> s_last_tick_seconds{-1.0};
+static std::atomic<bool> s_dump_written{false};
+
+// Most recent per-exception register snapshot supplied by a CPU core.
+static CPUExceptionContext s_exception_ctx = {0};
+static char s_exception_ctx_engine[16] = {0};
+
+/*
+ * Header written at the start of dump_file when dump_memory=true.
+ * Followed by raw guest RAM bytes [RAMBaseMac .. RAMBaseMac + RAMSize).
+ */
+typedef struct CrashDumpHeader {
+	char magic[8];              // "CKDUMP1"
+	uint32 header_version;      // Format version for forward compatibility.
+	uint32 vector;
+	uint32 mac_bomb_type;
+	uint32 ram_base_mac;
+	uint32 ram_size;
+	uint32 rom_base_mac;
+	uint32 rom_size;
+	uint32 cpu_engine_last_pc;
+	uint32 tick_count_low;
+	uint32 tick_count_high;
+	double ms_since_last_tick;
+	CPUExceptionContext ctx;
+	char engine[16];
+} CrashDumpHeader;
+
+/*
+ * Returns CLOCK_MONOTONIC as a fractional second, for tick-to-crash lag.
+ */
+static double cpu_engine_monotonic_seconds(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+/*
+ * Records that the host 60 Hz tick thread just touched guest interrupt state.
+ *
+ * Arguments: none. Call from one_tickbbbb() next to TriggerInterrupt().
+ */
+void cpu_engine_note_tick(void)
+{
+	s_tick_count.fetch_add(1, std::memory_order_relaxed);
+	s_last_tick_seconds.store(cpu_engine_monotonic_seconds(), std::memory_order_relaxed);
+}
+
+/*
+ * Stores a register snapshot for the next cockatrice_report_cpu_exception().
+ *
+ * Arguments:
+ *   engine: Engine id that captured the snapshot.
+ *   opcode: Faulting 16-bit instruction.
+ *   pc: Guest PC of that instruction (prefer instruction_pc over post-increment).
+ *   ppc: Engine previous-PC / following-PC, engine-specific.
+ *   sr: Status register at the fault.
+ *   d, a: D0..D7 and A0..A7.
+ */
+void cockatrice_set_cpu_exception_context(const char *engine, uint16 opcode, uint32 pc, uint32 ppc, uint16 sr, const uint32 *d, const uint32 *a)
+{
+	// Defensive guard for incomplete exception paths that cannot provide regs.
+	if (!engine || !d || !a)
+		return;
+
+	s_exception_ctx.valid = 1;
+	s_exception_ctx.opcode = opcode;
+	s_exception_ctx.sr = sr;
+	s_exception_ctx.pc = pc;
+	s_exception_ctx.ppc = ppc;
+	for (int i = 0; i < 8; i++) {
+		s_exception_ctx.d[i] = d[i];
+		s_exception_ctx.a[i] = a[i];
+	}
+
+	strncpy(s_exception_ctx_engine, engine, sizeof(s_exception_ctx_engine) - 1);
+	s_exception_ctx_engine[sizeof(s_exception_ctx_engine) - 1] = '\0';
+}
+
+/*
  * Names match the classic Mac OS System Error alert box, whose numeric
  * "error type" is this vector number minus one (e.g. vector 11 == Type 10,
  * "Line 1111 Trap").
@@ -140,10 +273,172 @@ static const char *cpu_exception_name(int vector)
 	}
 }
 
+/*
+ * Builds a crash register snapshot from low-memory crash globals.
+ *
+ * Some exception paths may not provide an explicit engine-side context.
+ * Classic Mac system-error handlers store D/A/PC/SR around 0x0C30; use that
+ * as a fallback so dump_file still contains useful registers.
+ */
+static bool cpu_engine_context_from_lowmem(CPUExceptionContext *ctx_out)
+{
+	if (!ctx_out || RAMSize < 0x0c78)
+		return false;
+
+	CPUExceptionContext ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.valid = 1;
+	for (int i = 0; i < 8; i++)
+		ctx.d[i] = ReadMacInt32(0x0c30 + (uint32)(i * 4));
+	for (int i = 0; i < 8; i++)
+		ctx.a[i] = ReadMacInt32(0x0c50 + (uint32)(i * 4));
+	ctx.pc = ReadMacInt32(0x0c70);
+	ctx.ppc = ctx.pc;
+	ctx.sr = (uint16)ReadMacInt16(0x0c74);
+	if (ctx.pc + 1 < RAMSize)
+		ctx.opcode = ReadMacInt16(ctx.pc);
+
+	// Reject clearly empty snapshots (all zeros).
+	if (ctx.pc == 0 && ctx.sr == 0 && ctx.d[0] == 0 && ctx.a[7] == 0)
+		return false;
+
+	*ctx_out = ctx;
+	return true;
+}
+
+/*
+ * Writes a binary memory snapshot to dump_file when dump_memory=true.
+ *
+ * The dump begins with CrashDumpHeader (registers + exception metadata),
+ * followed by raw guest RAM bytes for offline analysis.
+ */
+static void cpu_engine_write_crash_dump(const char *engine, int vector, uint32 pc, double ms_since_last_tick, uint64_t ticks, const CPUExceptionContext *ctx)
+{
+	if (!PrefsFindBool("dump_memory"))
+		return;
+
+	// Avoid rewriting huge dumps in tight exception loops; first crash wins.
+	bool expected = false;
+	if (!s_dump_written.compare_exchange_strong(expected, true, std::memory_order_relaxed))
+		return;
+
+	const char *path = PrefsFindString("dump_file");
+	if (!path || !path[0])
+		path = "/tmp/memory.bin";
+
+	FILE *f = fopen(path, "wb");
+	if (!f) {
+		printf("[SYSTEM-ERROR-DUMP] failed to open '%s': %s\n", path, strerror(errno));
+		return;
+	}
+
+	CrashDumpHeader h;
+	memset(&h, 0, sizeof(h));
+	memcpy(h.magic, "CKDUMP1", 7);
+	h.header_version = 1;
+	h.vector = (uint32)vector;
+	h.mac_bomb_type = (uint32)(vector - 1);
+	h.ram_base_mac = RAMBaseMac;
+	h.ram_size = RAMSize;
+	h.rom_base_mac = ROMBaseMac;
+	h.rom_size = ROMSize;
+	h.cpu_engine_last_pc = cpu_engine_last_pc;
+	h.tick_count_low = (uint32)(ticks & 0xffffffffu);
+	h.tick_count_high = (uint32)(ticks >> 32);
+	h.ms_since_last_tick = ms_since_last_tick;
+	strncpy(h.engine, engine ? engine : "unknown", sizeof(h.engine) - 1);
+
+	if (ctx)
+		h.ctx = *ctx;
+	else
+		h.ctx.valid = 0;
+
+	size_t wrote = fwrite(&h, 1, sizeof(h), f);
+	if (wrote != sizeof(h)) {
+		printf("[SYSTEM-ERROR-DUMP] short header write to '%s'\n", path);
+		fclose(f);
+		return;
+	}
+
+	// Dump live guest RAM image exactly as the CPU core currently sees it.
+	if (RAMSize > 0) {
+		wrote = fwrite(Mac2HostAddr(RAMBaseMac), 1, RAMSize, f);
+		if (wrote != RAMSize) {
+			printf("[SYSTEM-ERROR-DUMP] short RAM write to '%s': wrote %u of %u bytes\n",
+			       path, (unsigned)wrote, (unsigned)RAMSize);
+			fclose(f);
+			return;
+		}
+	}
+
+	fclose(f);
+	printf("[SYSTEM-ERROR-DUMP] wrote %u-byte RAM dump + %u-byte header to %s\n",
+	       (unsigned)RAMSize, (unsigned)sizeof(h), path);
+}
+
 void cockatrice_report_cpu_exception(const char *engine, int vector, uint32 pc)
 {
+	double now = cpu_engine_monotonic_seconds();
+	double last_tick = s_last_tick_seconds.load(std::memory_order_relaxed);
+	uint64_t ticks = s_tick_count.load(std::memory_order_relaxed);
+	double ms_since_last_tick = (last_tick >= 0.0) ? (now - last_tick) * 1000.0 : -1.0;
+	CPUExceptionContext ctx;
+	CPUExceptionContext *ctx_ptr = NULL;
+
+	if (s_exception_ctx.valid && engine && strcmp(s_exception_ctx_engine, engine) == 0) {
+		ctx = s_exception_ctx;
+		ctx_ptr = &ctx;
+	} else if (cpu_engine_context_from_lowmem(&ctx)) {
+		ctx_ptr = &ctx;
+	}
+
 	printf("[SYSTEM-ERROR] %s: 68k exception vector=%d (Mac bomb Type %d: %s) at PC=0x%08X\n",
 	       engine, vector, vector - 1, cpu_exception_name(vector), pc);
+	if (last_tick >= 0.0) {
+		printf("[SYSTEM-ERROR-TICK] %llu ticks fired since boot; last tick was %.3fms before this report\n",
+		       (unsigned long long)ticks, ms_since_last_tick);
+	} else {
+		printf("[SYSTEM-ERROR-TICK] no tick has fired yet\n");
+	}
+
+	if (ctx_ptr && ctx_ptr->valid) {
+		printf("[SYSTEM-ERROR-REGS] opcode=0x%04X PC=0x%08X PPC=0x%08X SR=0x%04X\n",
+		       ctx_ptr->opcode, ctx_ptr->pc, ctx_ptr->ppc, ctx_ptr->sr);
+		printf("[SYSTEM-ERROR-REGS] D0=%08X D1=%08X D2=%08X D3=%08X D4=%08X D5=%08X D6=%08X D7=%08X\n",
+		       ctx_ptr->d[0], ctx_ptr->d[1], ctx_ptr->d[2], ctx_ptr->d[3],
+		       ctx_ptr->d[4], ctx_ptr->d[5], ctx_ptr->d[6], ctx_ptr->d[7]);
+		printf("[SYSTEM-ERROR-REGS] A0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
+		       ctx_ptr->a[0], ctx_ptr->a[1], ctx_ptr->a[2], ctx_ptr->a[3],
+		       ctx_ptr->a[4], ctx_ptr->a[5], ctx_ptr->a[6], ctx_ptr->a[7]);
+	}
+
+	/* Bytes straddling the fault PC: distinguishes plausible-but-wrong
+	 * relocated code (recognizable opcodes) from zeroed/garbage RAM, and
+	 * lets repeated crashes be compared byte-for-byte across runs. Plain
+	 * ReadMacInt8 -- a synchronous guest-RAM read, not a reentrant call
+	 * into any CPU core -- so it's safe from inside exception dispatch.
+	 * Vector 5 also dumps Time Manager calibration globals and a wider
+	 * window so the TimeDBRA/DIVU.W D5 stub is visible. */
+	if (vector == 5) {
+		printf("[SYSTEM-ERROR-TIME] TimeDBRA=0x%04X TimeSCCDBRA=0x%04X TimeSCSIDBRA=0x%04X TimeRAMDBRA=0x%04X\n",
+		       ReadMacInt16(0x0d00), ReadMacInt16(0x0d02),
+		       ReadMacInt16(0x0b24), ReadMacInt16(0x0cea));
+		printf("[SYSTEM-ERROR-MEM] bytes at PC-128..PC+47:");
+		for (int off = -128; off < 48; off++)
+			printf(" %02X", ReadMacInt8(pc + (uint32)off));
+		printf("\n");
+	} else {
+		printf("[SYSTEM-ERROR-MEM] bytes at PC-16..PC+47:");
+		for (int off = -16; off < 48; off++)
+			printf(" %02X", ReadMacInt8(pc + (uint32)off));
+		printf("\n");
+	}
+
+	cpu_engine_dump_pc_trace_once();
+
+	cpu_engine_write_crash_dump(engine, vector, pc, ms_since_last_tick, ticks, ctx_ptr);
+	s_exception_ctx.valid = 0;
+
 	fflush(stdout);
 }
 
@@ -380,6 +675,19 @@ const CPUEngine *GetActiveCPUEngine(void)
 {
 	// Return active engine pointer
 	return s_active_engine;
+}
+
+/*
+ * Returns emulated nanoseconds from the active engine, or 0.
+ *
+ * Arguments: none.
+ * Returns: Monotonic engine-local ns, or 0 when emulated_ns is NULL.
+ */
+uint64 cpu_engine_emulated_ns(void)
+{
+	if (s_active_engine && s_active_engine->emulated_ns)
+		return s_active_engine->emulated_ns();
+	return 0;
 }
 
 /*
