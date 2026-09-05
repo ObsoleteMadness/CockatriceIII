@@ -2521,7 +2521,9 @@ static inline void writemem_special(int address, int source, int offset)
 
 void writebyte(int address, int source)
 {
-    if ((special_mem & S_WRITE) || distrust_byte() || jit_n_addr_unsafe)
+    /* A7 byte traffic stays on helpers: 68000 MOVE.B ±(SP) is word-sized
+     * and the unused even byte sits next to return addresses. */
+    if ((special_mem & S_WRITE) || distrust_byte() || jit_n_addr_unsafe || address == 15)
         writemem_special(address, source, SIZEOF_VOID_P * 5);
     else
         writemem_real(address, source, 1);
@@ -2594,7 +2596,7 @@ static inline void readmem_special(int address, int dest, int offset)
 
 void readbyte(int address, int dest)
 {
-    if ((special_mem & S_READ) || distrust_byte() || jit_n_addr_unsafe)
+    if ((special_mem & S_READ) || distrust_byte() || jit_n_addr_unsafe || address == 15)
         readmem_special(address, dest, SIZEOF_VOID_P * 2);
     else
         readmem_real(address, dest, 1);

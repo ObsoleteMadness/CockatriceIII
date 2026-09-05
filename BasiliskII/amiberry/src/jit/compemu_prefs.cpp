@@ -15,7 +15,15 @@ bool check_prefs_changed_comp (bool checkonly)
 	static int cachesize_prev, comptrust_prev;
 	static bool canbang_prev;
 
+	/* UAE Amiga treats “don’t trust byte” as “compile every access via
+	 * helpers” (chipmem/CIA). Mac banks already mark SCC/ROM/dummy during
+	 * the profile pass; coupling special_mem_default to byte made
+	 * comptrustbyte a master switch and hid whether word/long were native. */
+#ifdef AMIBERRY_MACOS
+	special_mem_default = 0;
+#else
 	special_mem_default = currprefs.comptrustbyte ? (S_READ | S_WRITE | S_N_ADDR) : 0;
+#endif
 
 	if (currprefs.comptrustbyte != changed_prefs.comptrustbyte ||
 		currprefs.comptrustword != changed_prefs.comptrustword ||

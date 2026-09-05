@@ -719,11 +719,13 @@ int amiberry_cpu_init(int cpu_type, int fpu_type, int jit, uint32_t cache_kb, in
 	 * burst (jnf_MVMEL_*) ran while jit_n_addr_bank_unsafe was still 0 and
 	 * clobbered the RTS slot. That guard is on below; SCC banks keep both
 	 * jit flags; ROM banks keep jit_write_flag so helper stores still drop. */
-	/* Sanity: full helper path (special_mem_default follows byte). */
+	/* Real native word/long/naddr (special_mem_default=0, Mac banks).
+	 * Byte-direct still RTS-pops TheZone at ~14 ticks, even with A7
+	 * bytes on helpers. */
 	currprefs.comptrustbyte = 1;
-	currprefs.comptrustword = 1;
-	currprefs.comptrustlong = 1;
-	currprefs.comptrustnaddr = 1;
+	currprefs.comptrustword = 0;
+	currprefs.comptrustlong = 0;
+	currprefs.comptrustnaddr = 0;
 	currprefs.compnf = true;
 	/* Lazy flush: 68040 guests issue CINVA/CPUSHx routinely for DMA cache
 	 * coherency (every disk/network transfer), not because code changed.
@@ -775,12 +777,13 @@ int amiberry_cpu_init(int cpu_type, int fpu_type, int jit, uint32_t cache_kb, in
 	/* Wire cpufunctbl[] and x_get_iword; Amiberry does this in m68k_go() only. */
 	m68k_prepare();
 	m68k_reset();
-	write_log("[UAE] Amiberry %d init (fpu=%d mmu_model=%d jit=%s compfpu=%s cache=%d KB countdown=%d trust b=%d w=%d l=%d n=%d)\n",
+	write_log("[UAE] Amiberry %d init (fpu=%d mmu_model=%d jit=%s compfpu=%s cache=%d KB countdown=%d trust b=%d w=%d l=%d n=%d special_mem_default=%d)\n",
 		currprefs.cpu_model, currprefs.fpu_model, currprefs.mmu_model,
 		currprefs.cachesize ? "yes" : "no",
 		currprefs.compfpu ? "yes" : "no", currprefs.cachesize, pissoff_value,
 		currprefs.comptrustbyte, currprefs.comptrustword,
-		currprefs.comptrustlong, currprefs.comptrustnaddr);
+		currprefs.comptrustlong, currprefs.comptrustnaddr,
+		special_mem_default);
 	return 1;
 }
 
