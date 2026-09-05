@@ -25,6 +25,7 @@
 #include "cpu_emulation.h"
 #include "main.h"
 #include "emul_op.h"
+#include "cpu_engine.h"
 #include "macos_util.h"
 #include "slot_rom.h"
 #include "sony.h"
@@ -47,7 +48,6 @@ bool PrintROMInfo = false;	// Flag: print ROM information in PatchROM()
 
 static uint32 sony_offset;				// ROM offset of .Sony driver
 static uint32 serd_offset;				// ROM offset of SERD resource (serial drivers)
-static uint32 microseconds_offset;		// ROM offset of Microseconds() replacement routine
 
 // Prototypes
 uint16 ROMVersion;
@@ -851,6 +851,137 @@ static const uint8 adbop_patch[] = {	// Call ADBOp() completion procedure
 
 
 /*
+ *  Traps replaced at runtime instead of by patching the ROM image
+ *  ==============================================================
+ *
+ *  Apple's own way to replace a trap is not to rewrite the ROM's copy of it but
+ *  to point the trap table at a resident replacement:
+ *
+ *      leaResident __MicroSeconds,a0
+ *      moveq       #$93-$100,d0
+ *      _SetTrapAddress newOS           ; $SM/OS/TimeMgr/TimeMgrPatch.a:159-161
+ *
+ *  That is strictly better than a byte patch: it needs no find_rom_trap() scan,
+ *  so it cannot land on the wrong address on a ROM we have not seen; it leaves
+ *  the ROM image intact; and it is the documented interface rather than an
+ *  observation about one build's layout.
+ *
+ *  It is only available once the trap dispatcher exists, which rules out any
+ *  trap the machine uses before InstallDrivers() runs. Which ones those are was
+ *  measured rather than guessed -- a boot instrumented to report the first call
+ *  of every replaced trap gave:
+ *
+ *      before InstallDrivers:  BlockMove, InsTime, SCSIDispatch, CheckLoad
+ *      after InstallDrivers:   ADBOp, PrimeTime, RmvTime, Microseconds
+ *      not during boot:        PowerOff, PutScrap
+ *
+ *  so the four in the first row stay ROM patches and are marked as such at
+ *  their patch sites. Of the rest, the Time Manager pair RmvTime/PrimeTime also
+ *  stays: InsTime is in the first row, and replacing one half of the Time
+ *  Manager through the trap table while the other half is a ROM patch is harder
+ *  to reason about than leaving all three together.
+ *
+ *  That leaves the three below. See docs/rom-patches-vs-supermario.md.
+ */
+
+static const uint8 microseconds_stub[] = {	// Microseconds() -- A0 = high, D0 = low
+	M68K_EMUL_OP_MICROSECONDS >> 8, M68K_EMUL_OP_MICROSECONDS & 0xff,
+	0x4e, 0x75				//	rts
+};
+
+static const uint8 poweroff_stub[] = {		// PowerOff() -- quits the emulator
+	M68K_EMUL_OP_SHUTDOWN >> 8, M68K_EMUL_OP_SHUTDOWN & 0xff,
+	0x4e, 0x75				//	rts
+};
+
+/*
+ * Traps installed by InstallRuntimeTraps(), in the order they are laid out in
+ * the stub block. All three are OS traps ($A05B/$A07C/$A093 are below $A800),
+ * so all three go in through _SetOSTrapAddress.
+ */
+static RuntimeTrapStub runtime_trap_stubs[] = {
+	{ "Microseconds ($A093)", "$SM/OS/TimeMgr/TimeMgr.a:741",       0xa093,
+	  microseconds_stub, sizeof(microseconds_stub), 0 },
+	{ "PowerOff ($A05B)",     "$SM/Toolbox/ShutDownMgr/ShutDownMgr.a", 0xa05b,
+	  poweroff_stub,     sizeof(poweroff_stub),     0 },
+	{ "ADBOp ($A07C)",        "$SM/OS/ADBMgr/ADBMgr.a:337",         0xa07c,
+	  adbop_patch,       sizeof(adbop_patch),       0 },
+};
+
+static const int runtime_trap_stub_count =
+	(int)(sizeof(runtime_trap_stubs) / sizeof(runtime_trap_stubs[0]));
+
+/*
+ *  Returns the runtime trap stub table.
+ *
+ *  Arguments:
+ *    count: receives the number of entries.
+ *
+ *  Returns:
+ *    The table. Each entry's addr is 0 until InstallRuntimeTraps() has run;
+ *    the stub bytes themselves are valid from the start, which is what lets
+ *    the offline tests execute them without a Mac heap.
+ */
+
+const RuntimeTrapStub *GetRuntimeTrapStubs(int *count)
+{
+	if (count)
+		*count = runtime_trap_stub_count;
+	return runtime_trap_stubs;
+}
+
+/*
+ *  Copy the runtime trap stubs into the System heap and point the trap table
+ *  at them.
+ *
+ *  Called from InstallDrivers(), which is late enough that the trap dispatcher
+ *  and the Memory Manager are both up (see the block comment above).
+ *
+ *  Returns:
+ *    true if every stub was installed. On failure the machine keeps the ROM's
+ *    own implementations, which for these three traps means the emulator loses
+ *    the replacement rather than crashing.
+ */
+
+static bool InstallRuntimeTraps(void)
+{
+	// One block for all of them; 16-byte slots keep each stub aligned.
+	const uint32 slot = 64;
+	M68kRegisters r;
+	r.d[0] = slot * runtime_trap_stub_count;
+	Execute68kTrap(0xa71e, &r);		// NewPtrSysClear()
+	uint32 base = r.a[0];
+	if (base == 0) {
+		printf("[TRAP-INSTALL] FATAL: could not allocate the runtime trap stub block\n");
+		fflush(stdout);
+		return false;
+	}
+
+	for (int i = 0; i < runtime_trap_stub_count; i++) {
+		RuntimeTrapStub &st = runtime_trap_stubs[i];
+		if (st.len > slot) {
+			printf("[TRAP-INSTALL] FATAL: %s stub is %u bytes, slot is %u\n",
+			       st.name, st.len, slot);
+			fflush(stdout);
+			return false;
+		}
+		st.addr = base + (uint32)i * slot;
+		memcpy(Mac2HostAddr(st.addr), st.code, st.len);
+		cpu_engine_invalidate_code(st.addr, st.len);
+
+		r.a[0] = st.addr;
+		r.d[0] = st.trap;
+		Execute68kTrap(0xa247, &r);		// _SetOSTrapAddress
+
+		printf("[TRAP-INSTALL] %-22s -> %08x via _SetOSTrapAddress (%s)\n",
+		       st.name, st.addr, st.source_ref);
+	}
+	fflush(stdout);
+	return true;
+}
+
+
+/*
  *  Install .Sony, disk and CD-ROM drivers
  */
 
@@ -859,10 +990,9 @@ void InstallDrivers(uint32 pb)
 	D(bug("InstallDrivers\n"));
 	M68kRegisters r;
 
-	// Install Microseconds() replacement routine
-	r.a[0] = ROMBaseMac + microseconds_offset;
-	r.d[0] = 0xa093;
-	Execute68kTrap(0xa247, &r);		// SetOSTrapAddress()
+	// Point the trap table at our System-heap replacements for the traps that
+	// do not have to be ROM patches (Microseconds, PowerOff, ADBOp).
+	InstallRuntimeTraps();
 
 	// Install disk driver
 	r.a[0] = ROMBaseMac + sony_offset + 0x100;
@@ -1067,10 +1197,9 @@ printf("Patching for a Mac Classic/SE (version $0276)\n");
 	*wp++ = htons(0x0700);
 	*wp++ = htons(M68K_EMUL_OP_PRIMETIME);
 	*wp++ = htons(0x46df);		// move	(sp)+,sr
-	*wp++ = htons(M68K_RTS);
-	microseconds_offset = (uint8 *)wp - ROMBaseHost;
-	*wp++ = htons(M68K_EMUL_OP_MICROSECONDS);
 	*wp = htons(M68K_RTS);
+	// Microseconds ($A093) is installed at runtime for Classic ROMs too --
+	// see InstallRuntimeTraps().
 
 
 	// Replace SCSIDispatch()
@@ -1764,16 +1893,14 @@ static bool patch_rom_32(void)
 		memcpy(ROMBaseHost + serd_offset + 0x400, bout_driver, sizeof(bout_driver));
 	}
 
-	// Replace ADBOp() ($A07C). Trap wiring $SM/OS/DispTable.a:1428
-	// "OS $7C,ADBOpTrap"; body $SM/OS/ADBMgr/ADBMgr.a:337.
-	uint32 trap_adbop = require_rom_trap(0xa07c, "ADBOp ($A07C)", "$SM/OS/ADBMgr/ADBMgr.a:337");
-	if (trap_adbop == 0) return false;
-	memcpy(ROMBaseHost + trap_adbop, adbop_patch, sizeof(adbop_patch));
-
 	// Replace Time Manager (the Microseconds patch is activated in InstallDrivers()).
 	// Trap wiring $SM/OS/DispTable.a; bodies $SM/OS/TimeMgr/TimeMgr.a. The
 	// sr save / ori #$0700,sr wrapper mirrors what Apple's own Time Manager
 	// swap does ($SM/OS/TimeMgr/TimeMgrPatch.a:186-187).
+	// Stays a ROM patch: InsTime is called before InstallDrivers() runs, so the
+	// trap table is not ours to change yet. RmvTime and PrimeTime are only used
+	// later, but they stay here with InsTime -- splitting the Time Manager across
+	// two installation mechanisms buys nothing and is harder to reason about.
 	uint32 trap_instime = require_rom_trap(0xa058, "InsTime ($A058)", "$SM/OS/TimeMgr/TimeMgr.a");
 	if (trap_instime == 0) return false;
 	wp = (uint16 *)(ROMBaseHost + trap_instime);
@@ -1796,17 +1923,16 @@ static bool patch_rom_32(void)
 	*wp++ = htons(0x0700);
 	*wp++ = htons(M68K_EMUL_OP_PRIMETIME);
 	*wp++ = htons(0x46df);		// move	(sp)+,sr
-	*wp++ = htons(M68K_RTS);
-	// Microseconds stub goes in the spare bytes right after PrimeTime. ABI is
-	// A0 = high, D0 = low ($SM/OS/TimeMgr/TimeMgr.a:741), NOT an UnsignedWide*
-	// through A0 -- see docs/quadra-32bit-boot-crashes.md.
-	microseconds_offset = (uint8 *)wp - ROMBaseHost;
-	log_patch("Microseconds ($A093)", "$SM/OS/TimeMgr/TimeMgr.a:741", microseconds_offset, true);
-	*wp++ = htons(M68K_EMUL_OP_MICROSECONDS);
 	*wp = htons(M68K_RTS);
+	// Microseconds ($A093) is not patched into the ROM at all: it is installed
+	// at runtime through _SetTrapAddress from a System-heap stub, which is how
+	// Apple installs it too ($SM/OS/TimeMgr/TimeMgrPatch.a:159-161). See
+	// InstallRuntimeTraps().
 
 	// Replace SCSIDispatch() ($A815). $SM/OS/DispTable.a:377
 	// "ToolBox $015,SCSIDispatchCommon"; body $SM/OS/SCSIMgr/SCSILinkPatch.a:221.
+	// Stays a ROM patch: the boot blocks are read over SCSI before
+	// InstallDrivers() runs.
 	uint32 trap_scsi = require_rom_trap(0xa815, "SCSIDispatch ($A815)", "$SM/OS/SCSIMgr/SCSILinkPatch.a:221");
 	if (trap_scsi == 0) return false;
 	wp = (uint16 *)(ROMBaseHost + trap_scsi);
@@ -1842,12 +1968,6 @@ static bool patch_rom_32(void)
 	*wp++ = htons(M68K_EMUL_OP_CHECKLOAD);
 	*wp = htons(M68K_RTS);
 
-	// Patch PowerOff() ($A05B). $SM/Toolbox/ShutDownMgr/ShutDownMgr.a
-	uint32 trap_poweroff = require_rom_trap(0xa05b, "PowerOff ($A05B)", "$SM/Toolbox/ShutDownMgr/ShutDownMgr.a");
-	if (trap_poweroff == 0) return false;
-	wp = (uint16 *)(ROMBaseHost + trap_poweroff);	// PowerOff()
-	*wp = htons(M68K_EMUL_OP_SHUTDOWN);
-
 	// Install PutScrap() patch for clipboard data exchange (the patch is activated by EMUL_OP_INSTALL_DRIVERS)
 	uint32 trap_putscrap = require_rom_trap(0xa9fe, "PutScrap ($A9FE)", "$SM/Toolbox/ScrapMgr/");
 	if (trap_putscrap == 0) return false;
@@ -1861,6 +1981,8 @@ static bool patch_rom_32(void)
 
 #if EMULATED_68K
 	// Replace BlockMove() ($A02E). $SM/OS/MemoryMgr/BlockMove.a
+	// Stays a ROM patch: BlockMove is the first replaced trap the machine calls,
+	// long before InstallDrivers().
 	uint32 trap_blockmove = require_rom_trap(0xa02e, "BlockMove ($A02E)", "$SM/OS/MemoryMgr/BlockMove.a");
 	if (trap_blockmove == 0) return false;
 	wp = (uint16 *)(ROMBaseHost + trap_blockmove);	// BlockMove()

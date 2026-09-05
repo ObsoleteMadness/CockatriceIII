@@ -45,14 +45,11 @@ MemoryDispatch	04f140	optional	applied
 .EDisk ROM scan limit	0e75ee	optional	applied
 .Sony driver (DRVR 4)	06c3e0	required	applied
 SERD 0 + serial drivers	06ab90	required	applied
-ADBOp ($A07C)	00a3dc	required	applied
 InsTime ($A058)	00aeec	required	applied
 RmvTime ($A059)	00ae90	required	applied
 PrimeTime ($A05A)	00af1a	required	applied
-Microseconds ($A093)	00af26	required	applied
 SCSIDispatch ($A815)	007460	required	applied
 vCheckLoad hook	01b8f4	required	applied
-PowerOff ($A05B)	009e16	required	applied
 PutScrap ($A9FE)	025ef0	required	applied
 BlockMove ($A02E)	00ca10	required	applied
 PACK 4 (SANE)	073940	required	applied

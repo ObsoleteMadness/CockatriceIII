@@ -203,14 +203,41 @@ InstallTimeMgrPortableIIci InstallProc (Portable,IIci,notAUX)
         _SetTrapAddress newOS
 ```
 
-Cockatrice locates traps with `find_rom_trap()` (rom_patches.cpp:108) and
-byte-patches the ROM routine bodies. `find_rom_trap()` returns 0 both for
-"unimplemented trap" and "trap not found", and **none of its eight callers check
-the result** (rom_patches.cpp:1488, :1491, :1494, :1501, :1513, :1533, :1538,
-:1547), so a miss writes over the ROM header.
+Historically Cockatrice located every replaced trap with `find_rom_trap()` and
+byte-patched the ROM routine body. `find_rom_trap()` returns 0 both for
+"unimplemented trap" and "trap not found", and none of its callers checked the
+result, so a miss wrote the patch over the ROM header. Those call sites are now
+`require_rom_trap()` and fail the pass instead.
 
-Note that `InstallDrivers()` already installs `Microseconds` the correct way, via
-`SetOSTrapAddress` — so the mechanism is present, just not used generally.
+#### Which traps can use `_SetTrapAddress`, and which cannot
+
+`_SetTrapAddress` is only available once the trap dispatcher exists, which in
+practice means from `InstallDrivers()` onward. Whether a given trap is already
+live by then is a property of the ROM and the System, so it was **measured**,
+not assumed: a boot instrumented to report the first call of every replaced trap
+(Quadra 800 ROM, System 8.1, `modelid 29`, Musashi) gave
+
+| First called | Traps |
+|---|---|
+| before `InstallDrivers` | `BlockMove`, `InsTime`, `SCSIDispatch`, `CheckLoad` |
+| after `InstallDrivers` | `ADBOp`, `PrimeTime`, `RmvTime`, `Microseconds` |
+| not during boot at all | `PowerOff`, `PutScrap` |
+
+So the first row must remain ROM patches, and each of those sites now says so in
+a comment. `Microseconds`, `PowerOff` and `ADBOp` are installed through
+`_SetOSTrapAddress` from a System-heap block — `InstallRuntimeTraps()` in
+`rom_patches.cpp`, following the `leaResident` / `_SetTrapAddress` idiom above —
+and no longer appear in the ROM patch manifest.
+
+`RmvTime` and `PrimeTime` *could* move by the measurement, but stay with
+`InsTime`: replacing half the Time Manager through the trap table while the
+other half is a ROM patch is harder to reason about than keeping the three
+together, and buys nothing.
+
+This is a smaller set than it first appears. The `_SetTrapAddress` route removes
+a `find_rom_trap()` dependency and leaves the ROM image intact, but it cannot
+reach the traps the machine needs earliest — which are also the ones whose ROM
+patches matter most.
 
 ---
 

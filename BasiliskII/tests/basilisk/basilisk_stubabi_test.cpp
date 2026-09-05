@@ -102,6 +102,36 @@ static void emit32(uint32 val) { WriteMacInt32(emit_pc, val); emit_pc += 4; }
 static void emit_jsr(uint32 addr) { emit(0x4eb9); emit32(addr); }
 
 /*
+ * Copies one runtime trap stub into scratch RAM so it can be executed.
+ *
+ * The traps that do not have to be ROM patches are installed at runtime from a
+ * System-heap block (rom_patches.cpp InstallRuntimeTraps), which needs a booted
+ * Mac. The stub *bytes* are static though, so the offline tests run exactly the
+ * code that gets installed by placing it in RAM themselves.
+ *
+ * Arguments:
+ *   name: entry name, e.g. "Microseconds ($A093)".
+ *   addr: guest address to copy the stub to.
+ *
+ * Returns:
+ *   addr, or 0 if there is no such entry.
+ */
+static uint32 place_runtime_stub(const char *name, uint32 addr)
+{
+	int count = 0;
+	const RuntimeTrapStub *stubs = GetRuntimeTrapStubs(&count);
+	for (int i = 0; i < count; i++) {
+		if (strcmp(stubs[i].name, name) != 0)
+			continue;
+		for (uint32 j = 0; j < stubs[i].len; j++)
+			WriteMacInt8(addr + j, stubs[i].code[j]);
+		cpu_engine_invalidate_code(addr, stubs[i].len);
+		return addr;
+	}
+	return 0;
+}
+
+/*
  *  Microseconds ($A093): A0 = high, D0 = low
  *
  *  $SM/OS/TimeMgr/TimeMgr.a:736-751 states the contract:
@@ -118,9 +148,9 @@ static void test_microseconds_abi(void)
 {
 	if (!setup_patched_rom())
 		return;
-	uint32 stub = stub_addr("Microseconds ($A093)");
+	uint32 stub = place_runtime_stub("Microseconds ($A093)", DATA_BASE + 0x400);
 	if (!stub) {
-		printf("  [SKIP] Microseconds stub not in the patch log\n");
+		CHECK(false, "Microseconds ($A093): in the runtime trap stub table");
 		return;
 	}
 
@@ -456,6 +486,89 @@ static void test_checkload_trampoline(void)
 	CHECK(ReadMacInt16(tramp + 12) == M68K_RTS, "CheckLoad trampoline returns");
 }
 
+/*
+ *  The runtime trap stubs, and ADBOp's completion-routine tail
+ *
+ *  These three are installed through _SetOSTrapAddress at InstallDrivers time
+ *  rather than patched into the ROM, which is how Apple installs its own trap
+ *  replacements ($SM/OS/TimeMgr/TimeMgrPatch.a:159-161). Two things have to
+ *  hold for that to be legal, and both are checked here: they must all be OS
+ *  traps (below $A800), because the installer uses _SetOSTrapAddress for the
+ *  whole table; and their code must be position-independent, since it is copied
+ *  into a System-heap block whose address is not known until boot.
+ *
+ *  ADBOp gets the close look because it is the only one with real logic. Per
+ *  the comment on adbop_patch it re-enters ADBOp from the completion routine,
+ *  so it raises the interrupt mask around the whole sequence and saves the
+ *  registers the completion routine is allowed to clobber.
+ */
+static void test_runtime_trap_stubs(void)
+{
+	if (!setup_patched_rom())
+		return;
+
+	int count = 0;
+	const RuntimeTrapStub *stubs = GetRuntimeTrapStubs(&count);
+	CHECK(count == 3, "runtime trap table has the three traps that need not be ROM patches");
+
+	for (int i = 0; i < count; i++) {
+		char msg[192];
+		snprintf(msg, sizeof(msg), "%s is an OS trap, matching _SetOSTrapAddress", stubs[i].name);
+		CHECK(stubs[i].trap < 0xa800, msg);
+		snprintf(msg, sizeof(msg), "%s has a source reference", stubs[i].name);
+		CHECK(stubs[i].source_ref != NULL && stubs[i].source_ref[0] != '\0', msg);
+	}
+
+	uint32 stub = place_runtime_stub("ADBOp ($A07C)", DATA_BASE + 0x400);
+	if (!stub) {
+		CHECK(false, "ADBOp ($A07C): in the runtime trap stub table");
+		return;
+	}
+	CHECK(ReadMacInt16(stub + 0) == 0x40e7 && ReadMacInt16(stub + 2) == 0x007c &&
+	      ReadMacInt16(stub + 4) == 0x0700,
+	      "ADBOp: raises the interrupt mask before re-entrant completion (adbop_patch)");
+
+	/*
+	 * Parameter block the stub walks: +0 buffer, +4 completion routine,
+	 * +8 data area. The completion routine leaves a marker in memory so we can
+	 * tell it really ran.
+	 */
+	const uint32 pb = DATA_BASE + 0x200;
+	const uint32 completion = DATA_BASE + 0x300;
+	const uint32 marker = DATA_BASE + 0x380;
+
+	emit_begin(completion);
+	emit(0x23fc);					// move.l #$600df00d,(marker).L
+	emit32(0x600df00d);
+	emit32(marker);
+	emit(M68K_RTS);
+	cpu_engine_invalidate_code(completion, 16);
+
+	WriteMacInt32(pb + 0, DATA_BASE);			// buffer
+	WriteMacInt32(pb + 4, completion);
+	WriteMacInt32(pb + 8, DATA_BASE + 0x40);	// data area
+	WriteMacInt32(marker, 0);
+
+	M68kRegisters r;
+	memset(&r, 0, sizeof(r));
+	r.a[0] = pb;
+	r.d[0] = 0x03;			// ADB command; the harness ADBOp() ignores it
+	Execute68k(stub, &r);
+
+	CHECK(ReadMacInt32(marker) == 0x600df00d, "ADBOp: completion routine was called");
+	CHECK(r.d[0] == 0, "ADBOp: returns 0 when a completion routine ran");
+
+	// No completion routine: the stub must report -1 and call nothing.
+	WriteMacInt32(pb + 4, 0);
+	WriteMacInt32(marker, 0);
+	memset(&r, 0, sizeof(r));
+	r.a[0] = pb;
+	Execute68k(stub, &r);
+
+	CHECK(r.d[0] == 0xffffffff, "ADBOp: returns -1 with no completion routine");
+	CHECK(ReadMacInt32(marker) == 0, "ADBOp: nothing was called in that case");
+}
+
 int main(void)
 {
 	test_install_crash_handler();
@@ -469,6 +582,7 @@ int main(void)
 	run_isolated("SCSIDispatch stub", test_scsi_dispatch_stub);
 	run_isolated(".Sony driver entries", test_sony_driver_entries);
 	run_isolated("CheckLoad trampoline", test_checkload_trampoline);
+	run_isolated("runtime trap stubs", test_runtime_trap_stubs);
 
 	printf("\nResults: %d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

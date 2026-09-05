@@ -83,6 +83,34 @@ struct PatchRecord {
  */
 const std::vector<PatchRecord> &GetPatchLog(void);
 
+/*
+ *  A trap replaced through _SetTrapAddress at runtime rather than by patching
+ *  the ROM image, the way Apple installs its own replacements
+ *  ($SM/OS/TimeMgr/TimeMgrPatch.a:159-161).
+ *
+ *  name:       stable identifier, also used in the [TRAP-INSTALL] log.
+ *  source_ref: Mac OS ROM source for the trap being replaced.
+ *  trap:       A-line trap number.
+ *  code/len:   the stub, valid before installation so tests can execute it.
+ *  addr:       where the stub was installed; 0 until InstallDrivers() runs.
+ */
+struct RuntimeTrapStub {
+	const char *name;
+	const char *source_ref;
+	uint16 trap;
+	const uint8 *code;
+	uint32 len;
+	uint32 addr;
+};
+
+/*
+ *  Returns the runtime trap stub table.
+ *
+ *  Arguments:
+ *    count: receives the number of entries; may be NULL.
+ */
+const RuntimeTrapStub *GetRuntimeTrapStubs(int *count);
+
 extern uint16 ROMVersion;
 
 // ROM offset of breakpoint, used by PatchROM()
