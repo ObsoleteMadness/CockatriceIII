@@ -226,6 +226,51 @@ static void test_checkrom_rejects_unsupported(void)
 }
 
 /*
+ * Every fixed-offset patch site must verify its bytes before writing.
+ *
+ * These offsets are bare magic numbers -- there is no signature scan to miss,
+ * so on a ROM whose layout differs the write simply lands in unrelated code.
+ * Corrupting one byte at each site must produce a named VERIFY FAILED and a
+ * refusal, not a silently mispatched ROM.
+ *
+ * The offsets and what lives at them are documented in
+ * docs/rom-patches-vs-supermario.md section 5.
+ */
+static void test_fixed_offsets_are_verified(void)
+{
+	static const struct { uint32 offset; const char *what; } sites[] = {
+		{ 0x1142,  ".Sound open hook" },
+		{ 0x1b8f4, "vCheckLoad hook" },
+		{ 0x5b78,  "GetDevBase" },
+		{ 0x9bc4,  "VIA level-1 dispatcher" },
+		{ 0xa296,  "VIA 60Hz handler" },
+		{ 0xb2c6a, "InitADB VIA write" },
+		{ 0xb2d2e, "InitADB state wait" },
+	};
+
+	for (size_t i = 0; i < sizeof(sites) / sizeof(sites[0]); i++) {
+		if (!reload_rom()) {
+			printf("  [SKIP] needs dist/Quadra800.rom\n");
+			return;
+		}
+		// Flip the first byte of the expected instruction.
+		ROMBaseHost[sites[i].offset] ^= 0xff;
+
+		uint8 before[HEADER_BYTES];
+		snapshot_header(before);
+		bool ok = PatchROM();
+
+		char msg[192];
+		snprintf(msg, sizeof(msg), "corrupt %s (%06x): PatchROM() refuses",
+		         sites[i].what, sites[i].offset);
+		CHECK(!ok, msg);
+		snprintf(msg, sizeof(msg), "corrupt %s (%06x): ROM header not overwritten",
+		         sites[i].what, sites[i].offset);
+		CHECK(memcmp(before, ROMBaseHost, HEADER_BYTES) == 0, msg);
+	}
+}
+
+/*
  * The happy path still works: an untouched ROM patches cleanly and every
  * required patch lands.
  */
@@ -256,6 +301,7 @@ int main(void)
 	run_isolated("missing .Sony", test_missing_sony_resource);
 	run_isolated("missing SERD", test_missing_serd_resource);
 	run_isolated("CheckROM rejects unsupported", test_checkrom_rejects_unsupported);
+	run_isolated("fixed offsets verified", test_fixed_offsets_are_verified);
 	run_isolated("clean ROM", test_clean_rom_still_patches);
 
 	printf("\nResults: %d passed, %d failed\n", g_pass, g_fail);

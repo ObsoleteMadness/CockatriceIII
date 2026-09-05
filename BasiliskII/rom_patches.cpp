@@ -363,6 +363,52 @@ static void print_rom_info(void)
 
 
 /*
+ *  Verify the bytes at a fixed ROM offset before patching there.
+ *
+ *  A handful of patch sites are bare offsets rather than signature scans. On a
+ *  ROM whose layout differs even slightly, those writes land in unrelated code
+ *  and the machine bombs much later. Checking the instruction bytes we expect
+ *  to be replacing turns that into an immediate, named failure.
+ *
+ *  The expected bytes are the *unpatched* instructions at that offset, chosen
+ *  to be the recognisable head of the routine -- see
+ *  docs/rom-patches-vs-supermario.md for what each routine is.
+ *
+ *  Arguments:
+ *    name:       log label, matching the log_patch() call for the same site.
+ *    offset:     ROM offset to check.
+ *    expect:     expected bytes.
+ *    len:        number of bytes to compare.
+ *
+ *  Returns:
+ *    true if the ROM matches. On mismatch it reports both the expected and the
+ *    actual bytes, because that is the information needed to decide whether the
+ *    ROM is unsupported or the signature simply needs widening.
+ */
+
+static bool verify_rom_bytes(const char *name, uint32 offset, const uint8 *expect, uint32 len)
+{
+	if (offset + len > ROMSize) {
+		printf("[ROM-PATCH] %-34s VERIFY FAILED (offset %06x past end of %06x ROM)\n",
+		       name, offset, ROMSize);
+		return false;
+	}
+	if (memcmp(ROMBaseHost + offset, expect, len) == 0)
+		return true;
+
+	printf("[ROM-PATCH] %-34s VERIFY FAILED @ %06x\n", name, offset);
+	printf("              expected:");
+	for (uint32 i = 0; i < len; i++)
+		printf(" %02x", expect[i]);
+	printf("\n              actual:  ");
+	for (uint32 i = 0; i < len; i++)
+		printf(" %02x", ROMBaseHost[offset + i]);
+	printf("\n");
+	return false;
+}
+
+
+/*
  *  Resolve an A-trap to its ROM offset, logging the outcome.
  *
  *  find_rom_trap() returns 0 both for "trap is unimplemented" and "trap not
@@ -1485,6 +1531,13 @@ static bool patch_rom_32(void)
 	// Don't open .Sound driver but install our own drivers. The Sound Manager
 	// has no SuperMario source (ships as SoundMgr.rsrc), so this site is
 	// anchored only to the ROM image.
+	// _Open followed by "movea.l SonyVars,a1" -- the .Sony driver globals at
+	// $0134. The next patch NOPs that access, so both are verified here.
+	static const uint8 sound_open_dat[] = {0xa0, 0x00, 0x22, 0x78, 0x01, 0x34};
+	if (!verify_rom_bytes(".Sound open hook", 0x1142, sound_open_dat, sizeof(sound_open_dat))) {
+		log_patch(".Sound open hook", NULL, 0, true);
+		return false;
+	}
 	wp = (uint16 *)(ROMBaseHost + 0x1142);
 	*wp = htons(M68K_EMUL_OP_INSTALL_DRIVERS);
 	log_patch(".Sound open hook", NULL, 0x1142, true);
@@ -1505,7 +1558,17 @@ static bool patch_rom_32(void)
 	// $SM/OS/ADBMgr/ADBMgr.a, called at StartInit.a:1765.
 	wp = (uint16 *)(ROMBaseHost + 0xa8a8);
 	if (*wp == 0) {		// ROM22/23/26/27/32
-		log_patch("InitADB VIA wait (ROM22+)", "$SM/OS/ADBMgr/ADBMgr.a", 0xb2c6a, true);
+		// move.b #$84,$1C00(a0) / rts -- the VIA write and its return.
+		static const uint8 adb1_dat[] = {0x11, 0x7c, 0x00, 0x84, 0x1c, 0x00, 0x4e, 0x75};
+		// and.b (a1),d1 / cmpi.b #$30,d1 / bne.s -- the state-3 test from
+		// $SM/OS/ADBMgr/ADBMgrPatch.a:166-174.
+		static const uint8 adb2_dat[] = {0xc2, 0x11, 0x0c, 0x01, 0x00, 0x30, 0x66};
+		if (!verify_rom_bytes("InitADB VIA wait (ROM22+)", 0xb2c6a, adb1_dat, sizeof(adb1_dat)) ||
+		    !verify_rom_bytes("InitADB state wait (ROM22+)", 0xb2d2e, adb2_dat, sizeof(adb2_dat))) {
+			log_patch("InitADB VIA wait (ROM22+)", "$SM/OS/ADBMgr/ADBMgrPatch.a:166", 0, true);
+			return false;
+		}
+		log_patch("InitADB VIA wait (ROM22+)", "$SM/OS/ADBMgr/ADBMgrPatch.a:166", 0xb2c6a, true);
 		wp = (uint16 *)(ROMBaseHost + 0xb2c6a);
 		*wp++ = htons(M68K_NOP);
 		*wp++ = htons(M68K_NOP);
@@ -1555,6 +1618,12 @@ static bool patch_rom_32(void)
 
 	// Don't mangle frame buffer base (GetDevBase). Video sResources and the
 	// built-in video drivers are $SM/DeclData/DeclVideo/.
+	// andi.l #$00FFFFFF,d1 -- the 24-bit strip applied to the frame buffer base.
+	static const uint8 devbase_dat[] = {0x02, 0x81, 0x00, 0xff, 0xff, 0xff};
+	if (!verify_rom_bytes("GetDevBase", 0x5b78, devbase_dat, sizeof(devbase_dat))) {
+		log_patch("GetDevBase", "$SM/DeclData/DeclVideo/", 0, true);
+		return false;
+	}
 	wp = (uint16 *)(ROMBaseHost + 0x5b78);
 	*wp++ = htons(M68K_NOP);
 	*wp++ = htons(M68K_NOP);
@@ -1752,6 +1821,13 @@ static bool patch_rom_32(void)
 	// $SM/Patches/BeforePatches.a:690-697) -- which is what the stub below calls
 	// through. We reach it by byte-patching the ROM instead; see
 	// docs/rom-patches-vs-supermario.md section 3.1.
+	// movea.l $07F0,a0 / jmp (a0) -- the ROM already dispatches vCheckLoad
+	// through the jCheckLoad vector, which is what our stub calls back into.
+	static const uint8 checkload_dat[] = {0x20, 0x78, 0x07, 0xf0, 0x4e, 0xd0};
+	if (!verify_rom_bytes("vCheckLoad hook", 0x1b8f4, checkload_dat, sizeof(checkload_dat))) {
+		log_patch("vCheckLoad hook", "$SM/Patches/BeforePatches.a:690", 0, true);
+		return false;
+	}
 	log_patch("vCheckLoad hook", "$SM/Patches/BeforePatches.a:690", 0x1b8f4, true);
 	wp = (uint16 *)(ROMBaseHost + 0x1b8f4);
 	*wp++ = htons(M68K_JMP);
@@ -1808,6 +1884,13 @@ static bool patch_rom_32(void)
 	// ($SM/OS/InterruptHandlers.a:489-496). Forcing "moveq #2,d0" here pins it to
 	// one slot, so one-second and ADB shift-register interrupts cannot be
 	// delivered on their own vectors. See docs/rom-patches-vs-supermario.md 3.2.
+	// moveq #$7F,d0 / and.b $1A00(a1),d0 / and.b $1C00(a1),d0 -- Level1Via1Int
+	// masking IFR against IER before indexing the Via1DT priority table.
+	static const uint8 lvl1_dat[] = {0x70, 0x7f, 0xc0, 0x29, 0x1a, 0x00, 0xc0, 0x29, 0x1c, 0x00};
+	if (!verify_rom_bytes("VIA level-1 dispatcher", 0x9bc4, lvl1_dat, sizeof(lvl1_dat))) {
+		log_patch("VIA level-1 dispatcher", "$SM/OS/InterruptHandlers.a:1558", 0, true);
+		return false;
+	}
 	log_patch("VIA level-1 dispatcher", "$SM/OS/InterruptHandlers.a:1558", 0x9bc4, true);
 	wp = (uint16 *)(ROMBaseHost + 0x9bc4);	// Level 1 handler
 	*wp++ = htons(0x7002);		// moveq	#2,d0 (always 60Hz interrupt)
@@ -1816,6 +1899,13 @@ static bool patch_rom_32(void)
 	*wp++ = htons(M68K_NOP);
 	*wp = htons(M68K_NOP);
 
+	// addq.l #1,Ticks ($016A) / move.b #2,$1A00(a1) -- the VBL handler bumping
+	// the tick count and acknowledging the VIA.
+	static const uint8 sixtyhz_dat[] = {0x52, 0xb8, 0x01, 0x6a, 0x13, 0x7c, 0x00, 0x02};
+	if (!verify_rom_bytes("VIA 60Hz handler", 0xa296, sixtyhz_dat, sizeof(sixtyhz_dat))) {
+		log_patch("VIA 60Hz handler", "$SM/OS/InterruptHandlers.a", 0, true);
+		return false;
+	}
 	log_patch("VIA 60Hz handler", "$SM/OS/InterruptHandlers.a", 0xa296, true);
 	wp = (uint16 *)(ROMBaseHost + 0xa296);	// 60Hz handler (handles everything)
 	*wp++ = htons(M68K_NOP);

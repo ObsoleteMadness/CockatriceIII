@@ -293,7 +293,39 @@ rom_patches.cpp:1256, :1267, :1358.
 | `PACK` 4 presence check (:1553) | `$SM/Resources/RomResources.r` `'rrsc' (120,"InSane")`, `(130,"Sane1")`, `(140,"Sane2")` |
 | `InstallSlotROM()` — hand-built declaration ROM ([slot_rom.cpp](../BasiliskII/slot_rom.cpp)) | `$SM/DeclData/DeclData.r` (9518 lines of real sResource definitions), `$SM/DeclData/DeclVideo/` per-chip video drivers, `$SM/OS/SlotMgr/SlotMgr.a` + `SlotMgrInit.a` |
 
-### 5.4 `patch_rom_classic()`
+### 5.4 Verified fixed offsets
+
+Most sites are located by signature, but a handful are bare offsets. Those now
+check the instruction bytes they expect to be replacing before writing, so a ROM
+whose layout differs fails with a named `VERIFY FAILED` instead of scribbling on
+unrelated code. The expected bytes (from `dist/Quadra800.rom`):
+
+| Offset | Site | Unpatched bytes | Reading |
+|---|---|---|---|
+| `0x1142` | `.Sound` open hook | `a0 00 22 78 01 34` | `_Open` / `movea.l SonyVars,a1` |
+| `0x1b8f4` | `vCheckLoad` | `20 78 07 f0 4e d0` | `movea.l $07F0,a0` / `jmp (a0)` |
+| `0x5b78` | `GetDevBase` | `02 81 00 ff ff ff` | `andi.l #$00FFFFFF,d1` — the 24-bit strip |
+| `0x9bc4` | Level-1 dispatcher | `70 7f c0 29 1a 00 c0 29 1c 00` | `moveq #$7F,d0` / `and.b $1A00(a1),d0` / `and.b $1C00(a1),d0` — IFR masked against IER |
+| `0xa296` | 60 Hz handler | `52 b8 01 6a 13 7c 00 02` | `addq.l #1,Ticks` / `move.b #2,$1A00(a1)` |
+| `0xb2c6a` | `InitADB` VIA write | `11 7c 00 84 1c 00 4e 75` | `move.b #$84,$1C00(a0)` / `rts` |
+| `0xb2d2e` | `InitADB` state wait | `c2 11 0c 01 00 30 66` | `and.b (a1),d1` / `cmpi.b #$30,d1` / `bne.s` |
+
+Two of these are worth noting.
+
+`0x1b8f4` decodes to **`movea.l $07F0,a0` / `jmp (a0)`** — the ROM's `vCheckLoad`
+already dispatches through the `jCheckLoad` vector. Cockatrice overwrites those
+six bytes with a jump to a stub which then does `movea.l $07f0,a0` / `jsr (a0)`
+itself. Writing our stub address into `$07F0` and leaving the ROM's own indirect
+jump alone would achieve the same thing through the documented mechanism (§3.1).
+
+`0xb2d2e` is `cmpi.b #$30,d1` — the state-3 test from
+`$SM/OS/ADBMgr/ADBMgrPatch.a:166-174`, independently confirming that mapping.
+
+`0xa662` (the pre-ROM22 `InitADB` branch) is not verified: it is only reached
+when the word at `0xa8a8` is non-zero, which is not the case for any ROM
+currently exercised, so there is no known-good byte pattern to check against.
+
+### 5.5 `patch_rom_classic()`
 
 rom_patches.cpp:792-957 is **entirely hard-coded offsets with no verification and
 no failure path**. Apple's equivalents — the RAM patch files that a System 7.1
