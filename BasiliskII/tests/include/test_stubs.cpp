@@ -143,8 +143,16 @@ void FlushCodeCache(void *start, uint32 size)
 	cpu_engine_invalidate_code(Host2MacAddr((uint8 *)start), size);
 }
 
+/*
+ * Slot ROM stub: the real InstallSlotROM() in slot_rom.cpp needs the video
+ * subsystem, which these tests do not bring up. Report the offset the real one
+ * would use (tail of the ROM image) so the patch manifest stays meaningful.
+ */
+uint32 SlotROMOffset = 0;
+
 bool InstallSlotROM(void)
 {
+	SlotROMOffset = ROMSize;
 	return true;
 }
 

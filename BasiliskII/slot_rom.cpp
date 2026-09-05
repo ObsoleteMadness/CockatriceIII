@@ -39,6 +39,9 @@
 // Temporary buffer for slot ROM
 static uint8 srom[4096];
 
+// ROM offset the declaration ROM was copied to (see slot_rom.h)
+uint32 SlotROMOffset = 0;
+
 // Index in srom
 static uint32 p;
 
@@ -402,6 +405,7 @@ bool InstallSlotROM(void)
 	srom[p - 9] = crc;
 
 	// Copy slot ROM to Mac ROM
-	memcpy(ROMBaseHost + ROMSize - p, srom, p);
+	SlotROMOffset = ROMSize - p;
+	memcpy(ROMBaseHost + SlotROMOffset, srom, p);
 	return true;
 }

@@ -23,4 +23,11 @@
 
 extern bool InstallSlotROM(void);
 
+/*
+ *  ROM offset the synthesised declaration ROM was copied to, set by
+ *  InstallSlotROM(). It is placed at the tail of the ROM image, so this is
+ *  ROMSize minus the generated size. 0 before InstallSlotROM() runs.
+ */
+extern uint32 SlotROMOffset;
+
 #endif
