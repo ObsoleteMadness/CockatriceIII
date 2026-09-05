@@ -11,6 +11,17 @@ WARNINGS = -Wall -Wextra -Wno-unused -g
 CFLAGS = $(WARNINGS) -Wno-deprecated-non-prototype
 CXXFLAGS = $(WARNINGS) -Wno-deprecated-declarations -Wno-format -Wno-bitwise-op-parentheses -std=c++17
 
+# ASAN=1 builds the suite with AddressSanitizer + UBSan. The resource and ROM
+# patch code writes through raw pointers into buffers sized at runtime, so
+# out-of-bounds writes and unsigned-underflow scans are the failure mode these
+# tests exist to catch; a plain build can miss them entirely.
+ifeq ($(ASAN),1)
+  SANFLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
+  CFLAGS += $(SANFLAGS)
+  CXXFLAGS += $(SANFLAGS)
+  LDFLAGS += $(SANFLAGS)
+endif
+
 ARCH ?= $(shell uname -m)
 ifeq ($(ARCH),x86_64)
   TARGET_ARCH = -arch x86_64
@@ -140,6 +151,8 @@ $(OBJ_DIR)/macos_util.o: ../macos_util.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/rom_patches.o: ../rom_patches.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OBJ_DIR)/rsrc_patches.o: ../rsrc_patches.cpp | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/musashi_glue.o: $(MUSASHI)/musashi_glue.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/memory_musashi.o: $(MUSASHI)/memory_musashi.cpp | $(OBJ_DIR)
@@ -165,6 +178,7 @@ CORE_OBJS = \
 	$(OBJ_DIR)/memory.o $(OBJ_DIR)/cpu_glue.o $(OBJ_DIR)/cpu_engine.o \
 	$(OBJ_DIR)/emul_op.o $(OBJ_DIR)/toolbox_traps.o $(OBJ_DIR)/scc.o $(OBJ_DIR)/scsi.o $(OBJ_DIR)/scsi_dummy.o \
 	$(OBJ_DIR)/disk.o $(OBJ_DIR)/macos_util.o $(OBJ_DIR)/rom_patches.o \
+	$(OBJ_DIR)/rsrc_patches.o \
 	$(OBJ_DIR)/musashi_glue.o $(OBJ_DIR)/memory_musashi.o \
 	$(OBJ_DIR)/amiberry_glue.o $(OBJ_DIR)/m68k_rs_glue.o $(OBJ_DIR)/jit_host_darwin.o \
 	$(OBJ_DIR)/m68kcpu.o $(OBJ_DIR)/m68kops.o $(OBJ_DIR)/m68kdasm.o $(OBJ_DIR)/softfloat.o
@@ -244,7 +258,7 @@ $(OBJ_DIR)/uae_cputest: $(CPUTEST_OBJS) $(OBJ_DIR)/cputestgen.ini | $(OBJ_DIR)
 uae_cputest: $(OBJ_DIR)/uae_cputest
 
 BASILISK_TESTS = basilisk_memory_test basilisk_engine_test basilisk_emulop_test \
-	basilisk_patches_test basilisk_scsi_test basilisk_scc_test basilisk_disk_test
+	basilisk_patches_test basilisk_rsrcpatch_test basilisk_scsi_test basilisk_scc_test basilisk_disk_test
 
 $(OBJ_DIR)/basilisk_memory_test.o: basilisk/basilisk_memory_test.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -253,6 +267,8 @@ $(OBJ_DIR)/basilisk_engine_test.o: basilisk/basilisk_engine_test.cpp | $(OBJ_DIR
 $(OBJ_DIR)/basilisk_emulop_test.o: basilisk/basilisk_emulop_test.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/basilisk_patches_test.o: basilisk/basilisk_patches_test.cpp | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OBJ_DIR)/basilisk_rsrcpatch_test.o: basilisk/basilisk_rsrcpatch_test.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/basilisk_scsi_test.o: basilisk/basilisk_scsi_test.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -271,6 +287,9 @@ basilisk_emulop_test: $(OBJ_DIR)/basilisk_emulop_test.o $(OBJ_DIR)/libcockatrice
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
 basilisk_patches_test: $(OBJ_DIR)/basilisk_patches_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
+	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
+basilisk_rsrcpatch_test: $(OBJ_DIR)/basilisk_rsrcpatch_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
 basilisk_scsi_test: $(OBJ_DIR)/basilisk_scsi_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)

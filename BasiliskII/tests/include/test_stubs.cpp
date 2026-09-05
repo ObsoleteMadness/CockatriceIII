@@ -113,6 +113,9 @@ int32 AudioDispatch(uint32 params, uint32 ti)
 }
 void AudioInterrupt(void) {}
 
+/* Written into 'thng' -16563 by CheckLoad(); audio.cpp is not linked here. */
+uint32 audio_component_flags = 0;
+
 int16 ExtFSComm(uint16 code, uint32 param, uint32 dce) { (void)code; (void)param; (void)dce; return 0; }
 int16 ExtFSHFS(uint32 pb, uint16 trap, uint32 dce, uint32 a0, int16 d0)
 {
@@ -127,13 +130,7 @@ void ExtFSInit(void) {}
 void ExtFSExit(void) {}
 
 void PutScrap(uint32 type, void *data, int size) { (void)type; (void)data; (void)size; }
-void CheckLoad(uint32 type, int16 id, uint8 *p, uint32 size)
-{
-	(void)type;
-	(void)id;
-	(void)p;
-	(void)size;
-}
+/* CheckLoad() now comes from the real rsrc_patches.cpp -- see CORE_OBJS. */
 void ClearInterruptFlag(uint32 flag) { InterruptFlags &= ~flag; }
 void SetInterruptFlag(uint32 flag) { InterruptFlags |= flag; }
 void idle_wait(void) {}
