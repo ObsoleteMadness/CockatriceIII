@@ -138,6 +138,16 @@ extern void flush_icache_range(uaecptr addr, uae_u32 length);
 #endif
 extern void alloc_cache(void);
 extern void compile_block(cpu_history* pc_hist, int blocklen, int totcyles);
+#ifdef JIT
+/*
+ * Compiles DBF Dn,*-2 as a helper that finishes the spin and credits
+ * Mac cycles (TimeDBRA Type 4; docs/quadra-32bit-boot-crashes.md).
+ *
+ * Arguments:
+ *   srcreg: Data-register index (0–7) compiled as the DBF counter.
+ */
+extern void compile_dbf_tight_delay(int srcreg);
+#endif
 extern int check_for_cache_miss(void);
 
 #define scaled_cycles(x) (currprefs.m68k_speed<0?(((x)/SCALE)?(((x)/SCALE<MAXCYCLES?((x)/SCALE):MAXCYCLES)):1):(x))

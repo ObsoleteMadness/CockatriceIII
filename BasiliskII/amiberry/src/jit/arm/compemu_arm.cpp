@@ -15427,8 +15427,15 @@ uae_u32 REGPARAM2 op_51c8_0_comp_ff(uae_u32 opcode) {
 	uae_u32 m68k_pc_offset_thisinst = m68k_pc_offset;
 	m68k_pc_offset += 2;
 	int src = srcreg;
+	/* Peek displacement: TimeDBRA uses DBF D0,*-2 (docs/quadra-32bit-boot-crashes.md). */
+	uae_s16 disp = (uae_s16)comp_get_iword((m68k_pc_offset += 2) - 2);
+	if (disp == -2) {
+		compile_dbf_tight_delay(src);
+		if (m68k_pc_offset > SYNC_PC_OFFSET) sync_m68k_pc();
+		return 0;
+	}
 	int offs = alloc_scratch();
-	mov_l_ri(offs, (uae_s32) (uae_s16) comp_get_iword((m68k_pc_offset += 2) - 2));
+	mov_l_ri(offs, (uae_s32)disp);
 	sub_l_ri(offs, m68k_pc_offset - m68k_pc_offset_thisinst - 2);
 	arm_ADD_l_ri(offs, (uintptr) comp_pc_p);
 	arm_ADD_l_ri(offs, m68k_pc_offset);
@@ -42443,8 +42450,15 @@ uae_u32 REGPARAM2 op_51c8_0_comp_nf(uae_u32 opcode) {
 	uae_u32 m68k_pc_offset_thisinst = m68k_pc_offset;
 	m68k_pc_offset += 2;
 	int src = srcreg;
+	/* Peek displacement: TimeDBRA uses DBF D0,*-2 (docs/quadra-32bit-boot-crashes.md). */
+	uae_s16 disp = (uae_s16)comp_get_iword((m68k_pc_offset += 2) - 2);
+	if (disp == -2) {
+		compile_dbf_tight_delay(src);
+		if (m68k_pc_offset > SYNC_PC_OFFSET) sync_m68k_pc();
+		return 0;
+	}
 	int offs = alloc_scratch();
-	mov_l_ri(offs, (uae_s32) (uae_s16) comp_get_iword((m68k_pc_offset += 2) - 2));
+	mov_l_ri(offs, (uae_s32)disp);
 	sub_l_ri(offs, m68k_pc_offset - m68k_pc_offset_thisinst - 2);
 	arm_ADD_l_ri(offs, (uintptr) comp_pc_p);
 	arm_ADD_l_ri(offs, m68k_pc_offset);

@@ -20111,7 +20111,20 @@ uae_u32 REGPARAM2 op_51c0_40_ff(uae_u32 opcode)
 }
 /* 2 0,0   */
 
-/* DBcc.W Dn,#<data>.W (F) */
+/* DBcc.W Dn,#<data>.W (F)
+ *
+ * Interprets DBF Dn,#disp. TimeDBRA calibration uses DBF D0,*-2;
+ * finishing that spin in one host microsecond makes RmvTime remaining
+ * match the Prime/Rmv overhead pair, so DIVU.W D5,D1 raises vector 5
+ * (docs/quadra-32bit-boot-crashes.md). The *-2 path finishes the loop
+ * in one step and credits (count+1)*10 clocks so emulated_ns is tens of µs.
+ *
+ * Arguments:
+ *   opcode: 0x51C8 + Dn (DBF).
+ *
+ * Returns:
+ *   0 (cycle credit is written to currcycle by the helper).
+ */
 uae_u32 REGPARAM2 op_51c8_40_ff(uae_u32 opcode)
 {
 	uae_u32 real_opcode = opcode;
@@ -20121,6 +20134,11 @@ uae_u32 REGPARAM2 op_51c8_40_ff(uae_u32 opcode)
 	uaecptr oldpc = m68k_getpc();
 	if (offs & 1) {
 		exception3_read_prefetch(opcode, oldpc + (uae_s32)offs + 2);
+		return 0;
+	}
+	if (offs == -2) {
+		amiberry_dbf_delay_loop((int)srcreg);
+		m68k_setpc_j(oldpc + 4);
 		return 0;
 	}
 	if (!cctrue(1)) {

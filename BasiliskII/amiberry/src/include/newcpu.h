@@ -854,6 +854,17 @@ extern int cpu_sleep_millis(int ms);
 extern void cpu_change(int newmodel);
 extern void cpu_fallback(int mode);
 
+/*
+ * Finishes a DBF Dn,*-2 delay loop in one step and credits
+ * (count+1)*10 68040 clocks. TimeDBRA calibration DIVU.W D5,D1
+ * raises vector 5 when that spin shares a host microsecond with
+ * Prime/Rmv overhead (docs/quadra-32bit-boot-crashes.md).
+ *
+ * Arguments:
+ *   srcreg: Data-register index (0–7) holding the remaining count.
+ */
+void amiberry_dbf_delay_loop(int srcreg);
+
 extern void fill_prefetch(void);
 extern void fill_prefetch_020_ntx(void);
 extern void fill_prefetch_030_ntx(void);

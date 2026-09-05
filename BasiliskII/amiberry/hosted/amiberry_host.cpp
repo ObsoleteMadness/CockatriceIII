@@ -216,6 +216,37 @@ int do_cycles_cck(int cycles)
 	return cycles;
 }
 
+/*
+ * Collapses DBF Dn,*-2 into one step and credits the full spin.
+ *
+ * TimeDBRA calibration (docs/quadra-32bit-boot-crashes.md) does
+ * MOVE.W $0D00,D0 then DBF D0,*-2 four times between PrimeTime and
+ * RmvTime. Direct-RAM JIT finishes those ~400 decrements in the same
+ * host microsecond as the overhead-only Prime/Rmv pair, so elapsed
+ * minus overhead is 0 and DIVU.W D5,D1 raises vector 5. Credit
+ * immediately via do_cycles_slow so currcycle is visible even when
+ * the JIT countdown (pissoff) has not expired.
+ *
+ * Arguments:
+ *   srcreg: Data-register index (0–7). Low word is the remaining
+ *           count; after return it is 0xFFFF as a finished DBF.
+ */
+void amiberry_dbf_delay_loop(int srcreg)
+{
+	uae_u32 d;
+	uae_u16 src;
+	int cycles;
+
+	/* Read the live 16-bit count and leave the high word untouched. */
+	d = m68k_dreg(regs, srcreg);
+	src = (uae_u16)d;
+	/* DBF from N through 0 is N+1 taken iterations, ending at 0xFFFF. */
+	m68k_dreg(regs, srcreg) = (d & ~0xffffu) | 0xffffu;
+	/* ~10 clocks per taken 680x0 DBF; four TimeDBRA=100 spins become ~100 µs. */
+	cycles = (int)(((uae_u32)src + 1u) * 10u * (uae_u32)CYCLE_UNIT);
+	do_cycles_slow(cycles);
+}
+
 void events_schedule(void) {}
 void events_reset_syncline(void) {}
 void events_reset_synchandler(void) {}
@@ -719,10 +750,9 @@ int amiberry_cpu_init(int cpu_type, int fpu_type, int jit, uint32_t cache_kb, in
 	 * burst (jnf_MVMEL_*) ran while jit_n_addr_bank_unsafe was still 0 and
 	 * clobbered the RTS slot. That guard is on below; SCC banks keep both
 	 * jit flags; ROM banks keep jit_write_flag so helper stores still drop. */
-	/* Real native word/long/naddr (special_mem_default=0, Mac banks).
-	 * Byte-direct still RTS-pops TheZone at ~14 ticks, even with A7
-	 * bytes on helpers. */
-	currprefs.comptrustbyte = 1;
+	/* Byte reads native; byte writes native only for (A0–A6). Scratch
+	 * EA / A7 / D-reg stores stay on helpers (TheZone at ~14 ticks). */
+	currprefs.comptrustbyte = 0;
 	currprefs.comptrustword = 0;
 	currprefs.comptrustlong = 0;
 	currprefs.comptrustnaddr = 0;
@@ -947,10 +977,12 @@ int amiberry_cpu_nested_quit_requested(void)
 void amiberry_cpu_execute_slice(void)
 {
 	unset_special(SPCFLAG_MODE_CHANGE);
-	/* Reload the JIT chain budget; the previous slice may have left pissoff
-	 * at -1 after hitting kSliceLimit. */
+	/* Fold in-flight JIT countdown before reloading the chain budget.
+	 * Resetting pissoff alone made currcycle+consumed shrink, so a
+	 * Time Manager RmvTime after MODE_CHANGE saw a smaller emu_ns than
+	 * PrimeTime (elapsed-overhead 0 → TimeDBRA DIVU vector 5). */
 	if (currprefs.cachesize && pissoff_value > 0)
-		pissoff = pissoff_value;
+		currcycle += (evt_t)jit_consumed_cycles(true);
 	m68k_run();
 }
 
@@ -1028,18 +1060,18 @@ void amiberry_cpu_set_sr(uint16_t sr)
 /*
  * Maps Amiberry currcycle onto 40 MHz 68040 nanoseconds.
  *
- * Includes in-flight JIT countdown (compiled blocks that have not yet
- * returned through do_nothing), so PrimeTime/RmvTime see DBF work that
- * still sits in pissoff.
+ * Folds in-flight JIT countdown into currcycle so the value is monotonic
+ * across slice reloads. PrimeTime/RmvTime then see compiled TimeDBRA DBF
+ * work even when wall-clock Prime→Rmv is 0 µs (direct-RAM JIT).
  *
  * Returns:
- *   ((currcycle + jit_consumed) * 25) / CYCLE_UNIT, or 0 if nothing has run.
+ *   (currcycle * 25) / CYCLE_UNIT after the fold, or 0 if nothing has run.
  */
 uint64_t amiberry_cpu_emulated_ns(void)
 {
-	evt_t total = currcycle + (evt_t)jit_consumed_cycles(false);
+	currcycle += (evt_t)jit_consumed_cycles(true);
 
-	if (total <= 0)
+	if (currcycle <= 0)
 		return 0;
-	return ((uint64_t)total * 25ull) / (uint64_t)CYCLE_UNIT;
+	return ((uint64_t)currcycle * 25ull) / (uint64_t)CYCLE_UNIT;
 }

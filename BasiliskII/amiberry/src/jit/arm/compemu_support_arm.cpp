@@ -2418,6 +2418,26 @@ static void flush(int save_regs)
     }
 }
 
+/*
+ * Compiles DBF Dn,*-2 as a C helper that finishes the loop and
+ * credits Mac cycles. Native compiled DBF is a tight host decrement
+ * that does not touch currcycle until the endblock budget expires,
+ * which is the Type 4 TimeDBRA path on direct-RAM JIT
+ * (docs/quadra-32bit-boot-crashes.md).
+ *
+ * Arguments:
+ *   srcreg: Data-register vreg (0–7) holding the remaining count.
+ */
+void compile_dbf_tight_delay(int srcreg)
+{
+    /* Write live D-regs to regs.regs[] so the helper sees the current count. */
+    flush(1);
+    compemu_raw_mov_l_ri(REG_PAR1, (uae_u32)srcreg);
+    compemu_raw_call((uintptr)amiberry_dbf_delay_loop);
+    /* Helper stored 0xFFFF in Dn.W; drop the stale host copy. */
+    forget_about(srcreg);
+}
+
 int alloc_scratch(void)
 {
     for (int i = 0; i < SCRATCH_REGS; ++i) {
@@ -2521,9 +2541,10 @@ static inline void writemem_special(int address, int source, int offset)
 
 void writebyte(int address, int source)
 {
-    /* A7 byte traffic stays on helpers: 68000 MOVE.B ±(SP) is word-sized
-     * and the unused even byte sits next to return addresses. */
-    if ((special_mem & S_WRITE) || distrust_byte() || jit_n_addr_unsafe || address == 15)
+    /* Native (A0–A6) byte stores survived 15s. Scratch-EA and A7 stores
+     * still TheZone-bomb (same RTS-to-0x2000 signature). */
+    if ((special_mem & S_WRITE) || distrust_byte() || jit_n_addr_unsafe
+        || address < 8 || address > 14)
         writemem_special(address, source, SIZEOF_VOID_P * 5);
     else
         writemem_real(address, source, 1);
