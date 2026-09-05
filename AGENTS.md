@@ -22,6 +22,13 @@ interpreter **Type 4** (zero divide in TimeDBRA calibration), read
 [docs/quadra-32bit-boot-crashes.md](docs/quadra-32bit-boot-crashes.md). Those
 are EmulOp ABI and Time Manager glue, not ROM/SCSI patch bugs.
 
+When changing, extending or debugging a specific ROM/resource patch, read
+[docs/rom-patches-vs-supermario.md](docs/rom-patches-vs-supermario.md). It maps
+each patch in `rom_patches.cpp` / `rsrc_patches.cpp` onto the Apple SuperMario ROM
+source that justifies it (`~/Source/supermario`), decodes the `lpch`/`ptch`
+resource IDs, and records the documented vectors (`jCheckLoad` `$07F0`, `Lvl1DT`
+`$192`, `_SetTrapAddress`) that several patches currently bypass.
+
 When debugging CPU engine opcode battery failures or `Execute68k` / `0x7100`
 handling, read [docs/cpu-engine-opcode-fixes.md](docs/cpu-engine-opcode-fixes.md)
 for the UAE and Emu68 fixes already landed (syn68k is still open).
