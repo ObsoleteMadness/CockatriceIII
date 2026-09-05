@@ -359,6 +359,12 @@ static void musashi_execute_68k(uint32 addr, struct M68kRegisters *r)
 		r->a[i] = m68k_get_reg(NULL, (m68k_register_t)(M68K_REG_A0 + i));
 }
 
+/* Live guest PC. Musashi has already advanced it past the trapping word. */
+static uint32 musashi_get_pc(void)
+{
+	return (uint32)m68k_get_reg(NULL, M68K_REG_PC);
+}
+
 // Musashi CPUEngine dispatch table
 extern const CPUEngine musashi_cpu_engine = {
 	"musashi",
@@ -376,5 +382,6 @@ extern const CPUEngine musashi_cpu_engine = {
 	musashi_trigger_nmi,
 	musashi_intlev,
 	nullptr,
-	nullptr
+	nullptr,
+	musashi_get_pc
 };

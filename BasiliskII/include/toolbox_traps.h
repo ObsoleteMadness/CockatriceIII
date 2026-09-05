@@ -322,6 +322,29 @@ bool ToolboxTrap_Unregister(uint16 trap_num);
 void ToolboxTrap_InstallAll(void);
 
 /*
+ * Points the registry at a caller-supplied trampoline pool.
+ *
+ * ToolboxTrap_InstallAll() gets the pool from NewPtrSysClear, which needs a
+ * live Mac heap. This separates "where the pool is" from "how it was obtained"
+ * so the dispatcher can be exercised offline.
+ *
+ * Arguments:
+ *   base: Guest address of at least 128 * 12 bytes of RAM, or 0 to forget the
+ *         current pool.
+ */
+void ToolboxTrap_SetStubPool(uint32 base);
+
+/*
+ * Writes one 12-byte trampoline into guest RAM (see the layout in the .cpp).
+ *
+ * Arguments:
+ *   addr:          slot address inside the pool.
+ *   trap_num:      A-line trap this trampoline stands in for.
+ *   original_addr: address the trap resolved to before hooking.
+ */
+void ToolboxTrap_WriteTrampoline(uint32 addr, uint16 trap_num, uint32 original_addr);
+
+/*
  * Central dispatcher invoked from EmulOp() when M68K_EMUL_OP_TOOLBOX_DISPATCH (0x7130) executes.
  *
  * Arguments:

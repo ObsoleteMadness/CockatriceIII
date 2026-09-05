@@ -677,6 +677,14 @@ static void m68k_rs_engine_execute_68k(uint32 addr, struct M68kRegisters *r)
 		r->a[i] = m68k_rs_get_reg(s_cpu, (M68kRsReg)(M68K_RS_REG_A0 + i));
 }
 
+/* Live guest PC from the Rust core, or 0 before the CPU is created. */
+static uint32 m68k_rs_engine_get_pc(void)
+{
+	if (!s_cpu)
+		return 0;
+	return (uint32)m68k_rs_get_reg(s_cpu, M68K_RS_REG_PC);
+}
+
 extern const CPUEngine m68k_rs_cpu_engine = {
 	"m68k_rs",
 	"m68k-rs (Rust interpreter)",
@@ -693,5 +701,6 @@ extern const CPUEngine m68k_rs_cpu_engine = {
 	m68k_rs_engine_trigger_nmi,
 	m68k_rs_engine_intlev,
 	nullptr,
-	nullptr
+	nullptr,
+	m68k_rs_engine_get_pc
 };

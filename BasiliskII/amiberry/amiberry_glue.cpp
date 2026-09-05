@@ -313,6 +313,12 @@ static void winuae_execute_68k(uint32 addr, struct M68kRegisters *r)
 		r->a[i] = amiberry_cpu_get_reg(i + 8);
 }
 
+/* Live guest PC, from the UAE core's own accessor. */
+static uint32 winuae_get_pc(void)
+{
+	return (uint32)amiberry_cpu_get_pc();
+}
+
 extern const CPUEngine amiberry_cpu_engine = {
 	"uae",
 	"Amiberry 680x0 Engine (interpreter + ARM64/x86-64 JIT)",
@@ -329,5 +335,6 @@ extern const CPUEngine amiberry_cpu_engine = {
 	winuae_trigger_nmi,
 	winuae_intlev,
 	winuae_invalidate_code,
-	winuae_emulated_ns
+	winuae_emulated_ns,
+	winuae_get_pc
 };

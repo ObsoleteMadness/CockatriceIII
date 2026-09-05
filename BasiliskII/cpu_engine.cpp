@@ -699,6 +699,18 @@ uint64 cpu_engine_emulated_ns(void)
 }
 
 /*
+ * Live guest program counter from the active engine, or 0 if it has none.
+ *
+ * See the header for why the exact value is not a precise instruction pointer.
+ */
+uint32 cpu_engine_get_pc(void)
+{
+	if (s_active_engine && s_active_engine->get_pc)
+		return s_active_engine->get_pc();
+	return 0;
+}
+
+/*
  * Returns the total number of registered CPU engines.
  */
 int GetRegisteredCPUEngineCount(void)

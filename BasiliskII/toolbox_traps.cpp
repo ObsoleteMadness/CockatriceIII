@@ -29,7 +29,6 @@
 #include "emul_op.h"
 #include "main.h"
 #include "macos_util.h"
-#include "m68k.h"
 #include "prefs.h"
 #include "toolbox_traps.h"
 
@@ -358,6 +357,79 @@ bool ToolboxTrap_Unregister(uint16 trap_num)
 }
 
 /*
+ * Points the registry at a caller-supplied trampoline pool.
+ *
+ * ToolboxTrap_InstallAll() normally gets the pool from NewPtrSysClear, which
+ * needs a live Mac heap. Separating "where the pool is" from "how it was
+ * obtained" lets the dispatcher be exercised offline -- see
+ * BasiliskII/tests/basilisk/basilisk_toolbox_test.cpp, which is the only thing
+ * that checks stub identification on all three CPU engines.
+ *
+ * Arguments:
+ *   base: Macintosh address of at least MAX_TOOLBOX_TRAPS * TRAMPOLINE_SIZE
+ *         bytes of guest RAM, or 0 to forget the current pool.
+ */
+void ToolboxTrap_SetStubPool(uint32 base)
+{
+	s_stub_pool_base = base;
+	s_stub_pool_cursor = base;
+}
+
+/*
+ * Writes one 12-byte trampoline into guest RAM and invalidates the JIT cache
+ * across it.
+ *
+ * Layout, which stub_addr_from_pc() and ToolboxTrap_Dispatch() both depend on:
+ *   [0..1]  M68K_EMUL_OP_TOOLBOX_DISPATCH -- must be first, so any PC the
+ *           engine reports still falls inside this slot
+ *   [2..3]  move.l a1,a7   (stack the handler chose)
+ *   [4..5]  jmp (a0)       (ROM routine, or the caller for a replacement)
+ *   [6..7]  trap number
+ *   [8..11] original trap address
+ *
+ * Arguments:
+ *   addr:          slot address inside the pool.
+ *   trap_num:      A-line trap this trampoline stands in for.
+ *   original_addr: address the trap resolved to before hooking.
+ */
+void ToolboxTrap_WriteTrampoline(uint32 addr, uint16 trap_num, uint32 original_addr)
+{
+	WriteMacInt16(addr + 0, (uint16)M68K_EMUL_OP_TOOLBOX_DISPATCH);
+	WriteMacInt16(addr + 2, (uint16)OP_MOVE_L_A1_A7);
+	WriteMacInt16(addr + 4, (uint16)OP_JMP_A0);
+	WriteMacInt16(addr + 6, trap_num);
+	WriteMacInt32(addr + 8, original_addr);
+	cpu_engine_invalidate_code(addr, TRAMPOLINE_SIZE);
+
+	/*
+	 * Keep the invariant stub_addr_from_pc() relies on: the cursor is one past
+	 * the highest slot ever written. alloc_stub_slot() has usually moved it
+	 * there already, so this only matters when a caller places a trampoline
+	 * itself.
+	 */
+	if (addr + TRAMPOLINE_SIZE > s_stub_pool_cursor)
+		s_stub_pool_cursor = addr + TRAMPOLINE_SIZE;
+}
+
+/*
+ * Hands out the next free slot in the trampoline pool.
+ *
+ * Returns:
+ *   Slot address, or 0 if the pool is exhausted. The pool is sized for
+ *   MAX_TOOLBOX_TRAPS and ToolboxTrap_Register() refuses beyond that, so
+ *   exhaustion means the pool was set smaller than the module expects.
+ */
+static uint32 alloc_stub_slot(void)
+{
+	uint32 limit = s_stub_pool_base + MAX_TOOLBOX_TRAPS * TRAMPOLINE_SIZE;
+	if (!s_stub_pool_base || s_stub_pool_cursor + TRAMPOLINE_SIZE > limit)
+		return 0;
+	uint32 slot = s_stub_pool_cursor;
+	s_stub_pool_cursor += TRAMPOLINE_SIZE;
+	return slot;
+}
+
+/*
  * Allocates guest system memory for the trap trampoline pool and installs all registered hooks.
  * Called during boot from InstallDrivers() or PatchAfterStartup().
  */
@@ -379,8 +451,7 @@ void ToolboxTrap_InstallAll(void)
 		M68kRegisters r;
 		r.d[0] = pool_size;
 		Execute68kTrap(0xa71e, &r); // NewPtrSysClear()
-		s_stub_pool_base = r.a[0];
-		s_stub_pool_cursor = s_stub_pool_base;
+		ToolboxTrap_SetStubPool(r.a[0]);
 
 		if (!s_stub_pool_base) {
 			printf("[TOOLBOX-TRAP] FATAL: Failed to allocate guest stub pool memory!\n");
@@ -404,23 +475,15 @@ void ToolboxTrap_InstallAll(void)
 		desc.original_addr = r_get.a[0];
 
 		// 2. Assign trampoline memory location
-		desc.stub_addr = s_stub_pool_cursor;
-		s_stub_pool_cursor += TRAMPOLINE_SIZE;
+		desc.stub_addr = alloc_stub_slot();
+		if (!desc.stub_addr) {
+			printf("[TOOLBOX-TRAP] FATAL: trampoline pool exhausted at trap 0x%04X\n",
+			       desc.trap_num);
+			break;
+		}
 
-		// 3. Write 12-byte trampoline binary stub into guest RAM:
-		//    [0..1]: M68K_EMUL_OP_TOOLBOX_DISPATCH (0x7130)
-		//    [2..3]: move.l a1, a7 (0x2E49)
-		//    [4..5]: jmp (a0) (0x4ED0)
-		//    [6..7]: 16-bit Trap Opcode
-		//    [8..11]: 32-bit Original Trap Address
-		WriteMacInt16(desc.stub_addr + 0, (uint16)M68K_EMUL_OP_TOOLBOX_DISPATCH);
-		WriteMacInt16(desc.stub_addr + 2, (uint16)OP_MOVE_L_A1_A7);
-		WriteMacInt16(desc.stub_addr + 4, (uint16)OP_JMP_A0);
-		WriteMacInt16(desc.stub_addr + 6, desc.trap_num);
-		WriteMacInt32(desc.stub_addr + 8, desc.original_addr);
-
-		// Invalidate JIT translation cache across the written stub
-		cpu_engine_invalidate_code(desc.stub_addr, TRAMPOLINE_SIZE);
+		// 3. Write the trampoline into guest RAM
+		ToolboxTrap_WriteTrampoline(desc.stub_addr, desc.trap_num, desc.original_addr);
 
 		// 4. Update Mac OS trap table entry to point to our trampoline stub
 		M68kRegisters r_set;
@@ -439,6 +502,42 @@ void ToolboxTrap_InstallAll(void)
 }
 
 /*
+ * Identifies the trampoline that a guest PC is executing inside.
+ *
+ * The dispatcher has to know which of the hooked traps it was entered for, and
+ * the only thing distinguishing them at that moment is where the EmulOp word
+ * sits in memory. Recovering that as "PC - 2" is wrong on two of the three
+ * engines: it read Musashi's PC register directly, so under UAE or m68k-rs it
+ * saw a stale value, decoded a bogus trap number and then jumped through a
+ * garbage A0.
+ *
+ * Slot arithmetic over the trampoline pool fixes both halves. The engine is
+ * asked for its own PC through cpu_engine_get_pc(), and the pool layout makes
+ * the answer insensitive to how far that PC has advanced: every trampoline
+ * occupies its own TRAMPOLINE_SIZE-byte slot, and the EmulOp word is in the
+ * first two bytes of it, so PC-at-the-opcode and PC-past-the-opcode land in
+ * the same slot either way.
+ *
+ * Arguments:
+ *   pc: Guest PC reported by the active engine.
+ *
+ * Returns:
+ *   Trampoline slot address, or 0 if the PC is not inside the pool.
+ */
+static uint32 stub_addr_from_pc(uint32 pc)
+{
+	/*
+	 * Bound against the cursor, not s_trap_count: unregistering a trap shrinks
+	 * the table without reclaiming its slot, so slots handed out is the only
+	 * safe upper limit.
+	 */
+	if (!s_stub_pool_base || pc < s_stub_pool_base || pc >= s_stub_pool_cursor)
+		return 0;
+	uint32 index = (pc - s_stub_pool_base) / TRAMPOLINE_SIZE;
+	return s_stub_pool_base + index * TRAMPOLINE_SIZE;
+}
+
+/*
  * Central dispatcher invoked from EmulOp() when M68K_EMUL_OP_TOOLBOX_DISPATCH (0x7130) executes.
  *
  * Arguments:
@@ -446,9 +545,18 @@ void ToolboxTrap_InstallAll(void)
  */
 void ToolboxTrap_Dispatch(struct M68kRegisters *r)
 {
-	// In the CPU core, PC has advanced 2 bytes past the 0x7130 opcode, pointing to stub + 2
-	uint32 pc = (uint32)m68k_get_reg(NULL, M68K_REG_PC);
-	uint32 stub_addr = pc - 2;
+	uint32 stub_addr = stub_addr_from_pc(cpu_engine_get_pc());
+	if (!stub_addr) {
+		/*
+		 * Nothing sane to pass through to: A0 would be garbage and the stub
+		 * ends in "jmp (a0)". Send control to the stub's own rts-equivalent by
+		 * leaving A0 alone is not safe either, so refuse loudly instead.
+		 */
+		printf("[TOOLBOX-TRAP] FATAL: dispatch from PC 0x%08X, outside the stub pool\n",
+		       cpu_engine_get_pc());
+		fflush(stdout);
+		return;
+	}
 
 	// Extract metadata stored in trampoline footer
 	uint16 trap_num = (uint16)ReadMacInt16(stub_addr + 6);

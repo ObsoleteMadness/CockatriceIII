@@ -259,7 +259,7 @@ uae_cputest: $(OBJ_DIR)/uae_cputest
 
 BASILISK_TESTS = basilisk_memory_test basilisk_engine_test basilisk_emulop_test \
 	basilisk_patches_test basilisk_rsrcpatch_test basilisk_patchguard_test \
-	basilisk_stubabi_test basilisk_scsi_test basilisk_scc_test basilisk_disk_test
+	basilisk_stubabi_test basilisk_toolbox_test basilisk_scsi_test basilisk_scc_test basilisk_disk_test
 
 $(OBJ_DIR)/basilisk_memory_test.o: basilisk/basilisk_memory_test.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -274,6 +274,8 @@ $(OBJ_DIR)/basilisk_patchguard_test.o: basilisk/basilisk_patchguard_test.cpp | $
 $(OBJ_DIR)/basilisk_rsrcpatch_test.o: basilisk/basilisk_rsrcpatch_test.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/basilisk_stubabi_test.o: basilisk/basilisk_stubabi_test.cpp | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OBJ_DIR)/basilisk_toolbox_test.o: basilisk/basilisk_toolbox_test.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/basilisk_scsi_test.o: basilisk/basilisk_scsi_test.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -301,6 +303,9 @@ basilisk_rsrcpatch_test: $(OBJ_DIR)/basilisk_rsrcpatch_test.o $(OBJ_DIR)/libcock
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
 basilisk_stubabi_test: $(OBJ_DIR)/basilisk_stubabi_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
+	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
+basilisk_toolbox_test: $(OBJ_DIR)/basilisk_toolbox_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
 basilisk_scsi_test: $(OBJ_DIR)/basilisk_scsi_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)

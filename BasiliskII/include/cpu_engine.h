@@ -82,6 +82,14 @@ typedef struct CPUEngine {
 	 * guest spin still consumes Mac µs on a fast host interpreter.
 	 */
 	uint64 (*emulated_ns)(void);
+
+	/*
+	 * Optional live guest program counter, for EmulOp handlers that have to
+	 * know where they were called from. Exactly how far the PC has advanced
+	 * past the EmulOp word is an engine-private detail, so callers must not
+	 * depend on it -- see cpu_engine_get_pc(). NULL if unsupported.
+	 */
+	uint32 (*get_pc)(void);
 } CPUEngine;
 
 /*
@@ -275,6 +283,18 @@ uint32 cpu_engine_clamp_sp(uint32 sp);
  * elapsed Mac µs. Engines that leave emulated_ns NULL are unchanged.
  */
 uint64 cpu_engine_emulated_ns(void);
+
+/*
+ * Live guest program counter, or 0 if the active engine cannot report one.
+ *
+ * Called from an EmulOp handler this lands somewhere inside the instruction
+ * that trapped: the three engines do not agree on whether the PC has already
+ * advanced past the EmulOp word, and the JIT may not have committed it at all.
+ * So treat the result as "an address within the currently executing stub", not
+ * as a precise instruction pointer -- ToolboxTrap_Dispatch() uses it to pick a
+ * trampoline slot out of a pool, which tolerates either convention.
+ */
+uint32 cpu_engine_get_pc(void);
 
 /*
  * Writes a 4-byte Execute68kTrap stub: [trap][M68K_EXEC_RETURN] at sp-4.

@@ -44,6 +44,7 @@
 #include "prefs.h"
 #include "emul_op.h"
 #include "menu_bar.h"
+#include "toolbox_traps.h"
 
 #if ENABLE_MON
 #include "mon.h"
@@ -509,6 +510,16 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 			WriteMacInt16(r->a[7] + 20, ExtFSHFS(ReadMacInt32(r->a[7] + 16), ReadMacInt16(r->a[7] + 14), ReadMacInt32(r->a[7] + 10), ReadMacInt32(r->a[7] + 6), ReadMacInt16(r->a[7] + 4)));
 			break;
 #endif
+
+		case M68K_EMUL_OP_TOOLBOX_DISPATCH:	// Modular Toolbox/OS trap hook
+			/*
+			 * Entered from a trampoline installed by ToolboxTrap_InstallAll().
+			 * The dispatcher works out which hooked trap this is from the guest
+			 * PC and leaves A0/A1 for the "move.l a1,a7 / jmp (a0)" that
+			 * follows -- see toolbox_traps.cpp.
+			 */
+			ToolboxTrap_Dispatch(r);
+			break;
 
 		case M68K_EMUL_OP_BLOCK_MOVE:		// BlockMove() replacement
 			memmove(Mac2HostAddr(r->a[1]), Mac2HostAddr(r->a[0]), r->d[0]);

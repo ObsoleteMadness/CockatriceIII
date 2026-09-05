@@ -50,6 +50,14 @@ mask, `BlockMove`'s copy and noErr, and the hand-emulated `rtd` in
 patch landed at the right offset; this says the bytes there behave. Stub offsets
 are read from `GetPatchLog()`, so the two cannot drift apart.
 
+`basilisk_toolbox_test` covers the Toolbox/OS trap trampolines in
+[toolbox_traps.cpp](../toolbox_traps.cpp) — the RAM-trampoline mechanism
+(`_SetToolTrap` / `_SetOSTrapAddress`) that replaces ROM byte patches for
+post-boot traps. It runs every case on all five engine configurations, because
+the one thing the dispatcher must get right — *which* hooked trap it was
+entered for — is derived from the guest PC, and the engines do not agree on
+what the PC is at EmulOp time. `--engine <id>` narrows it.
+
 ```
 ASAN=1 make test-basilisk      # AddressSanitizer + UBSan
 ```
