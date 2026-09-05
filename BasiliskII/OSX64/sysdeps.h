@@ -82,11 +82,29 @@ typedef uae_u32 uaecptr;
 /* Alignment restrictions */
 #define CPU_CAN_ACCESS_UNALIGNED
 
-/* Fast byte swapping for little-endian ARM64 / modern compilers */
-static inline uae_u32 do_get_mem_long(uae_u32 *a) { return __builtin_bswap32(*a); }
-static inline uae_u32 do_get_mem_word(uae_u16 *a) { return __builtin_bswap16(*a); }
-static inline void do_put_mem_long(uae_u32 *a, uae_u32 v) { *a = __builtin_bswap32(v); }
-static inline void do_put_mem_word(uae_u16 *a, uae_u32 v) { *a = __builtin_bswap16(v); }
+/*
+ * Fast byte swapping for little-endian ARM64 / modern compilers.
+ *
+ * A 68020+ allows unaligned word and long accesses, so the emulated machine
+ * really does hand these odd addresses. Both halves of that have to be spelled
+ * out for the compiler, or it is undefined behaviour even though arm64 permits
+ * the access:
+ *
+ *   - the parameter is void *, because merely *holding* a misaligned uae_u32 *
+ *     is UB -- switching only the access to memcpy() left UBSan reporting the
+ *     pointer itself;
+ *   - the access is memcpy(), not a dereference.
+ *
+ * UBSan reported this on essentially every test in BasiliskII/tests, which
+ * buried the findings the ROM-patch suites exist to surface.
+ *
+ * It costs nothing: clang lowers each of these to the same single ldr/str plus
+ * rev it emitted for the direct dereference.
+ */
+static inline uae_u32 do_get_mem_long(void *a) { uae_u32 v; memcpy(&v, a, 4); return __builtin_bswap32(v); }
+static inline uae_u32 do_get_mem_word(void *a) { uae_u16 v; memcpy(&v, a, 2); return __builtin_bswap16(v); }
+static inline void do_put_mem_long(void *a, uae_u32 v) { v = __builtin_bswap32(v); memcpy(a, &v, 4); }
+static inline void do_put_mem_word(void *a, uae_u32 v) { uae_u16 t = __builtin_bswap16((uae_u16)v); memcpy(a, &t, 2); }
 
 #define do_get_mem_byte(a) ((uae_u32)*((uae_u8 *)(a)))
 #define do_put_mem_byte(a, v) (*(uae_u8 *)(a) = (v))
