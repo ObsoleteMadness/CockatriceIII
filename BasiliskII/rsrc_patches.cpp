@@ -97,6 +97,12 @@ static bool log_rsrc_patch(const char *name, const char *source_ref, uint32 offs
 		printf("[RSRC-PATCH] %-30s @ %04x\n", name, offset);
 	else
 		printf("[RSRC-PATCH] %-30s MISSED\n", name);
+	// Flush like the [ROM-PATCH] log does. Resource patching runs long after
+	// stdout has been redirected to a file and gone block-buffered, so without
+	// this the last few KB -- which is the whole of this log -- is still in the
+	// buffer when a bomb or a kill ends the process, and it looks as though
+	// resource patching never ran at all.
+	fflush(stdout);
 	return applied;
 }
 
@@ -213,6 +219,14 @@ static void patch_fake_handle_at_zero(const char *name, uint8 *p, uint32 size)
 	log_rsrc_patch(name, "$SM/OS/StartMgr/Boot3.a", base, base != 0);
 #endif
 }
+
+
+// Size of the 'sift' -16563 audio dispatch stub, in bytes: 16 words, ending in
+// the "rtd #8" that returns to the Component Manager.
+#define AUDIO_COMPONENT_STUB_SIZE	32
+
+// Size of the 'ltlk' 0 LocalTalk disable stub, in bytes.
+#define LTLK_STUB_SIZE				6
 
 
 /*
@@ -689,26 +703,42 @@ void CheckLoad(uint32 type, int16 id, uint8 *p, uint32 size)
 		D(bug(" thng -16563 found\n"));
 
 		// Set audio component flags (7.5, 7.6, 7.6.1, 8.0).
-		// No SuperMario source: the Sound Manager ships as SoundMgr.rsrc.
-		*(uint32 *)(p + componentFlags) = htonl(audio_component_flags);
-		log_rsrc_patch("thng -16563 audio flags", NULL, componentFlags, true);
+		// No SuperMario source: the Sound Manager ships as SoundMgr.rsrc;
+		// componentFlags is the ComponentDescription field at +12.
+		//
+		// This writes at a fixed offset with no signature to find, so unlike
+		// every other patch here a short resource is a write past the end of the
+		// handle rather than a missed match. Refuse instead: sound not working
+		// is recoverable, a corrupted Mac heap is not.
+		if (size < componentFlags + 4) {
+			log_rsrc_patch("thng -16563 audio flags", NULL, 0, false);
+		} else {
+			*(uint32 *)(p + componentFlags) = htonl(audio_component_flags);
+			log_rsrc_patch("thng -16563 audio flags", NULL, componentFlags, true);
+		}
 
 	} else if (type == 'sift' && id == -16563) {
 		D(bug(" sift -16563 found\n"));
 
-		// Replace audio component (7.5, 7.6, 7.6.1, 8.0)
-		p16 = (uint16 *)p;
-		*p16++ = htons(0x4e56); *p16++ = htons(0x0000);	// link		a6,#0
-		*p16++ = htons(0x48e7); *p16++ = htons(0x8018);	// movem.l	d0/a3-a4,-(sp)
-		*p16++ = htons(0x266e); *p16++ = htons(0x000c);	// movea.l	12(a6),a3
-		*p16++ = htons(0x286e); *p16++ = htons(0x0008);	// movea.l	8(a6),a4
-		*p16++ = htons(M68K_EMUL_OP_AUDIO);
-		*p16++ = htons(0x2d40); *p16++ = htons(0x0010);	// move.l	d0,16(a6)
-		*p16++ = htons(0x4cdf); *p16++ = htons(0x1801);	// movem.l	(sp)+,d0/a3-a4
-		*p16++ = htons(0x4e5e);							// unlk		a6
-		*p16++ = htons(0x4e74); *p16++ = htons(0x0008);	// rtd		#8
-		FlushCodeCache(p, 32);
-		log_rsrc_patch("sift -16563 audio component", NULL, 0, true);
+		// Replace audio component (7.5, 7.6, 7.6.1, 8.0).
+		// Same unconditional-write hazard as thng -16563 above: the stub is 32
+		// bytes and the resource is never scanned, so check it fits first.
+		if (size < AUDIO_COMPONENT_STUB_SIZE) {
+			log_rsrc_patch("sift -16563 audio component", NULL, 0, false);
+		} else {
+			p16 = (uint16 *)p;
+			*p16++ = htons(0x4e56); *p16++ = htons(0x0000);	// link		a6,#0
+			*p16++ = htons(0x48e7); *p16++ = htons(0x8018);	// movem.l	d0/a3-a4,-(sp)
+			*p16++ = htons(0x266e); *p16++ = htons(0x000c);	// movea.l	12(a6),a3
+			*p16++ = htons(0x286e); *p16++ = htons(0x0008);	// movea.l	8(a6),a4
+			*p16++ = htons(M68K_EMUL_OP_AUDIO);
+			*p16++ = htons(0x2d40); *p16++ = htons(0x0010);	// move.l	d0,16(a6)
+			*p16++ = htons(0x4cdf); *p16++ = htons(0x1801);	// movem.l	(sp)+,d0/a3-a4
+			*p16++ = htons(0x4e5e);							// unlk		a6
+			*p16++ = htons(0x4e74); *p16++ = htons(0x0008);	// rtd		#8
+			FlushCodeCache(p, AUDIO_COMPONENT_STUB_SIZE);
+			log_rsrc_patch("sift -16563 audio component", NULL, 0, true);
+		}
 
 	} else if (type == 'inst' && id == -19069) {
 		D(bug(" inst -19069 found\n"));
@@ -742,13 +772,15 @@ void CheckLoad(uint32 type, int16 id, uint8 *p, uint32 size)
 		// Disable LocalTalk (7.0.1, 7.5, 7.6, 7.6.1, 8.0) unless ltoudp is
 		// enabled. No SuperMario source: AppleTalk ships as AppleTalk.rsrc,
 		// built into the System as 'lmgr' 0 ($SM/Resources/Sys.r:1092).
-		bool disable = !PrefsFindBool("ltoudp");
+		// Another fixed-offset write with no signature to find, so bound it
+		// against the resource size the way the audio component patches are.
+		bool disable = !PrefsFindBool("ltoudp") && size >= LTLK_STUB_SIZE;
 		if (disable) {
 			p16 = (uint16 *)p;
 			*p16++ = htons(M68K_JMP_A0);
 			*p16++ = htons(0x7000);
 			*p16 = htons(M68K_RTS);
-			FlushCodeCache(p, 6);
+			FlushCodeCache(p, LTLK_STUB_SIZE);
 		}
 		log_rsrc_patch(disable ? "ltlk 0 disable LocalTalk" : "ltlk 0 kept for LToUDP", NULL, 0, disable);
 	}

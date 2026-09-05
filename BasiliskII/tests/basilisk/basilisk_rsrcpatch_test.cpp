@@ -30,6 +30,8 @@
 #include "emul_op.h"
 #include "rom_patches.h"
 #include "rsrc_patches.h"
+#include "audio.h"
+#include "audio_defs.h"
 #include "main.h"
 
 #define GUARD_BYTES 64
@@ -302,6 +304,107 @@ static void test_signature_at_offset_zero(void)
 }
 
 /*
+ * thng/sift -16563 -- the audio component, i.e. all host sound output.
+ *
+ * These two are how sound reaches the host at all: 'sift' -16563 is the Sound
+ * Manager's audio component code resource, rewritten wholesale into a stub that
+ * traps out to AudioDispatch() through M68K_EMUL_OP_AUDIO, and 'thng' -16563 is
+ * its Component Manager description, whose componentFlags field is overwritten
+ * with the flags the host audio backend actually negotiated.
+ *
+ * Unlike every other case in this file these two are unconditional whole-buffer
+ * rewrites -- there is no signature to match, so nothing tells them the buffer
+ * is the size they assume. That makes them the only resource patches where a
+ * short resource is a write past the end rather than a missed patch, which is
+ * what the short-buffer cases below cover.
+ *
+ * The Sound Manager ships as a pre-built SoundMgr.rsrc, so there is no Apple
+ * source to cite for the layout; audio_defs.h's componentFlags == 12 comes from
+ * the public ComponentDescription record.
+ */
+static void test_audio_component(void)
+{
+	// A sentinel rather than a plausible flag word: this proves the patch copies
+	// the value the audio backend negotiated at run time, not a constant.
+	audio_component_flags = 0xc0ffee01;
+
+	// thng: only the componentFlags longword at +12 may change.
+	uint8 thng_body[64];
+	memset(thng_body, 0xa5, sizeof(thng_body));
+	GuardedRsrc t(thng_body, sizeof(thng_body));
+	run_checkload("thng -16563", 'thng', -16563, t);
+
+	CHECK(logged_applied("thng -16563"), "thng -16563: patch recorded as applied");
+	CHECK(((uint32)rd16(t, componentFlags) << 16 | rd16(t, componentFlags + 2)) == 0xc0ffee01,
+	      "thng -16563: componentFlags carries the negotiated audio flags");
+	bool rest_intact = true;
+	for (uint32 i = 0; i < sizeof(thng_body); i++) {
+		if (i >= componentFlags && i < componentFlags + 4)
+			continue;
+		if (t.data()[i] != 0xa5)
+			rest_intact = false;
+	}
+	CHECK(rest_intact, "thng -16563: nothing outside componentFlags is touched");
+
+	// sift: the whole 32-byte dispatch stub is written over the resource.
+	uint8 sift_body[64];
+	memset(sift_body, 0xa5, sizeof(sift_body));
+	GuardedRsrc s(sift_body, sizeof(sift_body));
+	run_checkload("sift -16563", 'sift', -16563, s);
+
+	CHECK(logged_applied("sift -16563"), "sift -16563: patch recorded as applied");
+	// link a6,#0 / movem.l d0/a3-a4,-(sp) / the two component parameters into
+	// a3/a4 / the EmulOp / result to 16(a6) / unlk / rtd #8.
+	static const uint16 want[] = {
+		0x4e56, 0x0000, 0x48e7, 0x8018, 0x266e, 0x000c, 0x286e, 0x0008,
+		M68K_EMUL_OP_AUDIO, 0x2d40, 0x0010, 0x4cdf, 0x1801, 0x4e5e,
+		0x4e74, 0x0008,
+	};
+	bool stub_ok = true;
+	for (uint32 i = 0; i < sizeof(want) / sizeof(want[0]); i++)
+		if (rd16(s, i * 2) != want[i])
+			stub_ok = false;
+	CHECK(stub_ok, "sift -16563: audio dispatch stub planted word for word");
+	CHECK(rd16(s, 16) == M68K_EMUL_OP_AUDIO,
+	      "sift -16563: M68K_EMUL_OP_AUDIO reaches AudioDispatch()");
+	CHECK(s.data()[32] == 0xa5, "sift -16563: nothing past the 32-byte stub is touched");
+}
+
+/*
+ * A short audio resource must be refused, not written past the end.
+ *
+ * Both audio patches write at fixed offsets with no reference to the size they
+ * were handed, so a truncated or corrupt resource used to be an out-of-bounds
+ * write into the Mac heap: 'thng' needs 16 bytes to reach componentFlags and
+ * 'sift' needs 32 for the stub. The guard regions are what catch it -- the
+ * overrun lands inside our own allocation, so ASAN alone would not see it.
+ */
+static void test_audio_component_short(void)
+{
+	audio_component_flags = 0xc0ffee01;
+
+	// One byte short of reaching componentFlags + 4.
+	uint8 body[15];
+	memset(body, 0xa5, sizeof(body));
+	GuardedRsrc t(body, sizeof(body));
+	run_checkload("short thng -16563", 'thng', -16563, t);
+	CHECK(!logged_applied("thng -16563"), "short thng -16563: refused, not applied");
+
+	// One byte short of the 32-byte dispatch stub.
+	uint8 body2[31];
+	memset(body2, 0xa5, sizeof(body2));
+	GuardedRsrc s(body2, sizeof(body2));
+	run_checkload("short sift -16563", 'sift', -16563, s);
+	CHECK(!logged_applied("sift -16563"), "short sift -16563: refused, not applied");
+
+	// Zero-length, the degenerate case of both.
+	GuardedRsrc t0(NULL, 0);
+	run_checkload("empty thng -16563", 'thng', -16563, t0);
+	GuardedRsrc s0(NULL, 0);
+	run_checkload("empty sift -16563", 'sift', -16563, s0);
+}
+
+/*
  * A resource type CheckLoad() has no patch for must do nothing at all.
  */
 static void test_unhandled_type(void)
@@ -334,6 +437,8 @@ int main(void)
 	run_isolated("lpch 31", test_lpch31);
 	run_isolated("boot 2", test_boot2_reachable);
 	run_isolated("boundaries", test_boundaries);
+	run_isolated("audio component", test_audio_component);
+	run_isolated("audio component (short)", test_audio_component_short);
 	run_isolated("offset-0 signature", test_signature_at_offset_zero);
 	run_isolated("unhandled type", test_unhandled_type);
 
