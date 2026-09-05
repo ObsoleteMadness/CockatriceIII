@@ -136,15 +136,54 @@ Apple's own install idiom, `$SM/Patches/BeforePatches.a:690-697`:
         Move.L  A0,jCheckLoad           ; stuff in my checkLoad hook.
 ```
 
-Cockatrice instead byte-patches the ROM at the magic offset `0x1b8f4`
-(rom_patches.cpp:1519) to jump to a stub squatting inside the `.Sony` resource at
-`+0x300` — a stub which then calls through `$07F0` anyway.
+Cockatrice instead byte-patches the ROM at `0x1b8f4` to jump to a stub squatting
+inside the `.Sony` resource at `+0x300` — a stub which then calls through `$07F0`
+anyway. The patched site is verified against its signature first, and `0x1b8f4`
+is the ROM's own `CheckLoad` entry:
 
-**Scheduling constraint:** `$07F0` is populated by `InitRomVectors`
-(`$SM/OS/StartMgr/StartInit.a:1424`, re-run at `:1517`), and resources begin
-loading before `EMUL_OP_INSTALL_DRIVERS` runs. So switching to the vector does not
-remove ROM patching entirely — it reduces it to one verified hook placed after
-`InitRomVectors`, which then installs the vector.
+```
+CheckLoad                               ; ResourceMgr.a:4562
+        MOVE.L  jCheckLoad,A0           ; get the vector from the OSJumptable
+        JMP     (A0)                    ; and go to the routine
+vCheckLoad                              ; Def to build dispatch entry
+```
+
+#### Why installing into `$07F0` would be a regression
+
+The obvious cleanup — drop the byte patch, install our stub into `$07F0` using
+Apple's idiom above — was measured rather than assumed, and it does not work.
+**Position in the chain is the whole point of this hook.**
+
+Cockatrice patches resource *contents*, so it must see the data every other hook
+has finished with. Sitting at `CheckLoad`'s entry, ahead of the vector, it is
+entered first and calls the entire `$07F0` chain with `jsr` before running
+`EMUL_OP_CHECKLOAD` — making it the outermost post-processor, permanently.
+
+Installing into `$07F0` gives up that position, because the vector is a stack that
+later installers push onto — Apple's own decompressor does exactly that in the
+quote above, saving the old value and chaining in front. Instrumenting a Quadra
+800 boot (System 8.1, Musashi) shows `$07F0` being re-hooked three times:
+
+| CheckLoad call | `$07F0` |
+|---|---|
+| 1 | `4081b8fa` — ROM `vCheckLoad` |
+| 72 | `0002604c` — System heap |
+| 109 | `0007b5a2` — System heap |
+| 228 | `000f0d62` — System heap |
+
+Anything installed into the vector before those runs *inside* them. A hook whose
+job is to decompress the resource after the inner chain returns would then
+overwrite our patches — and the audio component patches (`thng`/`sift` -16563,
+i.e. all host sound output) land on calls **549 and 550**, well past all three.
+
+**Scheduling, also measured, and the reverse of what was assumed.** Of 3105
+`CheckLoad` calls during boot, exactly two precede `InstallDrivers()`: `DRVR` 4
+(`.Sony`) and `DRVR` 51 (`.EDisk`). `CheckLoad()` has no case for either, so
+install timing is *not* the obstacle here — chain position is.
+
+What is still worth doing is Phase 3e: the stub does not need to squat in the
+`.Sony` resource. It can be built in the System heap and the ROM patch pointed at
+it, keeping the outermost position while dropping the scratch-space assumption.
 
 ### 3.2 `Lvl1DT` — the VIA1 interrupt dispatch table
 

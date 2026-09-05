@@ -2098,13 +2098,26 @@ static bool patch_rom_32(void)
 
 	// Modify vCheckLoad() so we can patch resources.
 	//
-	// Apple's own way to hook this is the jCheckLoad vector at $07F0
+	// Stays a ROM patch, deliberately. Apple's own way to hook the resource
+	// loader is the jCheckLoad vector at $07F0
 	// ($SM/Interfaces/AIncludes/Private.a:386; install idiom
-	// $SM/Patches/BeforePatches.a:690-697) -- which is what the stub below calls
-	// through. We reach it by byte-patching the ROM instead; see
-	// docs/rom-patches-vs-supermario.md section 3.1.
-	// movea.l $07F0,a0 / jmp (a0) -- the ROM already dispatches vCheckLoad
-	// through the jCheckLoad vector, which is what our stub calls back into.
+	// $SM/Patches/BeforePatches.a:690-697), and this hook does call through it --
+	// but it must not be *installed* into it.
+	//
+	// $07F0 is a stack that later installers push onto: each one saves the old
+	// value and chains in front, Apple's decompressor included. A Quadra 800
+	// boot re-hooks it three times (calls 72, 109 and 228 of 3105). We patch
+	// resource contents, so we have to see what every other hook has finished
+	// with -- which means being entered first and calling the whole chain with
+	// jsr before running EMUL_OP_CHECKLOAD. 0x1b8f4 is the ROM's own CheckLoad
+	// entry, ahead of the vector read, so patching it here is the only place
+	// that position is guaranteed. Installing into $07F0 instead would put us
+	// inside those three System hooks, and the audio component patches
+	// ('thng'/'sift' -16563 -- all host sound) arrive on calls 549 and 550.
+	//
+	// See docs/rom-patches-vs-supermario.md section 3.1 for the measurements.
+	//
+	// movea.l $07F0,a0 / jmp (a0) -- $SM/Toolbox/ResourceMgr/ResourceMgr.a:4562.
 	static const uint8 checkload_dat[] = {0x20, 0x78, 0x07, 0xf0, 0x4e, 0xd0};
 	if (!verify_rom_bytes("vCheckLoad hook", 0x1b8f4, checkload_dat, sizeof(checkload_dat))) {
 		log_patch("vCheckLoad hook", "$SM/Patches/BeforePatches.a:690", 0, true);
