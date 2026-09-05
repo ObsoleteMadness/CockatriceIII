@@ -982,6 +982,157 @@ static bool InstallRuntimeTraps(void)
 
 
 /*
+ *  Take over the 60 Hz VBL interrupt through the jVBLInt vector
+ *  ============================================================
+ *
+ *  The ROM dispatches VIA1 interrupts through Via1DT == Lvl1DT ($192), and
+ *  jVBLInt is the ifCA1 slot -- Lvl1DT + 4 ($196), per
+ *  $SM/OS/InterruptHandlers.a:489-496. InitRomVectors fills the whole table in,
+ *  so by the time InstallDrivers() runs the ROM has already told us where its
+ *  own VBL handler is; on the Quadra 800 image every one of the seven slots
+ *  holds a real ROM address.
+ *
+ *  Cockatrice used to reach that handler by byte-patching a fixed ROM offset
+ *  (0xa296) and letting the dispatcher walk into the patched bytes. Installing
+ *  a vector instead is the documented mechanism, and it is also the more robust
+ *  one for a reason worth spelling out: the old code verified an 8-byte
+ *  signature at an address we guessed, while this verifies the same signature
+ *  at the address the ROM itself nominates. The continuation is then derived
+ *  from that address rather than hardcoded, so no ROM offset appears here at
+ *  all.
+ *
+ *  Behaviour is unchanged. The handler we install is exactly what the byte
+ *  patch used to be:
+ *
+ *      M68K_EMUL_OP_IRQ            ; do the 60 Hz work on the host
+ *      tst.l   d0
+ *      beq.s   done                ; nothing for the ROM to do
+ *      jmp     (vbl_continue).L    ; ROM's deferred-VBL-task processing
+ *  done:
+ *      rts
+ *
+ *  where vbl_continue is the ROM handler's entry plus the ten bytes the old
+ *  patch overwrote ("addq.l #1,Ticks" and "move.b #2,$1A00(a1)"): the tick
+ *  count is bumped by M68K_EMUL_OP_IRQ instead, and there is no VIA to
+ *  acknowledge.
+ *
+ *  Timing: measured, not assumed. The first level-1 interrupt arrives after
+ *  InstallDrivers(), so there is no window in which the ROM's unpatched handler
+ *  could run.
+ */
+
+static uint32 vbl_handler_stub;			// Mac address of the installed handler
+static uint32 vbl_original_vector;		// what jVBLInt held before we took it
+
+#define LM_LVL1DT	0x192				// $SM/Interfaces/AIncludes/SysEqu.a:1203
+#define JVBLINT		(LM_LVL1DT + 4 * 1)	// +4*ifCA1
+
+// "addq.l #1,Ticks" (4) + "move.b #2,$1A00(a1)" (6): the ROM VBL prologue our
+// handler stands in for, and so the offset of the continuation.
+#define VBL_PROLOGUE_BYTES	10
+
+/*
+ *  Returns the installed VBL handler and the vector it replaced, for tests.
+ *
+ *  Arguments:
+ *    original: receives the previous jVBLInt value; may be NULL.
+ *
+ *  Returns:
+ *    Mac address of our handler, or 0 if it has not been installed.
+ */
+
+uint32 GetVBLHandlerStub(uint32 *original)
+{
+	if (original)
+		*original = vbl_original_vector;
+	return vbl_handler_stub;
+}
+
+/*
+ *  Validate a jVBLInt vector and work out where the ROM handler continues.
+ *
+ *  Split out from the installer so it can be exercised offline: it is the part
+ *  that decides whether we understand this ROM's VBL handler, and it replaces a
+ *  fixed-offset check inside PatchROM() that the patch-guard tests covered.
+ *
+ *  Arguments:
+ *    vector:   value read from jVBLInt ($196).
+ *    cont_out: receives the address the ROM handler continues at, past the
+ *              prologue our handler stands in for; 0 on failure. May be NULL.
+ *
+ *  Returns:
+ *    true if the vector points at a ROM VBL handler we recognise.
+ */
+
+bool ResolveVBLContinuation(uint32 vector, uint32 *cont_out)
+{
+	if (cont_out)
+		*cont_out = 0;
+
+	if (vector < ROMBaseMac || vector + VBL_PROLOGUE_BYTES > ROMBaseMac + ROMSize) {
+		printf("[VBL-INSTALL] FATAL: jVBLInt = %08x is not a ROM address\n", vector);
+		fflush(stdout);
+		return false;
+	}
+
+	// addq.l #1,Ticks ($016A) / move.b #2,$1A00(a1) -- the ROM VBL handler
+	// bumping the tick count and acknowledging the VIA.
+	static const uint8 sixtyhz_dat[] = {0x52, 0xb8, 0x01, 0x6a, 0x13, 0x7c, 0x00, 0x02};
+	if (!verify_rom_bytes("VBL handler (via jVBLInt)", vector - ROMBaseMac,
+	                      sixtyhz_dat, sizeof(sixtyhz_dat)))
+		return false;
+
+	if (cont_out)
+		*cont_out = vector + VBL_PROLOGUE_BYTES;
+	return true;
+}
+
+/*
+ *  Build the VBL handler and point jVBLInt at it.
+ *
+ *  Returns:
+ *    true if the vector was taken over. On failure the ROM keeps its own
+ *    handler, which without a VIA to acknowledge will not do the 60 Hz work --
+ *    so the caller reports it loudly.
+ */
+
+static bool InstallVBLHandler(void)
+{
+	uint32 orig = ReadMacInt32(JVBLINT);
+	uint32 cont = 0;
+	if (!ResolveVBLContinuation(orig, &cont))
+		return false;
+
+	M68kRegisters r;
+	r.d[0] = 16;
+	Execute68kTrap(0xa71e, &r);		// NewPtrSysClear()
+	uint32 stub = r.a[0];
+	if (stub == 0) {
+		printf("[VBL-INSTALL] FATAL: could not allocate the VBL handler stub\n");
+		fflush(stdout);
+		return false;
+	}
+
+	WriteMacInt16(stub + 0, (uint16)M68K_EMUL_OP_IRQ);
+	WriteMacInt16(stub + 2, 0x4a80);	// tst.l	d0
+	WriteMacInt16(stub + 4, 0x6706);	// beq.s	done
+	WriteMacInt16(stub + 6, M68K_JMP);	// jmp		(cont).L
+	WriteMacInt32(stub + 8, cont);
+	WriteMacInt16(stub + 12, M68K_RTS);	// done: rts
+	cpu_engine_invalidate_code(stub, 16);
+
+	vbl_handler_stub = stub;
+	vbl_original_vector = orig;
+	WriteMacInt32(JVBLINT, stub);
+
+	printf("[VBL-INSTALL] jVBLInt ($%03x) %08x -> %08x, ROM continuation %08x\n",
+	       JVBLINT, orig, stub, cont);
+	fflush(stdout);
+	return true;
+}
+
+
+/*
  *  Install .Sony, disk and CD-ROM drivers
  */
 
@@ -993,6 +1144,11 @@ void InstallDrivers(uint32 pb)
 	// Point the trap table at our System-heap replacements for the traps that
 	// do not have to be ROM patches (Microseconds, PowerOff, ADBOp).
 	InstallRuntimeTraps();
+
+	// Take over the 60 Hz interrupt through the ROM's own jVBLInt vector.
+	if (!InstallVBLHandler())
+		printf("[VBL-INSTALL] the 60 Hz interrupt was NOT taken over; "
+		       "the machine will not run\n");
 
 	// Install disk driver
 	r.a[0] = ROMBaseMac + sony_offset + 0x100;
@@ -1998,16 +2154,29 @@ static bool patch_rom_32(void)
 	if ((base = find_rom_resource('PACK', 4, true)) == 0 && FPUType == 0)
 		printf("WARNING: This ROM seems to require an FPU\n");
 
-	// Patch VIA interrupt handler.
+	// Pin the level-1 secondary dispatcher to the VBL slot.
 	//
-	// The level-1 secondary dispatcher (Level1Via1Int,
-	// $SM/OS/InterruptHandlers.a:1558) selects a slot in Via1DT == Lvl1DT ($192):
+	// Level1Via1Int ($SM/OS/InterruptHandlers.a:1558) builds a mask of pending,
+	// enabled VIA1 sources and indexes Via1DT == Lvl1DT ($192) with it:
 	// jOneSecInt = +4*ifCA2, jVBLInt = +4*ifCA1, jKbdAdbInt = +4*ifSR
-	// ($SM/OS/InterruptHandlers.a:489-496). Forcing "moveq #2,d0" here pins it to
-	// one slot, so one-second and ADB shift-register interrupts cannot be
-	// delivered on their own vectors. See docs/rom-patches-vs-supermario.md 3.2.
-	// moveq #$7F,d0 / and.b $1A00(a1),d0 / and.b $1C00(a1),d0 -- Level1Via1Int
-	// masking IFR against IER before indexing the Via1DT priority table.
+	// ($SM/OS/InterruptHandlers.a:489-496, ifCA2/ifCA1/ifSR = 0/1/2 in
+	// $SM/Interfaces/AIncludes/HardwareEqu.a:374-376).
+	//
+	// This stays a ROM patch, and the reason is worth stating: Cockatrice has no
+	// VIA1 at all. The "and.b $1A00(a1),d0 / and.b $1C00(a1),d0" below reads IFR
+	// and IER out of dummy memory, so the mask it computes is meaningless. The
+	// forced value 2 is the mask for bit 1 = ifCA1, i.e. "VBL pending", which is
+	// how the dispatcher is made to reach jVBLInt every time.
+	//
+	// The cost is that the other slots are never selected, so the ROM's
+	// one-second and ADB shift-register handlers never run. That is survivable
+	// only because the host does their work instead -- Time ($020C) is refreshed
+	// once a second by one_tickbbbb() in SDL/main_sdl.cpp, and ADBInterrupt()
+	// runs from M68K_EMUL_OP_IRQ on every tick. Restoring genuine per-slot
+	// dispatch means emulating the VIA1 IFR/IER first; see
+	// docs/rom-patches-vs-supermario.md section 3.2.
+	//
+	// moveq #$7F,d0 / and.b $1A00(a1),d0 / and.b $1C00(a1),d0
 	static const uint8 lvl1_dat[] = {0x70, 0x7f, 0xc0, 0x29, 0x1a, 0x00, 0xc0, 0x29, 0x1c, 0x00};
 	if (!verify_rom_bytes("VIA level-1 dispatcher", 0x9bc4, lvl1_dat, sizeof(lvl1_dat))) {
 		log_patch("VIA level-1 dispatcher", "$SM/OS/InterruptHandlers.a:1558", 0, true);
@@ -2015,26 +2184,14 @@ static bool patch_rom_32(void)
 	}
 	log_patch("VIA level-1 dispatcher", "$SM/OS/InterruptHandlers.a:1558", 0x9bc4, true);
 	wp = (uint16 *)(ROMBaseHost + 0x9bc4);	// Level 1 handler
-	*wp++ = htons(0x7002);		// moveq	#2,d0 (always 60Hz interrupt)
+	*wp++ = htons(0x7002);		// moveq	#2,d0 (mask for ifCA1: VBL pending)
 	*wp++ = htons(M68K_NOP);
 	*wp++ = htons(M68K_NOP);
 	*wp++ = htons(M68K_NOP);
 	*wp = htons(M68K_NOP);
 
-	// addq.l #1,Ticks ($016A) / move.b #2,$1A00(a1) -- the VBL handler bumping
-	// the tick count and acknowledging the VIA.
-	static const uint8 sixtyhz_dat[] = {0x52, 0xb8, 0x01, 0x6a, 0x13, 0x7c, 0x00, 0x02};
-	if (!verify_rom_bytes("VIA 60Hz handler", 0xa296, sixtyhz_dat, sizeof(sixtyhz_dat))) {
-		log_patch("VIA 60Hz handler", "$SM/OS/InterruptHandlers.a", 0, true);
-		return false;
-	}
-	log_patch("VIA 60Hz handler", "$SM/OS/InterruptHandlers.a", 0xa296, true);
-	wp = (uint16 *)(ROMBaseHost + 0xa296);	// 60Hz handler (handles everything)
-	*wp++ = htons(M68K_NOP);
-	*wp++ = htons(M68K_NOP);
-	*wp++ = htons(M68K_EMUL_OP_IRQ);
-	*wp++ = htons(0x4a80);		// tst.l	d0
-	*wp = htons(0x67f4);		// beq		0x4080a294
+	// The VBL handler itself is no longer patched here: InstallVBLHandler()
+	// installs ours into the jVBLInt vector at runtime instead.
 	return true;
 }
 

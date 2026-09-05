@@ -54,4 +54,3 @@ PutScrap ($A9FE)	025ef0	required	applied
 BlockMove ($A02E)	00ca10	required	applied
 PACK 4 (SANE)	073940	required	applied
 VIA level-1 dispatcher	009bc4	required	applied
-VIA 60Hz handler	00a296	required	applied

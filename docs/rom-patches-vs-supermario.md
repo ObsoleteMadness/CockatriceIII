@@ -175,12 +175,53 @@ The secondary dispatcher is `Level1Via1Int` (`InterruptHandlers.a:1558`).
         move.l  a0,Lvl1DT+(T2IntBit*4)  ; put into interrupt table
 ```
 
-Cockatrice instead byte-patches ROM `0x9bc4` to `moveq #2,d0` — forcing the
-level-1 dispatcher to *always* select slot 2 — and overwrites the handler at
-`0xa296` (rom_patches.cpp:1559-1571). That does not merely hardcode two offsets: it
-collapses three distinct interrupt sources into one, so one-second interrupts
-(`ifCA2`) and ADB/keyboard shift-register interrupts (`ifSR`) can never be
-delivered on their own vectors.
+#### What Cockatrice does, and why only half of it could be fixed
+
+Two separate patches were involved here, and they turned out to have very
+different justifications.
+
+**The handler — now installed through `jVBLInt`.** Cockatrice used to overwrite
+the VBL handler at the fixed offset `0xa296`. A live boot shows the ROM's own
+table already names that exact address:
+
+```
+[LVL1DT] Lvl1DT($192) slots (ROMBase=40800000):
+  [0] jOneSec   = 4080b140 (ROM)
+  [1] jVBL      = 4080a296 (ROM)      <- the byte-patch site
+  [2] jKbdAdb   = 408b2dea (ROM)
+  ...
+```
+
+`InstallVBLHandler()` now writes a System-heap handler into `$196` instead, and
+derives the ROM continuation from the vector (`vector + 10`, past the
+`addq.l #1,Ticks` / `move.b #2,$1A00(a1)` prologue it stands in for) rather than
+hardcoding `0xa2a0`. Behaviour is identical; the gain is that the 8-byte
+signature is now verified at the address the ROM nominates instead of one we
+guessed, so no ROM offset appears in this path at all.
+
+**The dispatcher — still a byte patch, and it has to be.** `0x9bc4` is still
+forced to `moveq #2,d0`. The reason is not laziness about offsets: **Cockatrice
+has no VIA1**. `Level1Via1Int` computes its pending mask with
+`and.b $1A00(a1),d0 / and.b $1C00(a1),d0`, reading IFR and IER out of dummy
+memory, so the mask is meaningless and must be forced. The value 2 is the mask
+for bit 1 = `ifCA1`, i.e. "VBL pending".
+
+The consequence is real: the `ifCA2` and `ifSR` slots are never selected, so the
+ROM's one-second and ADB shift-register handlers never run. But that is
+**survivable because the host does their work instead** —
+
+- `Time` (`$020C`) is refreshed once a second by `one_tickbbbb()` in
+  `SDL/main_sdl.cpp`
+- `ADBInterrupt()` runs from `M68K_EMUL_OP_IRQ` on every 60 Hz tick
+
+so there is no observable defect to fix. Restoring genuine per-slot dispatch
+would mean emulating the VIA1 IFR/IER first and then moving work out of
+`M68K_EMUL_OP_IRQ` into the ROM's per-source handlers — a new device emulation
+and a rewrite of the interrupt path, not a change to the patch layer. It is not
+worth doing on the strength of "the vectors are unused"; it needs a symptom.
+
+Verified live after the change: the new vector dispatches at 60/sec, the ROM
+continuation is reached on each one, and `Ticks` and `Time` advance correctly.
 
 ### 3.3 `_SetTrapAddress` — trap replacement
 

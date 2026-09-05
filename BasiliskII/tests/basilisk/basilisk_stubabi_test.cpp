@@ -569,6 +569,71 @@ static void test_runtime_trap_stubs(void)
 	CHECK(ReadMacInt32(marker) == 0, "ADBOp: nothing was called in that case");
 }
 
+
+/*
+ *  The 60 Hz handler is found through the ROM's jVBLInt vector
+ *
+ *  Cockatrice used to byte-patch the VBL handler at the fixed ROM offset
+ *  0xa296 and let the level-1 dispatcher walk into the patched bytes. It now
+ *  installs a handler into jVBLInt (Lvl1DT + 4*ifCA1, $196) at runtime and
+ *  derives the ROM continuation from whatever that vector holds, so no ROM
+ *  offset is baked in.
+ *
+ *  ResolveVBLContinuation() is the part that decides whether we understand a
+ *  given ROM's VBL handler, and it carries the guard the fixed-offset check
+ *  used to provide. The installer itself needs a booted Mac heap, but this does
+ *  not, so the important cases are all reachable offline:
+ *
+ *    - the real vector value resolves, and the continuation is the handler plus
+ *      the ten prologue bytes our handler stands in for
+ *    - a corrupted prologue is refused, which is the case that moved out of
+ *      basilisk_patchguard_test
+ *    - a vector outside the ROM is refused rather than followed
+ */
+static void test_vbl_vector_resolution(void)
+{
+	if (!setup_patched_rom())
+		return;
+
+	/*
+	 * PatchROM() does not populate Lvl1DT -- InitRomVectors does, during boot.
+	 * On the test ROM the VBL handler sits at 0xa296, which is what a live boot
+	 * reports in jVBLInt; use it as the vector under test.
+	 */
+	const uint32 vbl = ROMBaseMac + 0xa296;
+	uint32 cont = 0;
+
+	CHECK(ResolveVBLContinuation(vbl, &cont), "jVBLInt: the ROM VBL handler is recognised");
+	CHECK(cont == vbl + 10,
+	      "jVBLInt: continuation is the handler plus the 10-byte prologue we replace");
+
+	// The prologue really is "addq.l #1,Ticks / move.b #2,$1A00(a1)".
+	CHECK(ReadMacInt16(vbl) == 0x52b8 && ReadMacInt32(vbl + 2) == 0x016a137c,
+	      "jVBLInt: prologue is addq.l #1,Ticks / move.b #2,$1A00(a1)");
+
+	// Corrupt the prologue: this is the guard that moved out of patchguard.
+	uint8 save = ROMBaseHost[0xa296];
+	ROMBaseHost[0xa296] ^= 0xff;
+	cont = 0xffffffff;
+	CHECK(!ResolveVBLContinuation(vbl, &cont),
+	      "jVBLInt: a handler we do not recognise is refused");
+	CHECK(cont == 0, "jVBLInt: no continuation is reported on refusal");
+	ROMBaseHost[0xa296] = save;
+
+	// A vector outside the ROM must be refused, not followed.
+	cont = 0xffffffff;
+	CHECK(!ResolveVBLContinuation(RAMBaseMac + 0x1000, &cont),
+	      "jVBLInt: a vector outside the ROM is refused");
+	CHECK(cont == 0, "jVBLInt: no continuation for an out-of-ROM vector");
+
+	CHECK(!ResolveVBLContinuation(ROMBaseMac + ROMSize - 4, &cont),
+	      "jVBLInt: a vector too close to the end of the ROM is refused");
+
+	// Not installed yet: that only happens in InstallDrivers() on a live boot.
+	uint32 orig = 0xffffffff;
+	CHECK(GetVBLHandlerStub(&orig) == 0, "jVBLInt: no handler installed without a boot");
+}
+
 int main(void)
 {
 	test_install_crash_handler();
@@ -583,6 +648,7 @@ int main(void)
 	run_isolated(".Sony driver entries", test_sony_driver_entries);
 	run_isolated("CheckLoad trampoline", test_checkload_trampoline);
 	run_isolated("runtime trap stubs", test_runtime_trap_stubs);
+	run_isolated("jVBLInt vector resolution", test_vbl_vector_resolution);
 
 	printf("\nResults: %d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

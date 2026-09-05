@@ -111,6 +111,32 @@ struct RuntimeTrapStub {
  */
 const RuntimeTrapStub *GetRuntimeTrapStubs(int *count);
 
+/*
+ *  Returns the 60 Hz VBL handler installed into the ROM's jVBLInt vector.
+ *
+ *  Arguments:
+ *    original: receives the vector value replaced; may be NULL.
+ *
+ *  Returns:
+ *    Mac address of the handler, or 0 before InstallDrivers() has run.
+ */
+uint32 GetVBLHandlerStub(uint32 *original);
+
+/*
+ *  Validate a jVBLInt vector and work out where the ROM handler continues.
+ *
+ *  Exposed so the offline tests can cover it: this is the check that replaced
+ *  the fixed-offset verification of the 60 Hz handler inside PatchROM().
+ *
+ *  Arguments:
+ *    vector:   value read from jVBLInt ($196).
+ *    cont_out: receives the continuation address, 0 on failure; may be NULL.
+ *
+ *  Returns:
+ *    true if the vector points at a ROM VBL handler we recognise.
+ */
+bool ResolveVBLContinuation(uint32 vector, uint32 *cont_out);
+
 extern uint16 ROMVersion;
 
 // ROM offset of breakpoint, used by PatchROM()

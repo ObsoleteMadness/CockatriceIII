@@ -235,6 +235,11 @@ static void test_checkrom_rejects_unsupported(void)
  *
  * The offsets and what lives at them are documented in
  * docs/rom-patches-vs-supermario.md section 5.
+ *
+ * The 60 Hz handler at 0xa296 used to be in this list. It is no longer a fixed
+ * offset: the handler is reached through the ROM's own jVBLInt vector, and the
+ * same signature is verified at whatever address that vector holds. The
+ * equivalent guard is test_vbl_vector_resolution() in basilisk_stubabi_test.
  */
 static void test_fixed_offsets_are_verified(void)
 {
@@ -243,7 +248,6 @@ static void test_fixed_offsets_are_verified(void)
 		{ 0x1b8f4, "vCheckLoad hook" },
 		{ 0x5b78,  "GetDevBase" },
 		{ 0x9bc4,  "VIA level-1 dispatcher" },
-		{ 0xa296,  "VIA 60Hz handler" },
 		{ 0xb2c6a, "InitADB VIA write" },
 		{ 0xb2d2e, "InitADB state wait" },
 	};
