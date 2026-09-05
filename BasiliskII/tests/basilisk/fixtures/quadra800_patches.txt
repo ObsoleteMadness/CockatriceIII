@@ -41,6 +41,7 @@ VIA2 write (ROM19/20)	000000	optional	MISSED
 BlockMove PTEST	0870cc	optional	applied
 SANE PTEST	0e9ad2	optional	applied
 MemoryDispatch	04f140	optional	applied
+.EDisk driver (DRVR 51)	0e7500	optional	applied
 .EDisk ROM scan limit	0e75ee	optional	applied
 .Sony driver (DRVR 4)	06c3e0	required	applied
 SERD 0 + serial drivers	06ab90	required	applied

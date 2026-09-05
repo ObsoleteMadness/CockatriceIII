@@ -363,6 +363,54 @@ static void print_rom_info(void)
 
 
 /*
+ *  Resolve an A-trap to its ROM offset, logging the outcome.
+ *
+ *  find_rom_trap() returns 0 both for "trap is unimplemented" and "trap not
+ *  found", and offset 0 is the ROM header -- so an unchecked miss writes the
+ *  replacement routine over the checksum instead of skipping it. Every caller
+ *  goes through here and treats 0 as fatal.
+ *
+ *  Arguments:
+ *    trap:       A-trap number, e.g. 0xa058 for _InsTime.
+ *    name:       log label, conventionally "RoutineName ($ATRAP)".
+ *    source_ref: Mac OS ROM source for the routine being replaced.
+ *
+ *  Returns:
+ *    ROM offset of the trap routine, or 0 if it could not be resolved. Callers
+ *    must return false from the patch pass when this is 0.
+ */
+
+static uint32 require_rom_trap(uint16 trap, const char *name, const char *source_ref)
+{
+	return log_patch(name, source_ref, find_rom_trap(trap), true);
+}
+
+
+/*
+ *  Locate a ROM resource, logging the outcome.
+ *
+ *  Same hazard as require_rom_trap(): find_rom_resource() reports "absent" as
+ *  offset 0, and callers memcpy whole driver images to the returned offset.
+ *
+ *  Arguments:
+ *    type:       resource type, e.g. 'DRVR'.
+ *    id:         resource ID.
+ *    name:       log label.
+ *    source_ref: Mac OS ROM source, or NULL if none exists.
+ *    required:   whether a miss should fail the patch pass.
+ *
+ *  Returns:
+ *    ROM offset of the resource data, or 0 if absent.
+ */
+
+static uint32 locate_rom_resource(uint32 type, int16 id, const char *name,
+                                  const char *source_ref, bool required)
+{
+	return log_patch(name, source_ref, find_rom_resource(type, id), required);
+}
+
+
+/*
  *  Driver stubs
  */
 
@@ -832,7 +880,21 @@ void PatchAfterStartup(void)
 
 
 /*
- *  Check ROM version, returns false if ROM version is not supported
+ *  Check ROM version, returns false if the ROM version is not supported
+ *
+ *  Sets ROMVersion from the version word at ROMBase+8. PatchROM() has code for
+ *  exactly two of these, so anything else is rejected here rather than being
+ *  accepted and then patched with the wrong offset table.
+ *
+ *  This used to return ROM_VERSION_CLASSIC (0x0276, and therefore truthy) for
+ *  every unrecognised image, so an unknown ROM was accepted and run through
+ *  patch_rom_classic() -- which is raw magic offsets with no verification.
+ *
+ *  Note that the version word does not uniquely identify a ROM image; see the
+ *  comment on the ROM_VERSION_* enum in rom_patches.h.
+ *
+ *  Returns:
+ *    true if PatchROM() knows how to patch this ROM.
  */
 
 bool CheckROM(void)
@@ -840,12 +902,13 @@ bool CheckROM(void)
 	// Read version
 	ROMVersion = ntohs(*(uint16 *)(ROMBaseHost + 8));
 
-	// Virtual addressing mode works with 32-bit clean Mac II ROMs and Classic ROMs
-	//return (ROMVersion == ROM_VERSION_CLASSIC) || (ROMVersion == ROM_VERSION_32);
-	if (ROMVersion == ROM_VERSION_32)
-		return(ROM_VERSION_32);
-	else
-		return (ROM_VERSION_CLASSIC);
+	switch (ROMVersion) {
+		case ROM_VERSION_32:		// 32-bit clean Mac II / Quadra ROMs
+		case ROM_VERSION_CLASSIC:	// SE/Classic ROMs
+			return true;
+		default:
+			return false;
+	}
 }
 
 
@@ -1574,7 +1637,7 @@ static bool patch_rom_32(void)
 	}
 
 	// Patch .EDisk driver (don't scan for EDisks in the area ROMBase..0xe00000)
-	uint32 edisk_offset = find_rom_resource('DRVR', 51);
+	uint32 edisk_offset = locate_rom_resource('DRVR', 51, ".EDisk driver (DRVR 51)", "$SM/Drivers/EDisk/EDiskDriver.a", false);
 	if (edisk_offset) {
 		static const uint8 edisk_dat[] = {0xd5, 0xfc, 0x00, 0x01, 0x00, 0x00, 0xb5, 0xfc, 0x00, 0xe0, 0x00, 0x00};
 		base = find_rom_data(edisk_offset, edisk_offset + 0x10000, edisk_dat, sizeof(edisk_dat));
@@ -1589,8 +1652,16 @@ static bool patch_rom_32(void)
 
 	// Replace .Sony driver. Real driver: $SM/Drivers/Sony/Sony.a (DiskOpen :253,
 	// DiskPrime jump table :199, CtlTbl :495).
-	sony_offset = find_rom_resource('DRVR', 4);
-	log_patch(".Sony driver (DRVR 4)", "$SM/Drivers/Sony/Sony.a", sony_offset, true);
+	sony_offset = locate_rom_resource('DRVR', 4, ".Sony driver (DRVR 4)", "$SM/Drivers/Sony/Sony.a", true);
+	if (sony_offset == 0) return false;
+	// Everything below treats the .Sony resource as scratch space out to +0xc10
+	// (.Disk driver, icons, vCheckLoad stub, PutScrap trampoline). Refuse rather
+	// than run off the end of the image.
+	if (sony_offset + 0xc10 > ROMSize) {
+		printf("[ROM-PATCH] .Sony driver at %06x leaves too little room (need 0xc10, ROM is %06x)\n",
+		       sony_offset, ROMSize);
+		return false;
+	}
 	D(bug("sony %08lx\n", sony_offset));
 	memcpy(ROMBaseHost + sony_offset, sony_driver, sizeof(sony_driver));
 
@@ -1612,8 +1683,8 @@ static bool patch_rom_32(void)
 	if (!PrefsFindBool("ltoudp")) {
 		// No SuperMario source: the serial driver ships as Serial.rsrc
 		// (see docs/rom-patches-vs-supermario.md section 6).
-		serd_offset = find_rom_resource('SERD', 0);
-		log_patch("SERD 0 + serial drivers", NULL, serd_offset, true);
+		serd_offset = locate_rom_resource('SERD', 0, "SERD 0 + serial drivers", NULL, true);
+		if (serd_offset == 0) return false;
 		D(bug("serd %08lx\n", serd_offset));
 		wp = (uint16 *)(ROMBaseHost + serd_offset + 12);
 		*wp++ = htons(M68K_EMUL_OP_SERD);
@@ -1626,21 +1697,21 @@ static bool patch_rom_32(void)
 
 	// Replace ADBOp() ($A07C). Trap wiring $SM/OS/DispTable.a:1428
 	// "OS $7C,ADBOpTrap"; body $SM/OS/ADBMgr/ADBMgr.a:337.
-	uint32 trap_adbop = find_rom_trap(0xa07c);
-	log_patch("ADBOp ($A07C)", "$SM/OS/ADBMgr/ADBMgr.a:337", trap_adbop, true);
+	uint32 trap_adbop = require_rom_trap(0xa07c, "ADBOp ($A07C)", "$SM/OS/ADBMgr/ADBMgr.a:337");
+	if (trap_adbop == 0) return false;
 	memcpy(ROMBaseHost + trap_adbop, adbop_patch, sizeof(adbop_patch));
 
 	// Replace Time Manager (the Microseconds patch is activated in InstallDrivers()).
 	// Trap wiring $SM/OS/DispTable.a; bodies $SM/OS/TimeMgr/TimeMgr.a. The
 	// sr save / ori #$0700,sr wrapper mirrors what Apple's own Time Manager
 	// swap does ($SM/OS/TimeMgr/TimeMgrPatch.a:186-187).
-	uint32 trap_instime = find_rom_trap(0xa058);
-	log_patch("InsTime ($A058)", "$SM/OS/TimeMgr/TimeMgr.a", trap_instime, true);
+	uint32 trap_instime = require_rom_trap(0xa058, "InsTime ($A058)", "$SM/OS/TimeMgr/TimeMgr.a");
+	if (trap_instime == 0) return false;
 	wp = (uint16 *)(ROMBaseHost + trap_instime);
 	*wp++ = htons(M68K_EMUL_OP_INSTIME);
 	*wp = htons(M68K_RTS);
-	uint32 trap_rmvtime = find_rom_trap(0xa059);
-	log_patch("RmvTime ($A059)", "$SM/OS/TimeMgr/TimeMgr.a", trap_rmvtime, true);
+	uint32 trap_rmvtime = require_rom_trap(0xa059, "RmvTime ($A059)", "$SM/OS/TimeMgr/TimeMgr.a");
+	if (trap_rmvtime == 0) return false;
 	wp = (uint16 *)(ROMBaseHost + trap_rmvtime);
 	*wp++ = htons(0x40e7);		// move	sr,-(sp)
 	*wp++ = htons(0x007c);		// ori	#$0700,sr
@@ -1648,8 +1719,8 @@ static bool patch_rom_32(void)
 	*wp++ = htons(M68K_EMUL_OP_RMVTIME);
 	*wp++ = htons(0x46df);		// move	(sp)+,sr
 	*wp = htons(M68K_RTS);
-	uint32 trap_primetime = find_rom_trap(0xa05a);
-	log_patch("PrimeTime ($A05A)", "$SM/OS/TimeMgr/TimeMgr.a:482", trap_primetime, true);
+	uint32 trap_primetime = require_rom_trap(0xa05a, "PrimeTime ($A05A)", "$SM/OS/TimeMgr/TimeMgr.a:482");
+	if (trap_primetime == 0) return false;
 	wp = (uint16 *)(ROMBaseHost + trap_primetime);
 	*wp++ = htons(0x40e7);		// move	sr,-(sp)
 	*wp++ = htons(0x007c);		// ori	#$0700,sr
@@ -1667,8 +1738,8 @@ static bool patch_rom_32(void)
 
 	// Replace SCSIDispatch() ($A815). $SM/OS/DispTable.a:377
 	// "ToolBox $015,SCSIDispatchCommon"; body $SM/OS/SCSIMgr/SCSILinkPatch.a:221.
-	uint32 trap_scsi = find_rom_trap(0xa815);
-	log_patch("SCSIDispatch ($A815)", "$SM/OS/SCSIMgr/SCSILinkPatch.a:221", trap_scsi, true);
+	uint32 trap_scsi = require_rom_trap(0xa815, "SCSIDispatch ($A815)", "$SM/OS/SCSIMgr/SCSILinkPatch.a:221");
+	if (trap_scsi == 0) return false;
 	wp = (uint16 *)(ROMBaseHost + trap_scsi);
 	*wp++ = htons(M68K_EMUL_OP_SCSI_DISPATCH);
 	*wp++ = htons(0x2e49);		// move.l	a1,a7
@@ -1696,14 +1767,14 @@ static bool patch_rom_32(void)
 	*wp = htons(M68K_RTS);
 
 	// Patch PowerOff() ($A05B). $SM/Toolbox/ShutDownMgr/ShutDownMgr.a
-	uint32 trap_poweroff = find_rom_trap(0xa05b);
-	log_patch("PowerOff ($A05B)", "$SM/Toolbox/ShutDownMgr/ShutDownMgr.a", trap_poweroff, true);
+	uint32 trap_poweroff = require_rom_trap(0xa05b, "PowerOff ($A05B)", "$SM/Toolbox/ShutDownMgr/ShutDownMgr.a");
+	if (trap_poweroff == 0) return false;
 	wp = (uint16 *)(ROMBaseHost + trap_poweroff);	// PowerOff()
 	*wp = htons(M68K_EMUL_OP_SHUTDOWN);
 
 	// Install PutScrap() patch for clipboard data exchange (the patch is activated by EMUL_OP_INSTALL_DRIVERS)
-	uint32 trap_putscrap = find_rom_trap(0xa9fe);
-	log_patch("PutScrap ($A9FE)", "$SM/Toolbox/ScrapMgr/", trap_putscrap, true);
+	uint32 trap_putscrap = require_rom_trap(0xa9fe, "PutScrap ($A9FE)", "$SM/Toolbox/ScrapMgr/");
+	if (trap_putscrap == 0) return false;
 	PutScrapPatch = ROMBaseMac + sony_offset + 0xc00;
 	base = ROMBaseMac + trap_putscrap;
 	wp = (uint16 *)(ROMBaseHost + sony_offset + 0xc00);
@@ -1714,8 +1785,8 @@ static bool patch_rom_32(void)
 
 #if EMULATED_68K
 	// Replace BlockMove() ($A02E). $SM/OS/MemoryMgr/BlockMove.a
-	uint32 trap_blockmove = find_rom_trap(0xa02e);
-	log_patch("BlockMove ($A02E)", "$SM/OS/MemoryMgr/BlockMove.a", trap_blockmove, true);
+	uint32 trap_blockmove = require_rom_trap(0xa02e, "BlockMove ($A02E)", "$SM/OS/MemoryMgr/BlockMove.a");
+	if (trap_blockmove == 0) return false;
 	wp = (uint16 *)(ROMBaseHost + trap_blockmove);	// BlockMove()
 	*wp++ = htons(M68K_EMUL_OP_BLOCK_MOVE);
 	*wp++ = htons(0x7000);
@@ -1724,8 +1795,8 @@ static bool patch_rom_32(void)
 
 	// Look for double PACK 4 resources (SANE; $SM/Resources/RomResources.r
 	// 'rrsc' 120/130/140)
-	base = find_rom_resource('PACK', 4);
-	if (log_patch("PACK 4 (SANE)", "$SM/Resources/RomResources.r", base, true) == 0) return false;
+	base = locate_rom_resource('PACK', 4, "PACK 4 (SANE)", "$SM/Resources/RomResources.r", true);
+	if (base == 0) return false;
 	if ((base = find_rom_resource('PACK', 4, true)) == 0 && FPUType == 0)
 		printf("WARNING: This ROM seems to require an FPU\n");
 
