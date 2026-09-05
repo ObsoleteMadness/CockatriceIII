@@ -6108,15 +6108,11 @@ static void m68k_run_jit(void)
 #endif
 			for (;;) {
 #if defined(__APPLE__) && defined(CPU_AARCH64)
-				/* The qemu-uae PPC plugin generates TCG code on this (m68k)
-				 * thread during PPC init/reset (reached via do_specialties()
-				 * below) and leaves the thread in JIT *write* mode through
-				 * pthread_jit_write_protect_np(). On Apple Silicon a MAP_JIT
-				 * page is per-thread either writable or executable, so the next
-				 * dispatch into translated m68k code would fault with
-				 * EXC_BAD_ACCESS (code=2). Re-assert execute mode here so we
-				 * never run a translated block from a write-protected page.
-				 * Only needed while the PPC CPU is in use. */
+				/* MAP_JIT is per-thread W XOR X. Another compiler on this
+				 * thread (historically qemu-uae PPC TCG) can leave write
+				 * mode on; re-assert execute before the next translated
+				 * block so we do not EXC_BAD_ACCESS. Cheap when already
+				 * execute (pthread_jit_write_protect_np is an MSR write). */
 				if (currprefs.ppc_mode)
 					uae_vm_jit_write_protect(true);
 #endif

@@ -2794,7 +2794,7 @@ static inline uint8 *alloc_code(uint32 size)
 	return ptr;
 }
 
-#if defined(CPU_AARCH64)
+#if defined(CPU_AARCH64) && !defined(__APPLE__)
 static inline bool arm64_uncond_branch_reachable(uintptr from, uintptr to)
 {
 	/* AArch64 B immediate range: signed 26-bit immediate, shifted left by 2. */
@@ -2816,45 +2816,7 @@ static inline bool arm64_cache_reaches_popall(uint8 *cache_start, uint32 cache_s
 		arm64_uncond_branch_reachable(end, popall);
 }
 
-#if defined(__APPLE__)
-static uint8 *alloc_code_near_popall(uint32 size)
-{
-	if (!popallspace || size == 0) {
-		return alloc_code(size);
-	}
-#ifdef MAP_JIT
-	const int prot = PROT_READ | PROT_WRITE | PROT_EXEC;
-	const int flags = MAP_PRIVATE | MAP_ANON | MAP_JIT;
-	const uintptr page = (uintptr)uae_vm_page_size();
-	const uintptr anchor = (uintptr)popallspace;
-	const intptr_t max_delta = 120 * 1024 * 1024;
-	const intptr_t step = 4 * 1024 * 1024;
-
-	for (intptr_t delta = 0; delta <= max_delta; delta += step) {
-		for (int dir = 0; dir < 2; dir++) {
-			if (delta == 0 && dir == 1) {
-				continue;
-			}
-			const intptr_t signed_delta = dir == 0 ? delta : -delta;
-			uintptr hint = (uintptr)((intptr_t)anchor + signed_delta);
-			hint &= ~(page - 1);
-			void *p = mmap((void *)hint, size, prot, flags, -1, 0);
-			if (p == MAP_FAILED) {
-				continue;
-			}
-			uint8 *code = (uint8 *)p;
-			if (arm64_cache_reaches_popall(code, size)) {
-				return code;
-			}
-			munmap(code, size);
-		}
-	}
-#endif
-	/* Fallback allocation may place cache out of branch range, checked by caller. */
-	return alloc_code(size);
-}
-#endif /* __APPLE__ */
-#endif /* CPU_AARCH64 */
+#endif /* CPU_AARCH64 && !__APPLE__ */
 
 void alloc_cache(void)
 {
@@ -2879,15 +2841,21 @@ void alloc_cache(void)
 	/* Use pre-allocated cache from the combined popallspace block if available */
 	if (popall_combined_cache_start && (uint32)cache_size <= popall_combined_cache_kb) {
 		compiled_code = popall_combined_cache_start;
+#if defined(__APPLE__)
+		jit_log("ARM64 macOS: one MAP_JIT region + pthread_jit_write_protect_np (allow-jit)");
+#endif
 	} else {
+#if defined(__APPLE__)
+		/* Hardened Runtime: a second mmap(MAP_JIT) is not allowed. */
+		jit_log("ARM64: no combined MAP_JIT cache; refusing a second mapping");
+		compiled_code = 0;
+		cache_size = 0;
+		return;
+#else
 		/* Fall back to separate allocation */
 		while (!compiled_code && cache_size) {
 			const uint32 cache_bytes = cache_size * 1024;
-#if defined(__APPLE__)
-			compiled_code = alloc_code_near_popall(cache_bytes);
-#else
 			compiled_code = alloc_code(cache_bytes);
-#endif
 			if (compiled_code && !arm64_cache_reaches_popall(compiled_code, cache_bytes)) {
 				jit_log("ARM64: JIT cache %p (size %u) is out of branch range from popallspace %p",
 					compiled_code, cache_bytes, popallspace);
@@ -2899,6 +2867,7 @@ void alloc_cache(void)
 				cache_size /= 2;
 			}
 		}
+#endif
 	}
 #else
 	while (!compiled_code && cache_size) {
@@ -3135,13 +3104,16 @@ STATIC_INLINE void create_popalls(void)
                 jit_log("ARM64: combined popallspace+cache allocation at %p (%u KB cache)",
                     popallspace, cache_kb);
             } else {
-                /* Fall back to popallspace-only allocation */
+                /* Do not mmap a second MAP_JIT region for trampolines
+                 * alone: Apple allows one MAP_JIT mapping per process
+                 * with allow-jit. Fail closed so alloc_cache cannot
+                 * create a second region. */
                 popall_combined_alloc_size = 0;
                 popall_combined_cache_start = NULL;
                 popall_combined_cache_kb = 0;
-                jit_log("ARM64: combined popallspace+cache allocation failed; retrying popallspace-only (%u bytes)",
-                    (unsigned)POPALLSPACE_SIZE);
-                popallspace = alloc_code(POPALLSPACE_SIZE);
+                jit_log("ARM64: combined MAP_JIT popall+cache failed; "
+                    "refusing a second MAP_JIT mapping (need com.apple.security.cs.allow-jit)");
+                popallspace = NULL;
             }
         } else {
             popall_combined_alloc_size = 0;

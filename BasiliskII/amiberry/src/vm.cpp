@@ -12,6 +12,7 @@
 #include "uae/log.h"
 #include "options.h"
 #include "memory.h"
+#include "jit_host.h"
 
 #ifndef NATMEM_OFFSET
 /* Hosted Cockatrice builds use indirect JIT, not NATMEM. */
@@ -338,13 +339,18 @@ bool uae_vm_free(void *address, size_t size)
 	return do_free(address, size);
 }
 
+/*
+ * Restores MAP_JIT execute mode through the shared host toggle.
+ *
+ * Arguments:
+ *   enable_execute_mode: True to run translated code (write-protect on).
+ *     False is ignored; open a jit_host write window to store instead so
+ *     the per-thread nesting counter stays consistent.
+ */
 void uae_vm_jit_write_protect(bool enable_execute_mode)
 {
-#if defined(__APPLE__) && defined(CPU_AARCH64)
-	pthread_jit_write_protect_np(enable_execute_mode ? 1 : 0);
-#else
-	(void)enable_execute_mode;
-#endif
+	if (enable_execute_mode)
+		jit_host_ensure_execute();
 }
 
 static void *try_reserve(uintptr_t try_addr, size_t size, int flags)

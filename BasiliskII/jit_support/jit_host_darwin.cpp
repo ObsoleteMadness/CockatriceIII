@@ -1,6 +1,10 @@
 /*
  *  jit_host_darwin.cpp - macOS implementation of the shared JIT-host support
  *
+ *  Apple Silicon: MAP_JIT pages are never writable and executable at once
+ *  for a given thread. Toggle with pthread_jit_write_protect_np() — do not
+ *  mprotect the region, and do not clear the APRR mask (libfixjit gist).
+ *
  *  CockatriceIII (C) 2026
  */
 
@@ -21,12 +25,25 @@
  * begin/end pairs interleave and close one thread's window early. */
 static thread_local int s_write_window_depth = 0;
 
+/*
+ * Returns whether this thread's MAP_JIT region uses APRR write-protect.
+ *
+ * Arguments: none.
+ *
+ * Returns:
+ *   True on Apple Silicon (must toggle before store vs execute).
+ */
+static int jit_wx_supported(void)
+{
+	return pthread_jit_write_protect_supported_np();
+}
+
 void jit_host_begin_write(void)
 {
 	s_write_window_depth++;
-	if (s_write_window_depth == 1) {
+	/* First opener: allow stores, deny execute on this thread. */
+	if (s_write_window_depth == 1 && jit_wx_supported())
 		pthread_jit_write_protect_np(0);
-	}
 }
 
 void jit_host_end_write(void)
@@ -37,15 +54,25 @@ void jit_host_end_write(void)
 		return;
 	}
 	s_write_window_depth--;
-	if (s_write_window_depth == 0) {
+	/* Last closer: deny stores, allow execute — the required dispatch state. */
+	if (s_write_window_depth == 0 && jit_wx_supported())
 		pthread_jit_write_protect_np(1);
-	}
 }
 
-#else /* Intel Mac: no W^X enforcement on JIT memory */
+void jit_host_ensure_execute(void)
+{
+	/* A live write window still owns the toggle; leave it alone. */
+	if (s_write_window_depth != 0)
+		return;
+	if (jit_wx_supported())
+		pthread_jit_write_protect_np(1);
+}
+
+#else /* Intel Mac: MAP_JIT APRR is not supported; RWX uses the unsigned-exec entitlement. */
 
 void jit_host_begin_write(void) {}
 void jit_host_end_write(void) {}
+void jit_host_ensure_execute(void) {}
 
 #endif
 

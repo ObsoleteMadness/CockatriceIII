@@ -23,6 +23,7 @@
  * CFG / Hardware-enforced Stack Protection) has a real hook to fill in. */
 void jit_host_begin_write(void) {}
 void jit_host_end_write(void) {}
+void jit_host_ensure_execute(void) {}
 
 void jit_host_flush_icache(void *start, void *stop)
 {
