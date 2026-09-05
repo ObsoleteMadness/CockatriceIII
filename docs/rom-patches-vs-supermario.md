@@ -402,7 +402,33 @@ Trap number: `$SM/Internal/Asm/TrapsPrivate.a:88` `_Microseconds OPWORD $A193`.
 
 ---
 
-## 8. ROM images
+## 8. Verified against a live boot
+
+The offline patch manifest
+(`BasiliskII/tests/basilisk/fixtures/quadra800_patches.txt`, asserted by
+`basilisk_patches_test`) was cross-checked against a real Musashi boot to
+`HasMacStarted: warm-start flag WLSC is set` on the Quadra 800 ROM
+(`modelid 29`, `cpu 4`, `ramsize 67108864`).
+
+57 of the 59 records are identical. The two differences are both expected:
+
+| Record | Offline | Live boot | Why |
+|---|---|---|---|
+| `InstallSlotROM` | `100000` | `0ffc18` | The test stubs out `InstallSlotROM()` (it needs the video subsystem) and reports `ROMSize`; the real one writes at `ROMSize - p`. |
+| `SERD 0 + serial drivers` | present | absent | The test pins `ltoudp false`; the boot config used `ltoudp true`, which skips the SERD branch. |
+
+So the manifest genuinely reflects what a boot does, and a diff against it is
+meaningful. Re-run the comparison after any patch change:
+
+```
+grep -a "ROM-PATCH" boot.log | sed -E 's/^\[ROM-PATCH\] //; s/ +@ /|/; s/ +MISSED.*/|MISSED/'
+```
+
+The same boot also confirmed the `'boot' 2` fix: the log now carries
+`[RSRC-PATCH] boot 2 fake handle @0 MISSED`, where previously that entire case
+was compiled out and invisible.
+
+## 9. ROM images
 
 `roms.txt` in the repo root lists 61 known images with md5 and checksum. It notes
 "not all are compatible" without saying which. The corpus test
