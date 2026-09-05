@@ -94,9 +94,23 @@ void EtherReadPacket(uint8 **src, uint32 &dest, uint32 &len, uint32 &remaining)
 void ADBOp(uint8 cmd, uint8 *data) { (void)cmd; (void)data; }
 void ADBInterrupt(void) {}
 
-void InsTime(uint32 tm, uint16 trap) { (void)tm; (void)trap; }
-void RmvTime(uint32 tm) { (void)tm; }
-void PrimeTime(uint32 tm, int count) { (void)tm; (void)count; }
+/*
+ * Time Manager stubs.
+ *
+ * These must match include/timer.h exactly. They used to be declared void while
+ * the header declares int16, which is an ODR violation: emul_op.cpp does
+ * "r->d[0] = InsTime(...)" and so read whatever happened to be in the return
+ * register. The stubs return noErr so basilisk_stubabi_test can tell "the trap
+ * stub propagated the result to D0" from "D0 was left alone".
+ */
+int16 InsTime(uint32 tm, uint16 trap) { (void)tm; (void)trap; return 0; }
+int16 RmvTime(uint32 tm) { (void)tm; return 0; }
+int16 PrimeTime(uint32 tm, int32 count) { (void)tm; (void)count; return 0; }
+
+/*
+ * Microseconds() returns a fixed count so the ABI is testable: the caller of
+ * trap $A093 expects A0 = high, D0 = low ($SM/OS/TimeMgr/TimeMgr.a:741).
+ */
 void Microseconds(uint32 &hi, uint32 &lo) { hi = 0; lo = 1000; }
 void TimerInterrupt(void) {}
 

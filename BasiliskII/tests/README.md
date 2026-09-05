@@ -37,6 +37,19 @@ plus boundary cases: resources shorter than a signature, signatures with too
 little run-up, empty and all-`0xFF` buffers. Every fixture is bracketed with
 guard bytes, so an out-of-bounds write is caught without ASAN too.
 
+`basilisk_patchguard_test` proves the patch pass fails *loudly*. Each case
+corrupts a copy of the ROM so one locator misses, then asserts `PatchROM()`
+returns false and ROM offset 0 is untouched — offset 0 being where every failed
+locator used to write its patch.
+
+`basilisk_stubabi_test` executes the stubs `PatchROM()` plants and checks their
+register contracts against the Apple ROM sources: `Microseconds` returning
+A0 = high / D0 = low, the Time Manager wrapper restoring the caller's interrupt
+mask, `BlockMove`'s copy and noErr, and the hand-emulated `rtd` in
+`SCSIDispatch` removing exactly the selector and arguments. The manifest says a
+patch landed at the right offset; this says the bytes there behave. Stub offsets
+are read from `GetPatchLog()`, so the two cannot drift apart.
+
 ```
 ASAN=1 make test-basilisk      # AddressSanitizer + UBSan
 ```

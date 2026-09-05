@@ -8,7 +8,7 @@ fail=0
 
 for t in basilisk_memory_test basilisk_engine_test basilisk_emulop_test \
 	basilisk_patches_test basilisk_rsrcpatch_test basilisk_patchguard_test \
-	basilisk_scsi_test basilisk_scc_test basilisk_disk_test
+	basilisk_stubabi_test basilisk_scsi_test basilisk_scc_test basilisk_disk_test
 do
 	if [ ! -x "./$t" ]; then
 		echo "MISSING $t (build first with make)"
