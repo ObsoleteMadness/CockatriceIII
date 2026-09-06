@@ -67,6 +67,55 @@ bool VideoInit(bool classic) { (void)classic; return true; }
 void VideoExit(void) {}
 void VideoQuitFullScreen(void) {}
 void video_set_palette(uint8 *pal) { (void)pal; }
+bool Video_SwitchToMode(int width, int height) { (void)width; (void)height; return false; }
+bool Video_SwitchToModeDepth(int width, int height, int mode)
+{
+	(void)width;
+	(void)height;
+	(void)mode;
+	return false;
+}
+int Video_PresetCount(void) { return 0; }
+bool Video_GetPreset(int index, int *width, int *height)
+{
+	(void)index;
+	(void)width;
+	(void)height;
+	return false;
+}
+uint32 Video_ResolutionIDForSize(int width, int height) { (void)width; (void)height; return 0; }
+bool Video_SizeForResolutionID(uint32 id, int *width, int *height)
+{
+	(void)id;
+	(void)width;
+	(void)height;
+	return false;
+}
+uint16 Video_AppleModeForDepth(int mode) { return (uint16)(0x80 + (mode < 0 ? 0 : mode)); }
+int Video_DepthForAppleMode(uint16 apple_mode) { return (int)apple_mode - 0x80; }
+bool Video_HasDepth(int mode) { (void)mode; return true; }
+uint16 Video_MaxAppleMode(void) { return 0x85; }
+uint16 Video_CurrentAppleMode(void) { return 0x80; }
+uint32 Video_CurrentResolutionID(void) { return 0x80; }
+uint32 Video_BytesPerRow(int width) { return (uint32)(width < 0 ? 0 : width); }
+uint32 Video_BytesPerRowForMode(int width, int mode)
+{
+	(void)mode;
+	return (uint32)(width < 0 ? 0 : width);
+}
+uint32 Video_ReservedFrameBytes(void) { return 0; }
+void Video_BuildPresets(int host_width, int host_height) { (void)host_width; (void)host_height; }
+int Video_MaxWidth(void) { return 1920; }
+int Video_MaxHeight(void) { return 1080; }
+void Video_NoteCurrentMode(int width, int height) { (void)width; (void)height; }
+void Video_UpdateSlotTable(uint32 dce, uint32 param) { (void)dce; (void)param; }
+void Video_EnableGuestNotify(bool enable) { (void)enable; }
+bool Video_GuestNotifyEnabled(void) { return true; }
+int16 Video_GuestSwitchToSize(int width, int height) { (void)width; (void)height; return -50; }
+uint32 Video_RegisterGuestSize(int width, int height) { (void)width; (void)height; return 0; }
+bool Video_DisplayManagerPresent(void) { return false; }
+int16 Video_DriverRefNum(void) { return 0; }
+void Video_ResetForWarmStart(void) {}
 
 int16 VideoDriverOpen(uint32 pb, uint32 dce) { (void)pb; (void)dce; return 0; }
 int16 VideoDriverControl(uint32 pb, uint32 dce) { (void)pb; (void)dce; return 0; }
@@ -171,6 +220,15 @@ bool InstallSlotROM(void)
 {
 	SlotROMOffset = ROMSize;
 	return true;
+}
+
+void ChecksumSlotROM(void) {}
+void SlotROM_PatchMode(int mode, int width, int height, uint32 row_bytes)
+{
+	(void)mode;
+	(void)width;
+	(void)height;
+	(void)row_bytes;
 }
 
 void SysAddFloppyPrefs(void) {}

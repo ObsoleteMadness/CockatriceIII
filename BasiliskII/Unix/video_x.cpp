@@ -871,6 +871,24 @@ void VideoQuitFullScreen(void)
 		quit_full_screen = true;
 }
 
+/*
+ * Live resolution switch is implemented by the SDL backend; this X11 path
+ * keeps a fixed window for the life of the session.
+ *
+ * Arguments:
+ *   width, height: Requested pixel size (ignored).
+ *
+ * Returns:
+ *   false; the logical mode is unchanged.
+ */
+bool Video_SwitchToModeDepth(int width, int height, int mode)
+{
+	(void)width;
+	(void)height;
+	(void)mode;
+	return false;
+}
+
 
 /*
  *  Mac VBL interrupt

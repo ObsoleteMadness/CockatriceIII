@@ -29,6 +29,7 @@
 #include "sony.h"
 #include "disk.h"
 #include "audio.h"
+#include "video.h"
 
 // Last Macintosh PC observed by the active engine (VideoInterrupt heartbeat)
 extern "C" uint32 cpu_engine_last_pc = 0;
@@ -536,6 +537,8 @@ void cpu_engine_reset_peripherals(void)
 	DiskReset();
 	AudioReset();
 	Mac_memset(RAMBaseMac, 0, RAMSize);
+	// VideoMonitor and slot-ROM VModeParms survive RAM wipe; restore boot size
+	Video_ResetForWarmStart();
 }
 
 /*

@@ -28,6 +28,7 @@
 #include "toolbox_traps.h"
 #include "toolbox_menu.h"
 #include "toolbox_window.h"
+#include "video.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -83,6 +84,8 @@ void MenuQueue_Drain(void)
         Toolbox_ProcessPendingMenuBarSync();
         Toolbox_ProcessPendingWindowSync();
     }
+    if (Toolbox_ScreenResizePending())
+        Toolbox_EnableSafePoint();
 
     while (s_tail != s_head) {
         MenuCmd cmd = s_queue[s_tail];
@@ -179,6 +182,13 @@ void MenuQueue_Drain(void)
                                       (int16)cmd.param3, (int16)cmd.param4, cmd.param5);
             break;
 
+        case MENU_CMD_SET_VIDEO_MODE:
+            printf("MenuQueue: Set Video Mode %dx%d\n", cmd.param, cmd.param2);
+            fflush(stdout);
+            // Queue only: the jGNEFilter safe point calls cscSwitchMode
+            Toolbox_NotifyScreenResized((int16)cmd.param, (int16)cmd.param2);
+            break;
+
         default:
             break;
         }
@@ -270,6 +280,26 @@ void MenuAction_GuestInput(int windowPtr, int kind, int x, int y, int code)
     cmd.param4 = y;
     cmd.param5 = code;
     MenuQueue_Post(&cmd);
+}
+
+void MenuAction_SetVideoMode(int width, int height)
+{
+    MenuCmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type   = MENU_CMD_SET_VIDEO_MODE;
+    cmd.param  = width;
+    cmd.param2 = height;
+    MenuQueue_Post(&cmd);
+}
+
+int Menu_VideoPresetCount(void)
+{
+    return Video_PresetCount();
+}
+
+bool Menu_VideoPresetAt(int index, int *width, int *height)
+{
+    return Video_GetPreset(index, width, height);
 }
 
 void MenuAction_SaveConfig(void)

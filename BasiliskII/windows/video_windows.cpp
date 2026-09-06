@@ -157,3 +157,20 @@ void set_video_monitor(int width, int height, int bytes_per_row)
 	//else
 		MacFrameLayout = FLAYOUT_DIRECT;
 }
+
+/*
+ * Live resolution switch is an SDL-window feature; the Windows backend is out of scope.
+ *
+ * Arguments:
+ *   width, height: Requested pixel size (ignored).
+ *
+ * Returns:
+ *   false; the logical mode is unchanged.
+ */
+bool Video_SwitchToModeDepth(int width, int height, int mode)
+{
+	(void)width;
+	(void)height;
+	(void)mode;
+	return false;
+}

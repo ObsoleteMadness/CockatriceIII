@@ -73,7 +73,9 @@ enum {
 	kTrap_SetPort       = 0xa873, // PROCEDURE SetPort(port)
 	kTrap_GetPort       = 0xa874, // PROCEDURE GetPort(VAR port)
 	kTrap_WaitNextEvent = 0xa860, // FUNCTION  WaitNextEvent(...): Boolean
-	kTrap_EventAvail    = 0xa971  // FUNCTION  EventAvail(mask, VAR evt): Boolean
+	kTrap_EventAvail    = 0xa971, // FUNCTION  EventAvail(mask, VAR evt): Boolean
+	kTrap_AllocCursor      = 0xaa1d, // PROCEDURE AllocCursor; rebuilds CrsrRow / cursor data
+	kTrap_DisplayDispatch  = 0xabeb  // Display Manager; D0 = (paramWords<<8)|selector
 };
 
 /*
@@ -337,6 +339,27 @@ void Toolbox_WindowSafePoint(struct M68kRegisters *r);
  * from the interrupt drain by whichever clients need a safe context to work in.
  */
 void Toolbox_EnableSafePoint(void);
+
+/*
+ * Returns true when a screen-resize notification is waiting for the
+ * jGNEFilter stub. MenuQueue_Drain uses this to arm the safe point even
+ * when toolbox_hooks is off.
+ */
+bool Toolbox_ScreenResizePending(void);
+
+/*
+ * Queues a guest-screen switch for the next jGNEFilter safe point.
+ *
+ * The safe point prefers Display Manager (DMBeginConfigureDisplays /
+ * DMSetDisplayMode / DMEndConfigureDisplays) so InitGDevice, ports,
+ * cursor and the desktop are rebuilt the way Monitors does. Without
+ * DM it falls back to cscSwitchMode + geometry + _AllocCursor.
+ * Safe to call from VideoInterrupt / doevents.
+ *
+ * Arguments:
+ *   width, height: New screen size in pixels.
+ */
+void Toolbox_NotifyScreenResized(int16 width, int16 height);
 
 /*
  * Presses the frontmost dialog's default button, by way of the Return key.

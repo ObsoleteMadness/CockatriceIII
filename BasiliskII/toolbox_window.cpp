@@ -71,7 +71,20 @@ enum {
 	LM_WindowList = 0x09d6, // WindowPtr to the frontmost window; head of the list
 	LM_GrayRgn    = 0x09ee, // Desktop region; its bounding box is the whole desktop
 	LM_TheGDevice = 0x0cc8, // GDHandle of the current graphics device (the screen)
-	LM_JGNEFilter = 0x029a  // Event Manager filter vector; our safe point hook
+	LM_JGNEFilter = 0x029a, // Event Manager filter vector; our safe point hook
+	LM_ScreenBits = 0x0260, // BitMap of the main screen
+	LM_ScrnBase   = 0x0824, // Color QD frame-buffer base
+	LM_WMgrPort    = 0x09de, // Window Manager GrafPort
+	LM_WMgrCPort   = 0x0d2c, // Window Manager colour GrafPort
+	LM_ScreenRow   = 0x0106, // rowBytes of the main screen
+	LM_CrsrPin     = 0x0834, // cursor pinning rect; must match gdRect
+	LM_CrsrBase    = 0x0898, // frame-buffer base the cursor blit uses
+	LM_CrsrRow     = 0x08ac, // rowBytes the cursor blit uses
+	LM_CrsrBusy    = 0x08cd, // non-zero holds the cursor VBL
+	LM_RowBits     = 0x0c20, // screen width in pixels
+	LM_ColLines    = 0x0c22, // screen height in pixels
+	LM_ScreenBytes = 0x0c24, // rowBytes * height
+	LM_ChunkyDepth = 0x0d60  // bits per pixel the cursor expand uses
 };
 
 /*
@@ -140,17 +153,26 @@ enum {
 	kPix_BaseAddr  = 0,
 	kPix_RowBytes  = 4,  // High two bits are flags, not part of the count
 	kPix_Bounds    = 6,
+	kPix_PixelType = 30,
 	kPix_PixelSize = 32,
+	kPix_CmpCount  = 34,
+	kPix_CmpSize   = 36,
 	kPix_PmTable   = 42,
 	kPix_RowBytesFlag = 0x8000 // Marks the record as a PixMap rather than a BitMap
 };
 
 /*
- * GDevice field offsets; only gdPMap is needed, to recognise the screen's own
- * PixMap and refuse to redirect it.
+ * GDevice field offsets (Quickdraw.h). gdPMap identifies the screen PixMap
+ * so we refuse to redirect it. After cscSwitchMode we copy GetDevPixMap's
+ * geometry (gdRect / pixmap rowBytes and bounds) from VideoMonitor and
+ * then call _AllocCursor; we do not call _InitGDevice (its port walk
+ * JSR'd to $2E from the jGNEFilter stub).
  */
 enum {
-	kGD_PMap = 22
+	kGD_Type    = 4,   // 0 = CLUT, 2 = direct
+	kGD_PMap    = 22,
+	kGD_Rect    = 34,
+	kGD_CCDepth = 48   // gdCCDepth; 0 forces AllocCursor to rebuild
 };
 
 enum {
@@ -194,7 +216,8 @@ static bool s_palette_valid = false;
  * there, and the Menu Manager client hands over its menu-bar event there. So
  * the filter is not tied to mdi_windows -- a build with only the host menu bar
  * turned on still needs it, or a menu choice made on the host would never be
- * dispatched.
+ * dispatched. Screen-resize notification also uses it, independently of the
+ * toolbox_hooks pref, because _InvalRect is only safe from this context.
  */
 static bool s_safepoint_wanted = false;
 
@@ -301,14 +324,16 @@ static uint32 arena_alloc(uint32 size)
  * Used for the handful of thunks this module installs. Taking them from the
  * arena rather than the System heap means installing them needs no Memory
  * Manager call, which would itself be a Toolbox call made from the interrupt.
+ * Pages stay data-mapped: the 68k JIT fetches opcodes as loads, and host
+ * W^X rejects PROT_EXEC on the 4GB window.
  */
 static uint32 arena_alloc_exec(uint32 size)
 {
 	uint32 addr = arena_alloc(size);
 	if (!addr)
 		return 0;
-	memory_commit_range(addr, size,
-	                    MEMORY_PROT_READ | MEMORY_PROT_WRITE | MEMORY_PROT_EXEC);
+	// 68k fetch is a data load; host W^X rejects PROT_EXEC on this mapping
+	memory_commit_range(addr, size, MEMORY_PROT_READ | MEMORY_PROT_WRITE);
 	return addr;
 }
 
@@ -347,6 +372,17 @@ static void read_rect(uint32 addr, int16 &top, int16 &left, int16 &bottom, int16
 	left   = (int16)ReadMacInt16(addr + kRect_Left);
 	bottom = (int16)ReadMacInt16(addr + kRect_Bottom);
 	right  = (int16)ReadMacInt16(addr + kRect_Right);
+}
+
+/*
+ * Writes a Rect to guest memory as top, left, bottom, right.
+ */
+static void write_rect(uint32 addr, int16 top, int16 left, int16 bottom, int16 right)
+{
+	WriteMacInt16(addr + kRect_Top, (uint16)top);
+	WriteMacInt16(addr + kRect_Left, (uint16)left);
+	WriteMacInt16(addr + kRect_Bottom, (uint16)bottom);
+	WriteMacInt16(addr + kRect_Right, (uint16)right);
 }
 
 /*
@@ -411,7 +447,8 @@ enum {
 	kWinOp_BringFront = 4, // diagnostic: the two halves of Select, on their own
 	kWinOp_Hilite     = 5,
 	kWinOp_SizeNoUpd  = 6, // diagnostic: _SizeWindow with fUpdate false
-	kWinOp_Invalidate = 7  // _InvalRect over the whole content, in the window's port
+	kWinOp_Invalidate = 7, // _InvalRect over the whole content, in the window's port
+	kWinOp_ScreenResized = 8 // guest screen changed; a/b are the new width/height
 };
 
 // MOVEM.L D0-D7/A0-A6 at the top of the filter stub: fifteen registers
@@ -419,6 +456,9 @@ enum { kFilterSavedRegs = 60 };
 
 enum {
 	// The stub occupies the first 56 bytes; the rest is its data and the routine
+	kCode_InvalRect  = 56,  // unused; kept so later offsets stay put
+	kCode_DMState    = 56,  // Handle for DMBeginConfigureDisplays
+	kCode_DMDepth    = 60,  // unsigned long* desiredDepthMode
 	kCode_Flag       = 64,  // byte: a routine is waiting to be run
 	kCode_Busy       = 65,  // byte: the routine is running now
 	kCode_Done       = 66,  // word: sequence number of the last routine to finish
@@ -440,6 +480,8 @@ static uint32 s_saved_port = 0;     // scratch space for the port GetPort saves
 static uint16 s_scratch_seq = 0;    // bumped per assembled routine
 static uint16 s_scratch_reported = 0;
 static bool s_gne_installed = false;
+static bool s_screen_resize_pending = false;
+static int16 s_applied_w = 0, s_applied_h = 0;
 
 // Defined with the safe-point machinery further down
 static void queue_window_op(int type, uint32 window, int16 a, int16 b);
@@ -785,6 +827,126 @@ static void set_rect_region(uint32 rgn_handle, int16 top, int16 left, int16 bott
 	WriteMacInt16(rgn + kRgn_BBox + kRect_Left, (uint16)left);
 	WriteMacInt16(rgn + kRgn_BBox + kRect_Bottom, (uint16)bottom);
 	WriteMacInt16(rgn + kRgn_BBox + kRect_Right, (uint16)right);
+}
+
+/*
+ * Bits per pixel for the logical VideoMonitor.mode, used as ChunkyDepth
+ * so the cursor expand picks the matching blit (CCrsrCore.a JSR (A3)).
+ */
+static int guest_pixel_size(void)
+{
+	switch (VideoMonitor.mode) {
+	case VMODE_1BIT:  return 1;
+	case VMODE_2BIT:  return 2;
+	case VMODE_4BIT:  return 4;
+	case VMODE_8BIT:  return 8;
+	case VMODE_16BIT: return 16;
+	case VMODE_32BIT: return 32;
+	default:          return 8;
+	}
+}
+
+/*
+ * Copies the new screen size into the GDevice pixmap, Window Manager
+ * ports, and the cursor low-memory Display Manager writes after
+ * cscSwitchMode (DisplayMgr.c FixLowMem / DMMoveCursor).
+ *
+ * CrsrRow / CrsrPin / CrsrBase are what the cursor VBL blits with. Leaving
+ * them at the old pitch is why a shrink garbled the cursor and a grow
+ * address-errored at ROM $4082E78A (JSR (A3) with a stale expand vector).
+ * pixelSize and the CLUT stay with InitGDevice; we only call _AllocCursor
+ * afterwards so the expanded cursor matches this pitch.
+ *
+ * Arguments:
+ *   width, height: Pixel size VideoMonitor now describes.
+ */
+static void apply_guest_screen_geometry(int16 width, int16 height)
+{
+	if (width <= 0 || height <= 0)
+		return;
+
+	uint32 row_bytes = VideoMonitor.bytes_per_row;
+	uint32 base = VideoMonitor.mac_frame_base;
+
+	uint32 gd_handle = ReadMacInt32(LM_TheGDevice);
+	if (valid_guest_ptr(gd_handle)) {
+		uint32 gd = ReadMacInt32(gd_handle);
+		if (valid_guest_ptr(gd)) {
+			write_rect(gd + kGD_Rect, 0, 0, height, width);
+			// 0 forces AllocCursor to rebuild the expanded cursor for this pitch
+			WriteMacInt16(gd + kGD_CCDepth, 0);
+			uint32 pm_handle = ReadMacInt32(gd + kGD_PMap);
+			if (valid_guest_ptr(pm_handle)) {
+				uint32 pixmap = ReadMacInt32(pm_handle);
+				if (valid_guest_ptr(pixmap)) {
+					WriteMacInt32(pixmap + kPix_BaseAddr, base);
+					uint16 flags = (uint16)ReadMacInt16(pixmap + kPix_RowBytes) & 0xc000;
+					WriteMacInt16(pixmap + kPix_RowBytes, (uint16)(row_bytes | flags));
+					write_rect(pixmap + kPix_Bounds, 0, 0, height, width);
+				}
+			}
+		}
+	}
+
+	WriteMacInt32(LM_ScrnBase, base);
+	WriteMacInt16(LM_ScreenBits + 4, (uint16)row_bytes);
+	write_rect(LM_ScreenBits + 6, 0, 0, height, width);
+	WriteMacInt16(LM_ScreenRow, (uint16)row_bytes);
+
+	// DisplayMgr.c DMMoveCursor: cursor blit uses these, not the pixmap
+	WriteMacInt32(LM_CrsrBase, base);
+	WriteMacInt16(LM_CrsrRow, (uint16)(row_bytes & 0x7fff));
+	write_rect(LM_CrsrPin, 0, 0, height, width);
+	WriteMacInt16(LM_ChunkyDepth, (uint16)guest_pixel_size());
+	WriteMacInt16(LM_RowBits, (uint16)width);
+	WriteMacInt16(LM_ColLines, (uint16)height);
+	WriteMacInt32(LM_ScreenBytes, row_bytes * (uint32)height);
+
+	set_rect_region(ReadMacInt32(LM_GrayRgn), 0, 0, height, width);
+
+	uint32 wm_cport = ReadMacInt32(LM_WMgrCPort);
+	if (valid_guest_ptr(wm_cport)) {
+		write_rect(wm_cport + kPort_PortRect, 0, 0, height, width);
+		if (port_is_color(wm_cport)) {
+			uint32 pm_handle = ReadMacInt32(wm_cport + kPort_PortPixMap);
+			if (valid_guest_ptr(pm_handle)) {
+				uint32 pixmap = ReadMacInt32(pm_handle);
+				if (valid_guest_ptr(pixmap)) {
+					WriteMacInt32(pixmap + kPix_BaseAddr, base);
+					uint16 flags = (uint16)ReadMacInt16(pixmap + kPix_RowBytes) & 0xc000;
+					WriteMacInt16(pixmap + kPix_RowBytes, (uint16)(row_bytes | flags));
+					write_rect(pixmap + kPix_Bounds, 0, 0, height, width);
+				}
+			}
+		}
+	}
+
+	uint32 wm_port = ReadMacInt32(LM_WMgrPort);
+	if (valid_guest_ptr(wm_port)) {
+		WriteMacInt32(wm_port + kPort_PortBitsBase, base);
+		WriteMacInt16(wm_port + kPort_PortBitsRow, (uint16)row_bytes);
+		write_rect(wm_port + kPort_PortBitsBound, 0, 0, height, width);
+		write_rect(wm_port + kPort_PortRect, 0, 0, height, width);
+	}
+
+	if (s_desktop_window && valid_guest_ptr(s_desktop_window)) {
+		write_rect(s_desktop_window + kPort_PortRect, 0, 0, height, width);
+		if (port_is_color(s_desktop_window)) {
+			uint32 pm_handle = ReadMacInt32(s_desktop_window + kPort_PortPixMap);
+			if (valid_guest_ptr(pm_handle)) {
+				uint32 pixmap = ReadMacInt32(pm_handle);
+				if (valid_guest_ptr(pixmap)) {
+					uint16 flags = (uint16)ReadMacInt16(pixmap + kPix_RowBytes) & 0xc000;
+					WriteMacInt16(pixmap + kPix_RowBytes, (uint16)(row_bytes | flags));
+					write_rect(pixmap + kPix_Bounds, 0, 0, height, width);
+				}
+			}
+		}
+	}
+
+	printf("[TOOLBOX-WIN] screen geometry now %dx%d mode %d (rowBytes %u)\n",
+	       (int)width, (int)height, VideoMonitor.mode, row_bytes);
+	fflush(stdout);
 }
 
 /*
@@ -1664,14 +1826,16 @@ static bool assemble_window_calls(const std::vector<WindowOp> &ops)
 	for (size_t i = 0; i < ops.size(); i++) {
 		const WindowOp &op = ops[i];
 
-		// The window may have been disposed between queueing and now
-		if (find_window(s_last_snapshot, op.window) < 0) {
-			printf("[TOOLBOX-WIN] safe point: op=%d window 0x%08X is gone; skipped\n",
-			       op.type, (unsigned)op.window);
-			fflush(stdout);
-			continue;
+		// Screen-resize has no window; everything else may have been disposed
+		if (op.type != kWinOp_ScreenResized) {
+			if (find_window(s_last_snapshot, op.window) < 0) {
+				printf("[TOOLBOX-WIN] safe point: op=%d window 0x%08X is gone; skipped\n",
+				       op.type, (unsigned)op.window);
+				fflush(stdout);
+				continue;
+			}
 		}
-		if (pc + 32 > limit)
+		if (pc + 128 > limit)
 			break;
 
 		switch (op.type) {
@@ -1735,6 +1899,79 @@ static bool assemble_window_calls(const std::vector<WindowOp> &ops)
 			TRAP(kTrap_SetPort);
 			break;
 
+		/*
+		 * Display Manager mode switch (Displays.a). Assembled here so a
+		 * yield inside InitGDevice / FixPorts is a normal GetNextEvent
+		 * yield, not a nested Execute68kTrap that never returns.
+		 *
+		 *   DMBeginConfigureDisplays(&state)
+		 *   DMSetDisplayMode(TheGDevice, modeID, &depth, nil, state)
+		 *   DMEndConfigureDisplays(state)
+		 *   DMDrawDesktopRect(&newScreen)
+		 *
+		 * op.window is the DisplayModeID; a/b are the new width/height
+		 * used only for the desktop rect. Selectors are
+		 * (paramWords<<8)|select from Displays.a.
+		 */
+		case kWinOp_ScreenResized: {
+			uint32 state = s_code_base + kCode_DMState;
+			uint32 depth = s_code_base + kCode_DMDepth;
+			uint32 mode_id = op.window;
+
+			WriteMacInt16(pc, 0x4267); pc += 2;                 // CLR.W -(SP)
+			WriteMacInt16(pc, 0x4879);                          // PEA state
+			WriteMacInt32(pc + 2, state);
+			pc += 6;
+			WriteMacInt16(pc, 0x303c);                          // MOVE.W #$0206,D0
+			WriteMacInt16(pc + 2, 0x0206);
+			pc += 4;
+			TRAP(kTrap_DisplayDispatch);
+			WriteMacInt16(pc, 0x301f); pc += 2;                 // MOVE.W (SP)+,D0
+
+			WriteMacInt16(pc, 0x4267); pc += 2;
+			WriteMacInt16(pc, 0x2f39);                          // MOVE.L TheGDevice,-(SP)
+			WriteMacInt32(pc + 2, LM_TheGDevice);
+			pc += 6;
+			WriteMacInt16(pc, 0x2f3c);                          // MOVE.L #modeID,-(SP)
+			WriteMacInt32(pc + 2, mode_id);
+			pc += 6;
+			WriteMacInt16(pc, 0x4879);                          // PEA depth
+			WriteMacInt32(pc + 2, depth);
+			pc += 6;
+			WriteMacInt16(pc, 0x42a7); pc += 2;                 // CLR.L -(SP) switchModeInfo
+			WriteMacInt16(pc, 0x2f39);                          // MOVE.L state.L,-(SP)
+			WriteMacInt32(pc + 2, state);
+			pc += 6;
+			WriteMacInt16(pc, 0x303c);
+			WriteMacInt16(pc + 2, 0x0a11);
+			pc += 4;
+			TRAP(kTrap_DisplayDispatch);
+			WriteMacInt16(pc, 0x301f); pc += 2;
+
+			WriteMacInt16(pc, 0x4267); pc += 2;
+			WriteMacInt16(pc, 0x2f39);
+			WriteMacInt32(pc + 2, state);
+			pc += 6;
+			WriteMacInt16(pc, 0x303c);
+			WriteMacInt16(pc + 2, 0x0207);
+			pc += 4;
+			TRAP(kTrap_DisplayDispatch);
+			WriteMacInt16(pc, 0x301f); pc += 2;
+
+			// Rect on the stack as top,left,bottom,right (last push is at SP)
+			PUSH_W(op.a);                                       // right
+			PUSH_W(op.b);                                       // bottom
+			PUSH_W(0);                                          // left
+			PUSH_W(0);                                          // top
+			WriteMacInt16(pc, 0x4857); pc += 2;                 // PEA (SP)
+			WriteMacInt16(pc, 0x303c);
+			WriteMacInt16(pc + 2, 0x0202);
+			pc += 4;
+			TRAP(kTrap_DisplayDispatch);
+			WriteMacInt16(pc, 0x508f); pc += 2;                 // ADDQ.L #8,SP
+			break;
+		}
+
 		default:
 			continue;
 		}
@@ -1772,8 +2009,15 @@ static bool assemble_window_calls(const std::vector<WindowOp> &ops)
  */
 static void ensure_gne_filter(void)
 {
-	if (s_gne_installed || !s_safepoint_wanted || !ensure_guest_code())
+	if (!s_safepoint_wanted || !ensure_guest_code())
 		return;
+
+	// Reinstall if the ROM overwrote the vector after an early install
+	if (s_gne_installed) {
+		if (ReadMacInt32(LM_JGNEFilter) == s_gne_stub)
+			return;
+		s_gne_installed = false;
+	}
 
 	uint32 previous = ReadMacInt32(LM_JGNEFilter);
 
@@ -1833,9 +2077,10 @@ static void queue_window_op(int type, uint32 window, int16 a, int16 b)
  */
 void Toolbox_EnableSafePoint(void)
 {
-	// Installing the filter writes a low-memory vector, which is exactly the
-	// kind of thing toolbox_hooks false must prevent
-	if (!ToolboxTrap_HooksEnabled())
+	// Installing the filter writes a low-memory vector. toolbox_hooks false
+	// normally prevents that, but a pending screen-resize still needs the
+	// jGNEFilter path -- that is where cscSwitchMode + geometry copy run.
+	if (!ToolboxTrap_HooksEnabled() && !s_screen_resize_pending)
 		return;
 
 	s_safepoint_wanted = true;
@@ -1843,10 +2088,51 @@ void Toolbox_EnableSafePoint(void)
 }
 
 /*
+ * Returns true when a screen-resize op is waiting for the jGNEFilter stub.
+ */
+bool Toolbox_ScreenResizePending(void)
+{
+	return s_screen_resize_pending;
+}
+
+/*
+ * Queues a cscSwitchMode + geometry + _AllocCursor for the next jGNEFilter.
+ *
+ * Must not poke QuickDraw structures here: Notify runs from VideoInterrupt.
+ *
+ * Arguments:
+ *   width, height: New screen size in pixels.
+ */
+void Toolbox_NotifyScreenResized(int16 width, int16 height)
+{
+	s_screen_resize_pending = true;
+	s_safepoint_wanted = true;
+
+	for (size_t i = 0; i < s_pending_ops.size(); i++) {
+		if (s_pending_ops[i].type == kWinOp_ScreenResized) {
+			s_pending_ops[i].a = width;
+			s_pending_ops[i].b = height;
+			ensure_gne_filter();
+			return;
+		}
+	}
+
+	WindowOp op;
+	op.type = kWinOp_ScreenResized;
+	op.window = 0;
+	op.a = width;
+	op.b = height;
+	s_pending_ops.push_back(op);
+	ensure_gne_filter();
+}
+
+/*
  * Assembles any queued window operations for the filter stub to run.
  *
- * Called only from the jGNEFilter stub, by way of EmulOp. It performs no guest
- * calls itself -- see the note above the stub for why it cannot.
+ * Called only from the jGNEFilter stub, by way of EmulOp. Window Manager
+ * traps are assembled for the stub to run after we return. A screen-resize
+ * assembles DMSetDisplayMode when Display Manager is present; otherwise
+ * it calls cscSwitchMode here and copies geometry + _AllocCursor.
  */
 void Toolbox_WindowSafePoint(M68kRegisters *r)
 {
@@ -1868,7 +2154,9 @@ void Toolbox_WindowSafePoint(M68kRegisters *r)
 		Toolbox_MenuSafePoint(r->a[1], sp + 4);
 	}
 
-	if (!s_active || !s_code_base)
+	if (!s_code_base)
+		return;
+	if (!s_active && s_pending_ops.empty())
 		return;
 
 	// Report the guest having finished the previous routine
@@ -1904,6 +2192,64 @@ void Toolbox_WindowSafePoint(M68kRegisters *r)
 
 	std::vector<WindowOp> ops;
 	ops.swap(s_pending_ops);
+	s_screen_resize_pending = false;
+
+	int16 geo_w = 0, geo_h = 0;
+	for (size_t i = 0; i < ops.size(); i++) {
+		if (ops[i].type == kWinOp_ScreenResized) {
+			geo_w = ops[i].a;
+			geo_h = ops[i].b;
+		}
+	}
+	if (geo_w > 0 && geo_h > 0) {
+		if (geo_w == s_applied_w && geo_h == s_applied_h) {
+			std::vector<WindowOp> kept;
+			for (size_t i = 0; i < ops.size(); i++) {
+				if (ops[i].type != kWinOp_ScreenResized)
+					kept.push_back(ops[i]);
+			}
+			ops.swap(kept);
+		} else if (Video_DisplayManagerPresent() && s_code_base) {
+			// DMSetDisplayMode from the stub (not Execute68kTrap): InitGDevice
+			// with mainScreen cleared, FixPorts, AllocCursor, desktop paint.
+			uint32 id = Video_RegisterGuestSize((int)geo_w, (int)geo_h);
+			WriteMacInt32(s_code_base + kCode_DMState, 0);
+			WriteMacInt32(s_code_base + kCode_DMDepth, Video_CurrentAppleMode());
+			for (size_t i = 0; i < ops.size(); i++) {
+				if (ops[i].type == kWinOp_ScreenResized)
+					ops[i].window = id;
+			}
+			s_applied_w = geo_w;
+			s_applied_h = geo_h;
+			printf("[TOOLBOX-WIN] DMSetDisplayMode %dx%d id %08lx apple %04x\n",
+			       (int)geo_w, (int)geo_h, (unsigned long)id,
+			       (unsigned)Video_CurrentAppleMode());
+			fflush(stdout);
+		} else {
+			std::vector<WindowOp> kept;
+			for (size_t i = 0; i < ops.size(); i++) {
+				if (ops[i].type != kWinOp_ScreenResized)
+					kept.push_back(ops[i]);
+			}
+			ops.swap(kept);
+
+			WriteMacInt8(LM_CrsrBusy, 1);
+			int16 err = Video_GuestSwitchToSize((int)geo_w, (int)geo_h);
+			if (err != noErr) {
+				printf("[TOOLBOX-WIN] cscSwitchMode %dx%d failed (%d)\n",
+				       (int)geo_w, (int)geo_h, (int)err);
+				fflush(stdout);
+			} else {
+				apply_guest_screen_geometry(geo_w, geo_h);
+				M68kRegisters cr;
+				memset(&cr, 0, sizeof(cr));
+				Execute68kTrap(kTrap_AllocCursor, &cr);
+				s_applied_w = geo_w;
+				s_applied_h = geo_h;
+			}
+			WriteMacInt8(LM_CrsrBusy, 0);
+		}
+	}
 
 	if (assemble_window_calls(ops))
 		WriteMacInt8(s_flag_addr, 1);
@@ -2092,6 +2438,8 @@ void ToolboxWindow_Reset(void)
 	s_input_queue.clear();
 	s_pending_ops.clear();
 	s_missing.clear();
+	s_screen_resize_pending = false;
+	s_applied_w = s_applied_h = 0;
 
 	// The vector and the code behind it are gone with the heap; both are
 	// rebuilt from the arena on the next walk.

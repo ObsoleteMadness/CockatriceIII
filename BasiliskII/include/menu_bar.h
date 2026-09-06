@@ -36,6 +36,7 @@ typedef enum {
     MENU_CMD_GUEST_WINDOW_RESIZE = 12, /* WindowPtr in cmd.param, w/h in param2/param3 */
     MENU_CMD_GUEST_INPUT         = 13, /* WindowPtr in cmd.param, kind/x/y/code in param2..param5 */
     MENU_CMD_GUEST_WINDOW_MOVE   = 14, /* WindowPtr in cmd.param, x/y in param2/param3 */
+    MENU_CMD_SET_VIDEO_MODE      = 15, /* width in cmd.param, height in cmd.param2 */
 } MenuCmdType;
 
 #define MENU_CMD_PATH_MAX 1024
@@ -83,6 +84,14 @@ void MenuAction_GuestWindowSelect(int windowPtr);              /* focus follows 
 void MenuAction_GuestWindowResize(int windowPtr, int w, int h);/* host resize drives the guest */
 void MenuAction_GuestWindowMove(int windowPtr, int x, int y);  /* host drag drives the guest */
 void MenuAction_GuestInput(int windowPtr, int kind, int x, int y, int code); /* mouse and keys */
+void MenuAction_SetVideoMode(int width, int height); /* host Video menu / preset */
+
+/*
+ * Preset accessors for the host Video menu. Forward VideoPresets so platform
+ * menu code does not need to include video.h.
+ */
+int Menu_VideoPresetCount(void);
+bool Menu_VideoPresetAt(int index, int *width, int *height);
 
 /* -------------------------------------------------------------------------
  *  Platform-specific menu bar initialization and updating
