@@ -16,7 +16,7 @@ while test $# -gt 0; do
 	--exec-prefix=*) exec_prefix="${1#--exec-prefix=}" ;;
 	--exec-prefix) echo "$exec_prefix" ;;
 	--version) echo 1.2.76 ;;
-	--cflags) echo "-I${includedir}/SDL -D_THREAD_SAFE" ;;
+	--cflags) echo "-I${includedir} -I${includedir}/SDL -D_THREAD_SAFE" ;;
 	--libs) echo "-L${libdir} -lSDLmain -lSDL -Wl,-framework,Cocoa" ;;
 	*) echo "${usage}" 1>&2; exit 1 ;;
 	esac

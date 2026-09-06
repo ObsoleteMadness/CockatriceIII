@@ -69,12 +69,14 @@ endif
 # SIGKILL before main (lldb: "Malformed Mach-o file").
 
 # Use the SDL matching TARGET_ARCH, not whatever sdl-config is first on PATH.
-SDL_CFLAGS := $(shell $(SDL_PREFIX)/bin/sdl-config --cflags 2>/dev/null || echo "-I$(SDL_PREFIX)/include/SDL -D_THREAD_SAFE")
+# Sources include <SDL/SDL.h>, so -I<prefix>/include is required. sdl-config
+# --cflags also adds -I<prefix>/include/SDL for the <SDL.h> form.
+SDL_CFLAGS := $(shell $(SDL_PREFIX)/bin/sdl-config --cflags 2>/dev/null || echo "-I$(SDL_PREFIX)/include -I$(SDL_PREFIX)/include/SDL -D_THREAD_SAFE")
 SDL_LIBS := $(shell $(SDL_PREFIX)/bin/sdl-config --libs 2>/dev/null || echo "-L$(SDL_PREFIX)/lib -lSDL -Wl,-framework,Cocoa")
 
 CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I../bridge/darwin \
 	-I../m68k_rs/include -I../jit_support \
-	-I/opt/homebrew/include -I/usr/local/include $(SDL_CFLAGS)
+	-I$(SDL_PREFIX)/include -I/opt/homebrew/include -I/usr/local/include $(SDL_CFLAGS)
 
 HOST_CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I../bridge/darwin
 HOST_CFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-deprecated-non-prototype
