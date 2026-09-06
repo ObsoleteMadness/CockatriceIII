@@ -5524,6 +5524,22 @@ static void flush_icache_range(uae_u32 start, uae_u32 length)
 }
 #endif
 
+/*
+ * Discards compiled blocks after Basilisk writes guest code. The x86
+ * range walker above is #if 0 (it was never wired up on this backend);
+ * a full hard flush is correct and matches the huge-range path on ARM.
+ *
+ * Arguments:
+ *   addr: Guest address of the written range (unused; full flush).
+ *   length: Length in bytes; zero is a no-op.
+ */
+void flush_icache_range(uaecptr addr, uae_u32 length)
+{
+	(void)addr;
+	if (length == 0)
+		return;
+	flush_icache_hard(3);
+}
 
 int failure;
 

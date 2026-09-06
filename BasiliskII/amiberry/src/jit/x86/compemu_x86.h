@@ -177,6 +177,9 @@ extern int get_cache_state(void);
 extern uae_u32 get_jitted_size(void);
 #ifdef JIT
 extern void (*flush_icache)(int);
+/* Hosted Basilisk (amiberry_host.cpp) invalidates compiled blocks after
+ * CheckLoad / BlockMove. ARM exports this; x86's walker is #if 0. */
+extern void flush_icache_range(uaecptr addr, uae_u32 length);
 #endif
 extern void alloc_cache(void);
 extern int check_for_cache_miss(void);

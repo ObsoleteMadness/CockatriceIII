@@ -80,14 +80,17 @@ it always does).
 - `BasiliskII/OSXarm` (the initial Apple Silicon-only port) was renamed to
   `BasiliskII/OSX64` and its Makefile now builds either Apple Silicon or Intel
   Macs from one tree via an `ARCH` variable (`arm64` by default, or `x86_64`/
-  `amd64`), selecting the right Homebrew SDL prefix
-  (`/opt/homebrew` vs `/usr/local`) and `-arch` flag automatically. The
-  bundled `m68k-rs` staticlib is built with `cargo --target` for the same
-  slice (`aarch64-apple-darwin` or `x86_64-apple-darwin`); an Intel
-  cross-compile on Apple Silicon needs `rustup target add x86_64-apple-darwin`
-  (the Makefile does this) plus Intel Homebrew SDL under `/usr/local`.
-  `make universal` in that directory builds both slices and `lipo`s them
-  into a fat `CockatriceIII` (needs both Homebrew prefixes). `make app` (or
+  `amd64`), selecting the right SDL prefix and `-arch` flag automatically.
+  ARM uses native Homebrew (`/opt/homebrew`). An Intel slice on Apple Silicon
+  is `clang -arch x86_64` plus the committed prefix in
+  [`dist/dependencies/osx/intel`](dist/dependencies/osx) (rebuild with
+  `dist/dependencies/osx/rebuild-intel-sdl.sh` when bumping SDL). The bundled
+  `m68k-rs` staticlib is built with `cargo --target` for the same slice
+  (`aarch64-apple-darwin` or `x86_64-apple-darwin`; the Makefile runs
+  `rustup target add`). `make universal` in that directory builds both
+  slices and `lipo`s them
+  into a fat `CockatriceIII` (ARM Homebrew SDL plus the committed Intel
+  prefix). `make app` (or
   `make app-universal`) wraps that binary into a `CockatriceIII.app` bundle
   with a generated `Info.plist` (`APP_VERSION=x.y.z` sets
   `CFBundleVersion`/`CFBundleShortVersionString`), copies `dist/Quadra800.rom`

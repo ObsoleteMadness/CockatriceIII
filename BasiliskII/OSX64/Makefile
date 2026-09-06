@@ -23,17 +23,33 @@ APP_BUNDLE = $(APP).app
 APP_VERSION ?= 0.0.0-dev
 
 ARCH ?= $(shell uname -m)
+HOST_ARCH := $(shell uname -m)
+# Committed x86_64 SDL 1.2 prefix (see dist/dependencies/osx/README.md).
+CROSS_SDL_X86 = $(CURDIR)/../../dist/dependencies/osx/intel
 # CARGO_TRIPLE matches TARGET_ARCH so m68k-rs's staticlib links into a
 # cross-compiled slice. cargo without --target always builds the host
 # triple (aarch64 on Apple Silicon CI), which then fails at link.
+# Intel slices use the committed prefix, not Intel Homebrew / Rosetta.
 ifeq ($(ARCH),x86_64)
   TARGET_ARCH = -arch x86_64
-  SDL_PREFIX ?= /usr/local
   CARGO_TRIPLE = x86_64-apple-darwin
+  ifneq ($(wildcard $(CROSS_SDL_X86)/bin/sdl-config),)
+    SDL_PREFIX ?= $(CROSS_SDL_X86)
+  else ifeq ($(HOST_ARCH),x86_64)
+    SDL_PREFIX ?= /usr/local
+  else
+    SDL_PREFIX ?= $(CROSS_SDL_X86)
+  endif
 else ifeq ($(ARCH),amd64)
   TARGET_ARCH = -arch x86_64
-  SDL_PREFIX ?= /usr/local
   CARGO_TRIPLE = x86_64-apple-darwin
+  ifneq ($(wildcard $(CROSS_SDL_X86)/bin/sdl-config),)
+    SDL_PREFIX ?= $(CROSS_SDL_X86)
+  else ifeq ($(HOST_ARCH),x86_64)
+    SDL_PREFIX ?= /usr/local
+  else
+    SDL_PREFIX ?= $(CROSS_SDL_X86)
+  endif
 else
   TARGET_ARCH = -arch arm64
   SDL_PREFIX ?= /opt/homebrew
@@ -43,6 +59,10 @@ endif
 CFLAGS += $(TARGET_ARCH)
 CXXFLAGS += $(TARGET_ARCH)
 LDFLAGS += $(TARGET_ARCH)
+# Committed Intel dylibs use @rpath; point the linker at this prefix.
+ifeq ($(SDL_PREFIX),$(CROSS_SDL_X86))
+LDFLAGS += -Wl,-rpath,$(SDL_PREFIX)/lib
+endif
 # Guest RAM uses Host_Mem_Base + offset (memory_init mmap), not identity-mapped
 # low host addresses. Default 4GB PAGEZERO keeps the Mach-O load layout valid
 # on modern arm64 macOS; the old -pagezero_size,0x4000 trick caused instant
@@ -130,7 +150,7 @@ SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../
     $(SYSSRCS) $(CPUSRCS)
 
 ## Rules
-.PHONY: all clean mostlyclean clean-objects slirp_lib universal amiberry-objs debug optimised optimized app app-universal bundle
+.PHONY: all clean mostlyclean clean-objects slirp_lib universal amiberry-objs debug optimised optimized app app-universal bundle sdl-x86_64
 .SUFFIXES:
 .SUFFIXES: .c .cpp .m .mm .s .o .h
 
@@ -209,6 +229,24 @@ VPATH :=
 VPATH += $(addprefix :, $(subst  ,:, $(filter-out $($(subst, :, ,$(VPATH))), $(SRC_PATHS))))
 
 amiberry-objs: $(OBJ_DIR) $(AMIBERRY_OBJS)
+
+# Intel / universal slices need the committed prefix. Rebuild it with
+# `make sdl-x86_64` (or dist/dependencies/osx/rebuild-intel-sdl.sh) and
+# commit dist/dependencies/osx/intel/; CI must not compile SDL from source.
+ifneq ($(HOST_ARCH),x86_64)
+ifeq ($(filter $(ARCH),amd64 x86_64),$(ARCH))
+$(APP): $(CROSS_SDL_X86)/bin/sdl-config
+endif
+endif
+
+sdl-x86_64:
+	../../dist/dependencies/osx/rebuild-intel-sdl.sh
+
+$(CROSS_SDL_X86)/bin/sdl-config:
+	@echo "Missing committed Intel SDL prefix at $(CROSS_SDL_X86)"
+	@echo "On Apple Silicon run: dist/dependencies/osx/rebuild-intel-sdl.sh"
+	@echo "then git add dist/dependencies/osx/intel"
+	@exit 1
 
 $(APP): $(OBJ_DIR) slirp_lib $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB)
 	$(CXX) -o $(APP) $(LDFLAGS) $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB) $(LIBS)

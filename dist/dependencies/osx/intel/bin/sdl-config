@@ -1,0 +1,24 @@
+#!/bin/sh
+# Relocatable sdl-config for the committed x86_64 prefix.
+prefix="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+usage="Usage: $0 [--prefix[=DIR]] [--exec-prefix[=DIR]] [--version] [--cflags] [--libs]"
+if test $# -eq 0; then
+	echo "${usage}" 1>&2
+	exit 1
+fi
+while test $# -gt 0; do
+	case "$1" in
+	--prefix=*) prefix="${1#--prefix=}" ;;
+	--prefix) echo "$prefix" ;;
+	--exec-prefix=*) exec_prefix="${1#--exec-prefix=}" ;;
+	--exec-prefix) echo "$exec_prefix" ;;
+	--version) echo 1.2.76 ;;
+	--cflags) echo "-I${includedir}/SDL -D_THREAD_SAFE" ;;
+	--libs) echo "-L${libdir} -lSDLmain -lSDL -Wl,-framework,Cocoa" ;;
+	*) echo "${usage}" 1>&2; exit 1 ;;
+	esac
+	shift
+done

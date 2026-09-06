@@ -42,8 +42,8 @@ jobs:
             artifact_name: CockatriceIII-osx-arm.dmg
             package_ext: dmg
 
-          # macOS AMD64 (Intel x86_64) — clang -arch x86_64 + Intel Homebrew
-          # SDL + cargo --target x86_64-apple-darwin, still on Apple Silicon.
+          # macOS AMD64 (Intel x86_64) — clang -arch x86_64 + a native-built
+          # x86_64 SDL prefix + cargo --target x86_64-apple-darwin.
           - target: osx-amd64
             os: macos-latest
             platform: osx
@@ -116,20 +116,16 @@ jobs:
       - name: Set up macOS dependencies
         if: matrix.platform == 'osx'
         run: |
+          # Native ARM brew for the arm64 slice only. Intel / universal link
+          # the committed prefix in dist/dependencies/osx/intel (rebuild with
+          # dist/dependencies/osx/rebuild-intel-sdl.sh, do not compile SDL here).
           if [ "${{ matrix.arch }}" != "amd64" ]; then
             brew install sdl12-compat
           fi
           if [ "${{ matrix.arch }}" = "amd64" ] || [ "${{ matrix.arch }}" = "universal" ]; then
-            # x86_64 SDL lives under Intel Homebrew (/usr/local). The ARM
-            # brew at /opt/homebrew cannot supply a linkable x86_64 libSDL.
-            sudo softwareupdate --install-rosetta --agree-to-license || true
-            if [ ! -x /usr/local/bin/brew ]; then
-              NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-            fi
-            arch -x86_64 /usr/local/bin/brew install sdl12-compat
-            # m68k-rs is a staticlib; cargo defaults to the host triple
-            # (aarch64 on macos-latest) unless the Intel target is present.
             rustup target add x86_64-apple-darwin
+            test -x dist/dependencies/osx/intel/bin/sdl-config
+            lipo -info dist/dependencies/osx/intel/lib/libSDL*.dylib | grep -q x86_64
           fi
 
       - name: Build macOS (${{ matrix.target }})
