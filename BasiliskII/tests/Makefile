@@ -23,12 +23,17 @@ ifeq ($(ASAN),1)
 endif
 
 ARCH ?= $(shell uname -m)
+# Keep the m68k-rs staticlib on the same arch as TARGET_ARCH so a
+# cross-compiled test binary can link it (see BasiliskII/OSX64/Makefile).
 ifeq ($(ARCH),x86_64)
   TARGET_ARCH = -arch x86_64
+  CARGO_TRIPLE = x86_64-apple-darwin
 else ifeq ($(ARCH),amd64)
   TARGET_ARCH = -arch x86_64
+  CARGO_TRIPLE = x86_64-apple-darwin
 else
   TARGET_ARCH = -arch arm64
+  CARGO_TRIPLE = aarch64-apple-darwin
 endif
 CFLAGS += $(TARGET_ARCH)
 CXXFLAGS += $(TARGET_ARCH)
@@ -40,7 +45,7 @@ OSX64 = ../OSX64
 OBJ_DIR = obj
 M68K_RS_DIR = ../m68k_rs
 M68K_RS_TARGET = $(OBJ_DIR)/m68k_rs_target
-M68K_RS_LIB = $(M68K_RS_TARGET)/release/libcockatrice_m68k_rs.a
+M68K_RS_LIB = $(M68K_RS_TARGET)/$(CARGO_TRIPLE)/release/libcockatrice_m68k_rs.a
 
 DEFS = -DHAVE_CONFIG_H -D_REENTRANT \
 	-DTEST_REPO_ROOT=\"$(REPO_ROOT)\" \
@@ -198,8 +203,10 @@ $(AMIBERRY_OBJS):
 
 LIBS = -Wl,-force_load,$(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB) -lm -lpthread -ldl
 
+# Same cargo --target as OSX64 so ARCH=amd64 tests link an x86_64 staticlib.
 $(M68K_RS_LIB): $(M68K_RS_DIR)/Cargo.toml $(M68K_RS_DIR)/src/lib.rs ../vendor/m68k-rs/Cargo.toml | $(OBJ_DIR)
-	cargo build --release --manifest-path $(M68K_RS_DIR)/Cargo.toml --target-dir $(M68K_RS_TARGET)
+	rustup target add $(CARGO_TRIPLE)
+	cargo build --release --target $(CARGO_TRIPLE) --manifest-path $(M68K_RS_DIR)/Cargo.toml --target-dir $(M68K_RS_TARGET)
 
 CPU_SRCS = cpu/cpu_test_main.cpp cpu/cpu_emulop.cpp cpu/cpu_instructions.cpp \
 	cpu/cpu_jsr.cpp cpu/cpu_exceptions.cpp cpu/cpu_fpu.cpp \

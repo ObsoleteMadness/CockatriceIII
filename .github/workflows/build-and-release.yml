@@ -31,7 +31,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS ARM64 (Apple Silicon) — native on macos-latest
+          # macOS ARM64 (Apple Silicon) — native on macos-latest (arm64).
+          # Intel hosted runners are deprecated; all three macOS artifacts
+          # are produced from this Apple Silicon runner.
           - target: osx-arm
             os: macos-latest
             platform: osx
@@ -40,8 +42,8 @@ jobs:
             artifact_name: CockatriceIII-osx-arm.dmg
             package_ext: dmg
 
-          # macOS AMD64 (Intel x86_64) — cross-compiled from Apple Silicon
-          # (macos-13 Intel runners are deprecated / chronically queued)
+          # macOS AMD64 (Intel x86_64) — clang -arch x86_64 + Intel Homebrew
+          # SDL + cargo --target x86_64-apple-darwin, still on Apple Silicon.
           - target: osx-amd64
             os: macos-latest
             platform: osx
@@ -50,7 +52,7 @@ jobs:
             artifact_name: CockatriceIII-osx-amd64.dmg
             package_ext: dmg
 
-          # macOS universal (arm64 + x86_64 fat binary via lipo)
+          # macOS universal (arm64 + x86_64 fat binary via lipo), same runner.
           - target: osx-universal
             os: macos-latest
             platform: osx
@@ -125,6 +127,9 @@ jobs:
               NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
             fi
             arch -x86_64 /usr/local/bin/brew install sdl12-compat
+            # m68k-rs is a staticlib; cargo defaults to the host triple
+            # (aarch64 on macos-latest) unless the Intel target is present.
+            rustup target add x86_64-apple-darwin
           fi
 
       - name: Build macOS (${{ matrix.target }})

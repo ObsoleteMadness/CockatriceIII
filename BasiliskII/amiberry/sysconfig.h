@@ -102,6 +102,12 @@ typedef unsigned int uae_atomic;
 #ifndef _tcsicmp
 #define _tcsicmp strcasecmp
 #endif
+/* x86 JIT blacklist parser (compemu_support_x86.cpp) uses the n-limited
+ * form; ARM JIT never referenced it, so Apple Silicon native builds hid
+ * the missing alias until we cross-compiled -arch x86_64. */
+#ifndef _tcsnicmp
+#define _tcsnicmp strncasecmp
+#endif
 #ifndef _tcsncmp
 #define _tcsncmp strncmp
 #endif

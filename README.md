@@ -81,7 +81,11 @@ it always does).
   `BasiliskII/OSX64` and its Makefile now builds either Apple Silicon or Intel
   Macs from one tree via an `ARCH` variable (`arm64` by default, or `x86_64`/
   `amd64`), selecting the right Homebrew SDL prefix
-  (`/opt/homebrew` vs `/usr/local`) and `-arch` flag automatically.
+  (`/opt/homebrew` vs `/usr/local`) and `-arch` flag automatically. The
+  bundled `m68k-rs` staticlib is built with `cargo --target` for the same
+  slice (`aarch64-apple-darwin` or `x86_64-apple-darwin`); an Intel
+  cross-compile on Apple Silicon needs `rustup target add x86_64-apple-darwin`
+  (the Makefile does this) plus Intel Homebrew SDL under `/usr/local`.
   `make universal` in that directory builds both slices and `lipo`s them
   into a fat `CockatriceIII` (needs both Homebrew prefixes). `make app` (or
   `make app-universal`) wraps that binary into a `CockatriceIII.app` bundle
@@ -106,9 +110,9 @@ builds all six targets on every push, on pull requests into `main`, and on
 
 | Target         | Runner          | Build dir             |
 |----------------|-----------------|------------------------|
-| osx-arm        | macos-latest (native arm64) | `BasiliskII/OSX64` |
-| osx-amd64      | macos-latest (cross x86_64) | `BasiliskII/OSX64` |
-| osx-universal  | macos-latest (lipo fat)     | `BasiliskII/OSX64` |
+| osx-arm        | macos-latest (Apple Silicon, native arm64) | `BasiliskII/OSX64` |
+| osx-amd64      | macos-latest (Apple Silicon, cross x86_64) | `BasiliskII/OSX64` |
+| osx-universal  | macos-latest (Apple Silicon, lipo fat)     | `BasiliskII/OSX64` |
 | win32-x64    | windows-latest (MINGW64)    | `BasiliskII/mingw` |
 | win32-x86    | windows-latest (MINGW32)    | `BasiliskII/mingw` |
 | win32-arm    | windows-latest (CLANGARM64) | `BasiliskII/mingw` |

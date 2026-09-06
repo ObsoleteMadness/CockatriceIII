@@ -23,15 +23,21 @@ APP_BUNDLE = $(APP).app
 APP_VERSION ?= 0.0.0-dev
 
 ARCH ?= $(shell uname -m)
+# CARGO_TRIPLE matches TARGET_ARCH so m68k-rs's staticlib links into a
+# cross-compiled slice. cargo without --target always builds the host
+# triple (aarch64 on Apple Silicon CI), which then fails at link.
 ifeq ($(ARCH),x86_64)
   TARGET_ARCH = -arch x86_64
   SDL_PREFIX ?= /usr/local
+  CARGO_TRIPLE = x86_64-apple-darwin
 else ifeq ($(ARCH),amd64)
   TARGET_ARCH = -arch x86_64
   SDL_PREFIX ?= /usr/local
+  CARGO_TRIPLE = x86_64-apple-darwin
 else
   TARGET_ARCH = -arch arm64
   SDL_PREFIX ?= /opt/homebrew
+  CARGO_TRIPLE = aarch64-apple-darwin
 endif
 
 CFLAGS += $(TARGET_ARCH)
@@ -62,7 +68,7 @@ LIBS = ../slirp/libslirp.a -lpthread -ldl $(SDL_LIBS) -framework Cocoa -framewor
 
 M68K_RS_DIR = ../m68k_rs
 M68K_RS_TARGET = $(OBJ_DIR)/m68k_rs_target
-M68K_RS_LIB = $(M68K_RS_TARGET)/release/libcockatrice_m68k_rs.a
+M68K_RS_LIB = $(M68K_RS_TARGET)/$(CARGO_TRIPLE)/release/libcockatrice_m68k_rs.a
 
 SYSSRCS = sdlmain.m ../bridge/darwin/macos_menu_bridge.mm ../bridge/darwin/macos_window_bridge.mm ../SDL/sdl_pcap.cpp ../SDL/audio_sdl.cpp ../dummy/scsi_dummy.cpp ../dummy/prefs_editor_dummy.cpp
 
@@ -229,8 +235,13 @@ clean-objects:
 	rm -rf $(M68K_RS_TARGET)
 	$(MAKE) -C ../slirp clean
 
+# rustup target add is a no-op when the triple is already installed, and is
+# required when ARCH is x86_64 on an Apple Silicon host or CI runner. --target
+# puts the archive under $(CARGO_TRIPLE)/ so a universal build can keep both
+# slices in the same target dir.
 $(M68K_RS_LIB): $(M68K_RS_DIR)/Cargo.toml $(M68K_RS_DIR)/src/lib.rs ../vendor/m68k-rs/Cargo.toml ../vendor/m68k-rs/src/core/op_cache.rs
-	cargo build --release --manifest-path $(M68K_RS_DIR)/Cargo.toml --target-dir $(M68K_RS_TARGET)
+	rustup target add $(CARGO_TRIPLE)
+	cargo build --release --target $(CARGO_TRIPLE) --manifest-path $(M68K_RS_DIR)/Cargo.toml --target-dir $(M68K_RS_TARGET)
 
 mostlyclean: clean-objects
 	rm -f $(APP)-arm64 $(APP)-x86_64
