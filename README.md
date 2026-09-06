@@ -120,6 +120,10 @@ builds all six targets on every push, on pull requests into `main`, and on
 | win32-x86    | windows-latest (MINGW32)    | `BasiliskII/mingw` |
 | win32-arm    | windows-latest (CLANGARM64) | `BasiliskII/mingw` |
 
+Reproduce a macOS CI job on an Apple Silicon machine with
+[scripts/ci-osx-build.sh](scripts/ci-osx-build.sh) (`arm64`, `amd64`, or
+`universal`). That script is what the workflow runs.
+
 Each job packages its build (`.dmg` on macOS, `.zip` on Windows) alongside the
 files in [dist/](dist/) and uploads it as a build artifact; on a version tag
 the artifacts from all targets are attached to a single GitHub Release. Each

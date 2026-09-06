@@ -261,11 +261,16 @@ $(APP): $(OBJ_DIR) slirp_lib $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB)
 # leaves a PE archive at this exact path.  A plain file rule would treat that
 # foreign archive as up to date and the link would fail with "archive member
 # not a mach-o file", so probe it with lipo and rebuild from clean when it is
-# not a Mach-O archive for this host.
+# not a Mach-O archive for this host / this ARCH.
 slirp_lib:
-	@if [ -f ../slirp/libslirp.a ] && ! lipo -info ../slirp/libslirp.a >/dev/null 2>&1; then \
-		echo "slirp: libslirp.a is not a Mach-O archive (left by the Windows cross build); rebuilding"; \
-		$(MAKE) -C ../slirp clean; \
+	@if [ -f ../slirp/libslirp.a ]; then \
+		if ! lipo -info ../slirp/libslirp.a >/dev/null 2>&1; then \
+			echo "slirp: libslirp.a is not a Mach-O archive (left by the Windows cross build); rebuilding"; \
+			$(MAKE) -C ../slirp clean; \
+		elif ! lipo -info ../slirp/libslirp.a 2>/dev/null | grep -q "$(patsubst -arch %,%,$(TARGET_ARCH))"; then \
+			echo "slirp: libslirp.a is the wrong architecture for $(TARGET_ARCH); rebuilding"; \
+			$(MAKE) -C ../slirp clean; \
+		fi; \
 	fi
 	$(MAKE) -C ../slirp CC="$(CC)" CFLAGS="-I. -O2 -Wall -Wno-unused $(TARGET_ARCH)"
 

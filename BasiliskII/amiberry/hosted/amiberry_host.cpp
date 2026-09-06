@@ -458,6 +458,11 @@ extern uint32_t MacFrameSize;
 addrbank dummy_bank;
 addrbank kickmem_bank;
 addrbank rtarea_bank;
+/* Amiga A3000 Ramsey RAM. Macintosh never maps these; allocated_size stays 0
+ * so the x86 JIT SIGSEGV handler's size-probe check is a no-op. The symbols
+ * must exist because exception_handler.cpp is compiled into the Intel JIT. */
+addrbank a3000lmem_bank;
+addrbank a3000hmem_bank;
 static addrbank mac_bank;         /* SCC MMIO window only: must stay indirect. */
 static addrbank mac_direct_bank;  /* RAM/framebuffer: flat Host_Mem_Base, JIT can go direct. */
 static addrbank mac_rom_bank;     /* ROM: direct reads, helper writes (WriteMacInt drops them). */
@@ -682,6 +687,23 @@ void console_out_f(const TCHAR *fmt, ...)
 }
 
 char *ua(const TCHAR *s)
+{
+	return s ? strdup(s) : nullptr;
+}
+
+/*
+ * Converts an ANSI/UTF-8 C string to a newly allocated TCHAR string.
+ *
+ * On this host TCHAR is UTF-8 char, so the conversion is strdup. The x86 JIT
+ * blacklist parser (build_comp / merge_blacklist2) xfree()s the result.
+ *
+ * Arguments:
+ *   s: Source C string, or NULL.
+ *
+ * Returns:
+ *   A malloc'd copy of s, or NULL when s is NULL.
+ */
+TCHAR *au(const char *s)
 {
 	return s ? strdup(s) : nullptr;
 }

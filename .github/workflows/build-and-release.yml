@@ -113,42 +113,10 @@ jobs:
           echo "Building Cockatrice III version: ${VER} for ${{ matrix.target }}"
 
       # --- macOS Setup & Build ---
-      - name: Set up macOS dependencies
-        if: matrix.platform == 'osx'
-        run: |
-          # Native ARM brew for the arm64 slice only. Intel / universal link
-          # the committed prefix in dist/dependencies/osx/intel (rebuild with
-          # dist/dependencies/osx/rebuild-intel-sdl.sh, do not compile SDL here).
-          if [ "${{ matrix.arch }}" != "amd64" ]; then
-            brew install sdl12-compat
-          fi
-          if [ "${{ matrix.arch }}" = "amd64" ] || [ "${{ matrix.arch }}" = "universal" ]; then
-            rustup target add x86_64-apple-darwin
-            test -x dist/dependencies/osx/intel/bin/sdl-config
-            lipo -info dist/dependencies/osx/intel/lib/libSDL*.dylib | grep -q x86_64
-          fi
-
+      # Same script locally: scripts/ci-osx-build.sh arm64|amd64|universal
       - name: Build macOS (${{ matrix.target }})
         if: matrix.platform == 'osx'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          if [ "${{ matrix.arch }}" = "universal" ]; then
-            make -C ${{ matrix.build_dir }} app-universal APP_VERSION="${VERSION#v}" -j$(sysctl -n hw.ncpu)
-            file "${{ matrix.build_dir }}/CockatriceIII"
-            lipo -info "${{ matrix.build_dir }}/CockatriceIII"
-            lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q x86_64
-            lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q arm64
-          else
-            make -C ${{ matrix.build_dir }} app ARCH=${{ matrix.arch }} APP_VERSION="${VERSION#v}" -j$(sysctl -n hw.ncpu)
-            file "${{ matrix.build_dir }}/CockatriceIII"
-            lipo -info "${{ matrix.build_dir }}/CockatriceIII"
-            if [ "${{ matrix.arch }}" = "amd64" ]; then
-              lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q x86_64
-            else
-              lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q arm64
-            fi
-          fi
-          file "${{ matrix.build_dir }}/CockatriceIII.app/Contents/MacOS/CockatriceIII"
+        run: scripts/ci-osx-build.sh "${{ matrix.arch }}" "${{ steps.version.outputs.version }}"
 
       - name: Package macOS Distribution (.dmg)
         if: matrix.platform == 'osx'
