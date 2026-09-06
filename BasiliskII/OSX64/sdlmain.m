@@ -6,6 +6,7 @@
 #import "sdlmain.h"
 #import "menu_bar.h"
 #import "macos_menu_bridge.h"
+#import "macos_window_bridge.h"
 #import "scsi.h"
 #import <sys/param.h>
 #import <unistd.h>
@@ -283,6 +284,7 @@ void MenuBar_UpdateAll(void)
 void MenuBar_Init(void *native_window_handle)
 {
     MacMenuBridge_RegisterMenuTraps();
+    MacWindowBridge_RegisterWindowTraps();
     MenuBar_UpdateAll();
 }
 
@@ -410,7 +412,13 @@ int main (int argc, char **argv)
     /* Earliest possible stderr marker — if this never appears, dyld/kernel killed us before main */
     write(STDERR_FILENO, "[CockatriceIII] entering main\n", 31);
 
-    if ( argc >= 2 && strncmp (argv[1], "-psn", 4) == 0 ) {
+    /* Finder hasn't passed "-psn_..." since ~OS X 10.9, so a double-clicked
+       (or otherwise no-arg) launch looks just like `argc == 1` now. Treat
+       that the same as the old -psn case: chdir into the bundle directory
+       so PREFS_FILE_NAME / the ROM resolve relative to it instead of
+       whatever cwd Finder/launchd happened to set. Explicit CLI args (argc
+       >= 2, not -psn) keep respecting the caller's cwd. */
+    if ( argc < 2 || strncmp (argv[1], "-psn", 4) == 0 ) {
         gArgv = (char **) malloc(sizeof (char *) * 2);
         gArgv[0] = argv[0];
         gArgv[1] = NULL;

@@ -22,6 +22,8 @@
 #else
 #include <fcntl.h>
 #include <sys/fcntl.h>
+#include <sys/param.h>
+#include <mach-o/dyld.h>
 #endif
 
 
@@ -83,8 +85,14 @@ extern void slirp_tic(void);	//to keep slirp happy
 
 
 #include <signal.h>
-#include <execinfo.h>
 #include <string.h>
+
+// The POSIX crash reporter below needs <execinfo.h> backtrace(), sigaction()
+// with SA_SIGINFO, and sys_siglist -- none of which the MinGW/Windows CRT
+// provides.  Windows builds get their crash dumps from DrMinGW (exchndl)
+// instead, wired up in main() further down, so compile the handler out there.
+#ifndef WIN32
+#include <execinfo.h>
 
 static void crash_handler(int sig, siginfo_t *info, void *ucontext)
 {
@@ -133,6 +141,16 @@ static void install_crash_handler(void)
 	// JIT-emitted SVC is a Darwin syscall; unregistered immediates raise SIGSYS
 	sigaction(SIGSYS, &sa, NULL);
 }
+
+#else
+
+// Windows: DrMinGW's exception handler covers this, so installing the POSIX
+// signal handler is a no-op rather than a per-call-site #ifdef.
+static void install_crash_handler(void)
+{
+}
+
+#endif
 
 #ifdef __APPLE__
 int SDL_main(int argc, char *argv[])
@@ -207,6 +225,37 @@ int main(int argc, char *argv[])
 	// Load Mac ROM
 	int rom_fd = _open(rom_path ? rom_path : ROM_FILE_NAME, _O_RDONLY|_O_BINARY);
 	//int rom_fd = _open("c:\\test\\ROM",_O_RDONLY|_O_BINARY );
+#ifdef __APPLE__
+	// Not found relative to cwd: when running from an app bundle the ROM
+	// ships in Contents/Resources rather than beside the executable (see
+	// the OSX64 Makefile's `bundle` target), so fall back to looking it up
+	// there by filename before giving up. Walk up from the executable's own
+	// real path (.../CockatriceIII.app/Contents/MacOS/CockatriceIII) rather
+	// than going through CFBundle, which drags in MacTypes.h and collides
+	// with this codebase's own classic-Mac OSErr/noErr definitions.
+	if (rom_fd < 0) {
+		const char *rom_name = rom_path ? rom_path : ROM_FILE_NAME;
+		const char *rom_base = strrchr(rom_name, '/');
+		rom_base = rom_base ? rom_base + 1 : rom_name;
+
+		char exe_path[MAXPATHLEN];
+		uint32_t exe_path_size = sizeof(exe_path);
+		char real_path[MAXPATHLEN];
+		if (_NSGetExecutablePath(exe_path, &exe_path_size) == 0 && realpath(exe_path, real_path)) {
+			char *macos_slash = strrchr(real_path, '/');		// .../Contents/MacOS/CockatriceIII -> .../Contents/MacOS
+			if (macos_slash) {
+				*macos_slash = '\0';
+				char *contents_slash = strrchr(real_path, '/');	// .../Contents/MacOS -> .../Contents
+				if (contents_slash) {
+					*contents_slash = '\0';
+					char full_path[MAXPATHLEN];
+					snprintf(full_path, sizeof(full_path), "%s/Resources/%s", real_path, rom_base);
+					rom_fd = _open(full_path, _O_RDONLY|_O_BINARY);
+				}
+			}
+		}
+	}
+#endif
 	if (rom_fd < 0) {
 		ErrorAlert(GetString(STR_NO_ROM_FILE_ERR));
 		QuitEmulator();

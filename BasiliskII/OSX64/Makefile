@@ -17,6 +17,10 @@ CFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-deprecated-non-prototype
 CXXFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-writable-strings -Wno-multichar -Wno-deprecated-declarations -Wno-format -Wno-c++11-narrowing
 
 APP = CockatriceIII
+APP_BUNDLE = $(APP).app
+# Overridden by CI to the release tag (e.g. 0.6.0); keep it PEP440/semver-ish
+# since it lands in both CFBundleVersion and CFBundleShortVersionString.
+APP_VERSION ?= 0.0.0-dev
 
 ARCH ?= $(shell uname -m)
 ifeq ($(ARCH),x86_64)
@@ -60,7 +64,7 @@ M68K_RS_DIR = ../m68k_rs
 M68K_RS_TARGET = $(OBJ_DIR)/m68k_rs_target
 M68K_RS_LIB = $(M68K_RS_TARGET)/release/libcockatrice_m68k_rs.a
 
-SYSSRCS = sdlmain.m ../bridge/darwin/macos_menu_bridge.mm ../SDL/sdl_pcap.cpp ../SDL/audio_sdl.cpp ../dummy/scsi_dummy.cpp ../dummy/prefs_editor_dummy.cpp
+SYSSRCS = sdlmain.m ../bridge/darwin/macos_menu_bridge.mm ../bridge/darwin/macos_window_bridge.mm ../SDL/sdl_pcap.cpp ../SDL/audio_sdl.cpp ../dummy/scsi_dummy.cpp ../dummy/prefs_editor_dummy.cpp
 
 CPUSRCS = ../cpu_engine.cpp ../cpu_glue.cpp ../memory.cpp ../Musashi/musashi_glue.cpp ../Musashi/memory_musashi.cpp ../amiberry/amiberry_glue.cpp ../m68k_rs/m68k_rs_glue.cpp ../jit_support/jit_host_darwin.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c
 
@@ -112,7 +116,7 @@ AMIBERRY_OBJS = \
 
 ## Files
 SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../SDL/sys_unix_sdl.cpp \
-    ../rom_patches.cpp ../slot_rom.cpp ../rsrc_patches.cpp ../emul_op.cpp ../toolbox_traps.cpp \
+    ../rom_patches.cpp ../slot_rom.cpp ../rsrc_patches.cpp ../emul_op.cpp ../toolbox_traps.cpp ../toolbox_menu.cpp ../toolbox_window.cpp \
     ../macos_util.cpp ../xpram.cpp ../Unix/xpram_unix.cpp ../timer.cpp timer_unix.cpp \
     ../dummy/clip_dummy.cpp ../adb.cpp ../serial.cpp ../dummy/serial_dummy.cpp ../scc.cpp ../ether.cpp ../sony.cpp \
     ../disk.cpp ../cdrom.cpp ../scsi.cpp ../video.cpp ../SDL/video_sdl.cpp ../audio.cpp \
@@ -120,7 +124,7 @@ SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../
     $(SYSSRCS) $(CPUSRCS)
 
 ## Rules
-.PHONY: all clean mostlyclean clean-objects slirp_lib universal amiberry-objs debug optimised optimized
+.PHONY: all clean mostlyclean clean-objects slirp_lib universal amiberry-objs debug optimised optimized app app-universal bundle
 .SUFFIXES:
 .SUFFIXES: .c .cpp .m .mm .s .o .h
 
@@ -152,6 +156,38 @@ universal:
 		codesign -s - --force --entitlements entitlements.plist $(APP); \
 	fi
 
+# .app bundle wrapping the plain $(APP) binary already built for the current
+# ARCH. `app-universal` wraps the lipo'd fat binary from `universal` instead
+# of rebuilding it a second time.
+app: $(APP)
+	$(MAKE) bundle
+
+app-universal: universal
+	$(MAKE) bundle
+
+# Prefs/xpram/archive are not part of this bundle: the app resolves them
+# relative to its own working directory (chdir'd to the bundle root on a
+# Finder/no-arg launch, see setupWorkingDirectory in sdlmain.m), so packaging
+# copies those in alongside Contents afterwards. The ROM does ship inside the
+# bundle (Contents/Resources) since main_sdl.cpp falls back to looking for it
+# there when it isn't found relative to cwd.
+DIST_DIR = ../../dist
+ROM_FILE = Quadra800.rom
+ICON_FILE = CockatriceIII.icns
+
+bundle:
+	@echo "Creating $(APP_BUNDLE) (version $(APP_VERSION))..."
+	rm -rf $(APP_BUNDLE)
+	mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources
+	cp $(APP) $(APP_BUNDLE)/Contents/MacOS/$(APP)
+	sed 's/@BUNDLE_VERSION@/$(APP_VERSION)/g' Info.plist.in > $(APP_BUNDLE)/Contents/Info.plist
+	@[ -f $(DIST_DIR)/$(ROM_FILE) ] && cp $(DIST_DIR)/$(ROM_FILE) $(APP_BUNDLE)/Contents/Resources/ || true
+	@[ -f $(ICON_FILE) ] && cp $(ICON_FILE) $(APP_BUNDLE)/Contents/Resources/ || true
+	@if [ -f entitlements.plist ]; then \
+		echo "Codesigning $(APP_BUNDLE) with entitlements.plist..."; \
+		codesign -s - --force --deep --entitlements entitlements.plist $(APP_BUNDLE); \
+	fi
+
 OBJ_DIR = obj
 $(OBJ_DIR)::
 	@[ -d $(OBJ_DIR) ] || mkdir $(OBJ_DIR) > /dev/null 2>&1
@@ -168,14 +204,23 @@ VPATH += $(addprefix :, $(subst  ,:, $(filter-out $($(subst, :, ,$(VPATH))), $(S
 
 amiberry-objs: $(OBJ_DIR) $(AMIBERRY_OBJS)
 
-$(APP): $(OBJ_DIR) ../slirp/libslirp.a $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB)
+$(APP): $(OBJ_DIR) slirp_lib $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB)
 	$(CXX) -o $(APP) $(LDFLAGS) $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB) $(LIBS)
 	@if [ -f entitlements.plist ]; then \
 		echo "Codesigning $(APP) with entitlements.plist..."; \
 		codesign -s - --force --entitlements entitlements.plist $(APP); \
 	fi
 
-../slirp/libslirp.a:
+# ../slirp is shared with the Windows cross build in BasiliskII/mingw, which
+# leaves a PE archive at this exact path.  A plain file rule would treat that
+# foreign archive as up to date and the link would fail with "archive member
+# not a mach-o file", so probe it with lipo and rebuild from clean when it is
+# not a Mach-O archive for this host.
+slirp_lib:
+	@if [ -f ../slirp/libslirp.a ] && ! lipo -info ../slirp/libslirp.a >/dev/null 2>&1; then \
+		echo "slirp: libslirp.a is not a Mach-O archive (left by the Windows cross build); rebuilding"; \
+		$(MAKE) -C ../slirp clean; \
+	fi
 	$(MAKE) -C ../slirp CC="$(CC)" CFLAGS="-I. -O2 -Wall -Wno-unused $(TARGET_ARCH)"
 
 clean-objects:
@@ -189,6 +234,7 @@ $(M68K_RS_LIB): $(M68K_RS_DIR)/Cargo.toml $(M68K_RS_DIR)/src/lib.rs ../vendor/m6
 
 mostlyclean: clean-objects
 	rm -f $(APP)-arm64 $(APP)-x86_64
+	rm -rf $(APP_BUNDLE)
 
 clean: mostlyclean
 	rm -f cpuemu.cpp cpudefs.cpp cpustbl.cpp cputbl.h

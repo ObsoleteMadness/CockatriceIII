@@ -130,14 +130,15 @@ jobs:
       - name: Build macOS (${{ matrix.target }})
         if: matrix.platform == 'osx'
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
           if [ "${{ matrix.arch }}" = "universal" ]; then
-            make -C ${{ matrix.build_dir }} universal -j$(sysctl -n hw.ncpu)
+            make -C ${{ matrix.build_dir }} app-universal APP_VERSION="${VERSION#v}" -j$(sysctl -n hw.ncpu)
             file "${{ matrix.build_dir }}/CockatriceIII"
             lipo -info "${{ matrix.build_dir }}/CockatriceIII"
             lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q x86_64
             lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q arm64
           else
-            make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} -j$(sysctl -n hw.ncpu)
+            make -C ${{ matrix.build_dir }} app ARCH=${{ matrix.arch }} APP_VERSION="${VERSION#v}" -j$(sysctl -n hw.ncpu)
             file "${{ matrix.build_dir }}/CockatriceIII"
             lipo -info "${{ matrix.build_dir }}/CockatriceIII"
             if [ "${{ matrix.arch }}" = "amd64" ]; then
@@ -146,6 +147,7 @@ jobs:
               lipo -info "${{ matrix.build_dir }}/CockatriceIII" | grep -q arm64
             fi
           fi
+          file "${{ matrix.build_dir }}/CockatriceIII.app/Contents/MacOS/CockatriceIII"
 
       - name: Package macOS Distribution (.dmg)
         if: matrix.platform == 'osx'
@@ -160,11 +162,23 @@ jobs:
           cp "${{ matrix.build_dir }}/CockatriceIII" "${STAGING_DIR}/"
           chmod +x "${STAGING_DIR}/CockatriceIII"
 
-          # Copy root of ./dist (prefs, rom, xpram, archive)
-          cp dist/CockatriceIII_Prefs "${STAGING_DIR}/"
-          [ -f dist/CockatriceIII_XPRAM ] && cp dist/CockatriceIII_XPRAM "${STAGING_DIR}/"
+          # Copy built .app bundle (double-clickable distribution)
+          cp -R "${{ matrix.build_dir }}/CockatriceIII.app" "${STAGING_DIR}/"
+
+          # Copy root of ./dist (prefs, rom, xpram, archive) next to the
+          # flat binary AND inside the .app bundle: CockatriceIII resolves
+          # them relative to its own working directory, which on a
+          # Finder/no-arg launch is chdir'd to the bundle root (see
+          # setupWorkingDirectory() in sdlmain.m), not the binary's folder.
+          # The ROM is the exception: `make bundle` already placed it in
+          # Contents/Resources, which main_sdl.cpp falls back to, so don't
+          # duplicate it at the bundle root too.
+          for DEST in "${STAGING_DIR}" "${STAGING_DIR}/CockatriceIII.app"; do
+            cp dist/CockatriceIII_Prefs "${DEST}/"
+            [ -f dist/CockatriceIII_XPRAM ] && cp dist/CockatriceIII_XPRAM "${DEST}/"
+            [ -d dist/archive ] && cp -r dist/archive "${DEST}/"
+          done
           [ -f dist/Quadra800.rom ] && cp dist/Quadra800.rom "${STAGING_DIR}/"
-          [ -d dist/archive ] && cp -r dist/archive "${STAGING_DIR}/"
 
           # Copy root documentation
           cp ChangeLog COPYING INSTALL README roms.txt TECH TODO "${STAGING_DIR}/"
