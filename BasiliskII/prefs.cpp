@@ -70,6 +70,10 @@ prefs_desc common_prefs_items[] = {
 	{"dump_memory", TYPE_BOOLEAN, false}, // Write RAM snapshot on unhandled CPU system error
 	{"dump_file", TYPE_STRING, false},	// Output path for binary crash memory dump
 	{"scsi_debug", TYPE_BOOLEAN, false}, // Enable verbose SCSI and CD-ROM logging
+	{"toolbox_hooks", TYPE_BOOLEAN, false}, // Hook Toolbox/OS traps at runtime (toolbox_traps.cpp)
+	{"mdi_windows", TYPE_BOOLEAN, false}, // Mirror each guest window into a host window (toolbox_window.cpp)
+	{"window_redirect", TYPE_BOOLEAN, false}, // Give each mirrored window its own offscreen pixel buffer
+	{"native_alerts", TYPE_BOOLEAN, false}, // Rebuild guest dialogs as host controls instead of mirroring their pixels
 	{NULL, TYPE_END, false}	// End of list
 };
 
@@ -116,6 +120,10 @@ void PrefsInit(void)
 	PrefsAddBool("dump_memory", false);
 	PrefsAddString("dump_file", "/tmp/memory.bin");
 	PrefsAddBool("scsi_debug", true);
+	PrefsAddBool("toolbox_hooks", false);
+	PrefsAddBool("mdi_windows", false);
+	PrefsAddBool("window_redirect", false);
+	PrefsAddBool("native_alerts", false);
 	PrefsAddString("screen","win/1152/870");	//fantastic monitor for the era
 	PrefsAddString("rom","Quadra800.rom");
 	PrefsAddString("ether","slirp");

@@ -133,6 +133,23 @@ if [ ! -d "${PREFIX}" ]; then
   exit 1
 fi
 
+# obj/ and cockatricerc.o are shared by every arch, so objects left behind by a
+# previous run would be fed to the wrong linker ("file format not recognized").
+# Track which arch last built here and wipe the objects when it changes.
+ARCH_STAMP="${SCRIPT_DIR}/.cross-win/.last-arch"
+if [ ! -f "${ARCH_STAMP}" ] || [ "$(cat "${ARCH_STAMP}")" != "${ARCH}" ]; then
+  if [ -f "${ARCH_STAMP}" ]; then
+    echo "Switching from $(cat "${ARCH_STAMP}") to ${ARCH}; clearing stale objects"
+  fi
+  make -C "${SCRIPT_DIR}" mostlyclean >/dev/null 2>&1 || true
+  # The staged runtime DLLs are arch-specific too, and copy_runtime_dll() skips
+  # any that already exist -- so drop them rather than shipping x64 DLLs beside
+  # an x86 exe.
+  rm -f "${SCRIPT_DIR}"/*.dll
+fi
+mkdir -p "$(dirname "${ARCH_STAMP}")"
+echo "${ARCH}" > "${ARCH_STAMP}"
+
 echo "Building Windows ${ARCH} with ${CXX}"
 make -C "${SCRIPT_DIR}" \
   ARCH="${MAKE_ARCH}" \

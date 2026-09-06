@@ -18,7 +18,7 @@
 #include "sysdeps.h"
 
 #ifdef __cplusplus
-#include "toolbox_traps.h"
+#include "toolbox_menu.h"
 extern "C" {
 #endif
 
@@ -44,7 +44,9 @@ void MacMenuBridge_SyncFromGuest(void);
 void MacMenuBridge_SelectMenuItem(int16 menuID, int16 itemIndex);
 
 /*
- * Registers all Menu Manager trap hooks with the modular Toolbox Traps subsystem.
+ * Wires the bridge to the Menu Manager trap hooks: installs MacMenuBridge_SyncFromGuest
+ * as the sync callback and asks toolbox_menu.cpp to register the traps themselves.
+ * Called once during host application startup.
  */
 void MacMenuBridge_RegisterMenuTraps(void);
 

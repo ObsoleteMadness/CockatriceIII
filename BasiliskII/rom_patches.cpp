@@ -35,6 +35,7 @@
 #include "extfs.h"
 #include "prefs.h"
 #include "rom_patches.h"
+#include "toolbox_traps.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -1208,6 +1209,20 @@ void PatchAfterStartup(void)
 	// Install external file system
 	InstallExtFS();
 #endif
+
+	/*
+	 *  Install the RAM trampolines for whatever Toolbox/OS traps the host side
+	 *  registered before the machine was started (toolbox_traps.cpp; the Menu
+	 *  Manager hooks in toolbox_menu.cpp are the current caller). No-op unless
+	 *  the toolbox_hooks pref is set.
+	 *
+	 *  Here rather than in InstallDrivers() because this runs from the Sony
+	 *  driver's accRun, once the System file has installed its own trap
+	 *  patches: our trampoline then sits at the head of the chain, so a hook
+	 *  runs and a passthrough still reaches the System's implementation. See
+	 *  the block comment on ToolboxTrap_InstallAll().
+	 */
+	ToolboxTrap_InstallAll();
 }
 
 

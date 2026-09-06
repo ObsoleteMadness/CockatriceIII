@@ -14,6 +14,7 @@
 #include "video.h"
 #include "version.h"
 #include "menu_bar.h"
+#include "toolbox_window.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -74,6 +75,10 @@ static bool is_ctrl_down(SDL_keysym const & ks);
  */
 void video_set_palette(uint8 *pal)
 {
+	/* Recorded before the SDLscreen check: mirrored guest windows are drawn
+	   from this table too, and they exist whether or not the main screen does. */
+	ToolboxWindow_SetPalette(pal);
+
 	if (!SDLscreen)
 		return;
 
@@ -288,6 +293,10 @@ if(skip_count++>frame_skip){
 	SDL_UpdateRect(SDLscreen,0,0,0,0);
 	skip_count=0;
 		}
+
+	/* Mirrored guest windows draw into their own buffers rather than into the
+	   screen, so they are presented separately from the blit above. */
+	Toolbox_PresentWindows();
 //if(count>0)
 //	printf("drew %d/%d pels\n",count,VideoMonitor.bytes_per_row*VideoMonitor.y);
 doevents();
@@ -381,7 +390,12 @@ int emul_suspended=0;
 		}
 	case SDL_MOUSEMOTION:
 	ADBMouseMoved(event.motion.x, event.motion.y);
-	break;	
+	break;
+
+	case SDL_ACTIVEEVENT:
+		if (event.active.state & SDL_APPMOUSEFOCUS)
+			SDL_ShowCursor(event.active.gain ? SDL_DISABLE : SDL_ENABLE);
+		break;
 
 	case SDL_QUIT:
 		quitcount++;

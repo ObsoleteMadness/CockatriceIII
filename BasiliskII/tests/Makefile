@@ -139,6 +139,10 @@ $(OBJ_DIR)/emul_op.o: ../emul_op.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/toolbox_traps.o: ../toolbox_traps.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OBJ_DIR)/toolbox_menu.o: ../toolbox_menu.cpp | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OBJ_DIR)/toolbox_window.o: ../toolbox_window.cpp | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/scc.o: ../scc.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/scsi.o: ../scsi.cpp | $(OBJ_DIR)
@@ -176,7 +180,7 @@ $(OBJ_DIR)/softfloat.o: $(MUSASHI)/softfloat/softfloat.c | $(OBJ_DIR)
 CORE_OBJS = \
 	$(OBJ_DIR)/test_env.o $(OBJ_DIR)/test_stubs.o $(OBJ_DIR)/test_sys.o \
 	$(OBJ_DIR)/memory.o $(OBJ_DIR)/cpu_glue.o $(OBJ_DIR)/cpu_engine.o \
-	$(OBJ_DIR)/emul_op.o $(OBJ_DIR)/toolbox_traps.o $(OBJ_DIR)/scc.o $(OBJ_DIR)/scsi.o $(OBJ_DIR)/scsi_dummy.o \
+	$(OBJ_DIR)/emul_op.o $(OBJ_DIR)/toolbox_traps.o $(OBJ_DIR)/toolbox_menu.o $(OBJ_DIR)/toolbox_window.o $(OBJ_DIR)/scc.o $(OBJ_DIR)/scsi.o $(OBJ_DIR)/scsi_dummy.o \
 	$(OBJ_DIR)/disk.o $(OBJ_DIR)/macos_util.o $(OBJ_DIR)/rom_patches.o \
 	$(OBJ_DIR)/rsrc_patches.o \
 	$(OBJ_DIR)/musashi_glue.o $(OBJ_DIR)/memory_musashi.o \

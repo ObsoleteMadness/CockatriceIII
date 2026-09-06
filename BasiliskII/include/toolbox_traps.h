@@ -24,7 +24,8 @@
  *  Execution Mechanics:
  *  -------------------
  *  1. When CockatriceIII_Prefs sets toolbox_hooks true, ToolboxTrap_InstallAll()
- *     (from PatchAfterStartup()) queries trap addresses via _GetToolTrapAddress.
+ *     (called once per boot from PatchAfterStartup(), after the System file has
+ *     installed its own trap patches) queries trap addresses via _GetToolTrapAddress.
  *  2. An 12-byte trampoline stub is installed into guest memory for each hooked trap:
  *         0x7130 (M68K_EMUL_OP_TOOLBOX_DISPATCH)
  *         move.l a1, a7   ; Update stack pointer (if modified by accelerated replacement)
@@ -49,7 +50,6 @@
 #include "cpu_emulation.h"
 #include "main.h"
 #include <string>
-#include <vector>
 
 /*
  * Action returned by a Toolbox trap handler function.
@@ -235,57 +235,6 @@ private:
 	uint32 m_arg_cursor;
 };
 
-/*
- * Inside Macintosh Menu Manager constants (Toolbox Essentials, Chapter 3).
- */
-enum {
-	kMenuNoMark     = 0,    // Item has no marking character
-	kMenuHierCmd    = 27,   // hMenuCmd ($1B): keyboard equiv marks a submenu
-	kMenuDrawMsg    = 0,    // Menu def proc: draw items
-	kMenuChooseMsg  = 1,    // Menu def proc: highlight item under cursor
-	kMenuSizeMsg    = 2,    // Menu def proc: calculate dimensions
-	kMenuPopUpMsg   = 3,    // Menu def proc: pop-up box rectangle
-};
-
-/*
- * Classic Menu Manager A-line trap opcodes used by the guest dispatch helpers.
- */
-enum {
-	kTrap_GetItemCmd    = 0xa815, // PROCEDURE GetItemCmd(theMenu, item, VAR cmdChar)
-	kTrap_GetMenuHandle = 0xa939, // FUNCTION GetMenuHandle(menuID): MenuHandle
-	kTrap_HiliteMenu    = 0xa938, // PROCEDURE HiliteMenu(menuID)
-	kTrap_MenuSelect    = 0xa93d, // FUNCTION MenuSelect(startPt): LongInt
-	kTrap_MenuKey       = 0xa93e, // FUNCTION MenuKey(ch): LongInt
-	kTrap_SystemMenu    = 0xa9b5, // PROCEDURE SystemMenu(menuResult)
-};
-
-/*
- * Data structures representing decoded Macintosh Menu Manager state.
- * Layout follows the MenuInfo record in Inside Macintosh (menuID at +0,
- * enableFlags at +10, menuData Str255 at +14, then item definition bytes).
- */
-struct MacMenuItemSnapshot {
-	std::string text;             // UTF-8 item title (or "-" for separator)
-	char cmdChar;                 // Keyboard shortcut (GetItemCmd); hMenuCmd if submenu
-	uint8 markChar;               // Marking character (noMark=0; checkmark often $12)
-	bool isSeparator;             // True if this item is a menu separator line
-	bool isSubmenu;               // True when cmdChar == hMenuCmd ($1B)
-	bool isEnabled;               // True if item is enabled (enableFlags bit)
-	int16 menuID;                 // Parent Menu ID
-	int16 itemIndex;              // 1-based item index within menu
-};
-
-struct MacMenuSnapshot {
-	int16 menuID;                 // Menu ID (e.g. 128 for Apple menu, 129 for File...)
-	std::string title;            // UTF-8 menu title
-	bool isEnabled;               // True if entire menu is enabled
-	std::vector<MacMenuItemSnapshot> items; // Child menu items
-};
-
-struct MacMenuBarSnapshot {
-	std::vector<MacMenuSnapshot> menus; // List of menus currently installed in MenuList
-};
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -305,6 +254,16 @@ extern "C" {
 bool ToolboxTrap_Register(uint16 trap_num, const char *name, ToolboxTrapHandler handler, void *user_data);
 
 /*
+ * Returns true when the toolbox_hooks pref enables the registry.
+ *
+ * The master switch for the whole subsystem. Registration refuses while it is
+ * false, and every client must check it before touching guest state from a
+ * periodic path -- the menu bar poll and the window walk are not trap hooks and
+ * would otherwise keep running with hooking off.
+ */
+bool ToolboxTrap_HooksEnabled(void);
+
+/*
  * Unregisters a previously registered trap hook.
  *
  * Arguments:
@@ -317,7 +276,10 @@ bool ToolboxTrap_Unregister(uint16 trap_num);
 
 /*
  * Initializes and patches all registered trap trampolines into the Macintosh trap table.
- * Called during boot from PatchAfterStartup() when toolbox_hooks is true in prefs.
+ *
+ * Called once per boot from PatchAfterStartup() when toolbox_hooks is true in prefs.
+ * Safe to call again: a call inside the same boot does nothing, and a call after the
+ * guest has reset reinstalls everything (see the .cpp for how the two are told apart).
  */
 void ToolboxTrap_InstallAll(void);
 
@@ -351,42 +313,6 @@ void ToolboxTrap_WriteTrampoline(uint32 addr, uint16 trap_num, uint32 original_a
  *   r: Pointer to active 68k register state.
  */
 void ToolboxTrap_Dispatch(struct M68kRegisters *r);
-
-/*
- * Decodes the guest Mac OS MenuList global (0x0A1C) and all MenuInfo records from guest RAM.
- *
- * Arguments:
- *   snapshot_out: Reference to snapshot structure to populate.
- *
- * Returns:
- *   true if MenuList was valid and decoded, false otherwise.
- */
-bool Toolbox_SnapshotMenuBar(MacMenuBarSnapshot &snapshot_out);
-
-/*
- * Schedules a deferred guest-to-host menu bar sync (processed on the next IRQ).
- * Use from trap pre-hooks so ROM Menu Manager updates complete before snapshotting.
- */
-void Toolbox_RequestMenuBarSync(void);
-
-/*
- * Runs a pending menu bar sync if one was requested. Call from the CPU thread (IRQ).
- */
-void Toolbox_SetMenuBarSyncCallback(void (*callback)(void));
-
-/*
- * Runs a pending menu bar sync if one was requested. Call from the CPU thread (IRQ).
- */
-void Toolbox_ProcessPendingMenuBarSync(void);
-
-/*
- * Activates a guest menu item by menu ID and 1-based item index.
- * Uses MenuKey when the item has a command-key shortcut; safe to call from CPU thread.
- *
- * Returns:
- *   true if the selection was dispatched, false if the item was not found or has no shortcut.
- */
-bool Toolbox_DispatchGuestMenuSelect(int16 menuID, int16 itemIndex);
 
 /*
  * Convenience macros for trap handler definitions and registration.

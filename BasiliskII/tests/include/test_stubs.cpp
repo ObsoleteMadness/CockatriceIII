@@ -93,6 +93,12 @@ void EtherReadPacket(uint8 **src, uint32 &dest, uint32 &len, uint32 &remaining)
 
 void ADBOp(uint8 cmd, uint8 *data) { (void)cmd; (void)data; }
 void ADBInterrupt(void) {}
+/* Synthetic input entry points, used by toolbox_window.cpp to drive dialogs */
+void ADBMouseMoved(int x, int y) { (void)x; (void)y; }
+void ADBMouseDown(int button) { (void)button; }
+void ADBMouseUp(int button) { (void)button; }
+void ADBKeyDown(int code) { (void)code; }
+void ADBKeyUp(int code) { (void)code; }
 
 /*
  * Time Manager stubs.

@@ -27,7 +27,7 @@
 #include "main.h"
 #include "menu_bar.h"
 #include "prefs.h"
-#include "toolbox_traps.h"
+#include "toolbox_menu.h"
 #include "macos_menu_bridge.h"
 
 @interface CocoaMacMenuBridgeTarget : NSObject
@@ -205,42 +205,16 @@ void MacMenuBridge_SyncFromGuest(void)
 }
 
 /*
- * Generic hook callback for Menu Manager traps that modify menu bar state.
- */
-static TOOLBOX_TRAP_HANDLER(Handle_MenuStateChange)
-{
-	// Defer sync until after the ROM Menu Manager trap completes (next IRQ)
-	Toolbox_RequestMenuBarSync();
-
-	// Passthrough: allow original Mac OS ROM code to complete internal updates
-	return TOOLBOX_ACTION_PASSTHROUGH;
-}
-
-/*
- * Registers all Menu Manager trap hooks with the modular Toolbox Traps subsystem.
+ * Wires the Cocoa bridge to the Menu Manager trap hooks.
+ *
+ * The traps themselves, and the handler behind them, belong to
+ * toolbox_menu.cpp -- see the module comment there for the pattern. All this
+ * side contributes is the renderer: MacMenuBridge_Init() hands
+ * MacMenuBridge_SyncFromGuest to Toolbox_SetMenuBarSyncCallback(), so the
+ * deferred sync ends up building NSMenus.
  */
 void MacMenuBridge_RegisterMenuTraps(void)
 {
-	if (!PrefsFindBool("toolbox_hooks")) {
-		printf("[MENU-BRIDGE] toolbox_hooks disabled; skipping Menu Manager trap registration.\n");
-		fflush(stdout);
-		return;
-	}
-
 	MacMenuBridge_Init();
-
-	// Hook core Menu Manager traps that alter menu bar content or display
-	ToolboxTrap_Register(0xa930, "_InitMenus",      Handle_MenuStateChange, NULL);
-	ToolboxTrap_Register(0xa933, "_AppendMenu",     Handle_MenuStateChange, NULL);
-	ToolboxTrap_Register(0xa934, "_ClearMenuBar",   Handle_MenuStateChange, NULL);
-	ToolboxTrap_Register(0xa935, "_InsertMenu",     Handle_MenuStateChange, NULL);
-	ToolboxTrap_Register(0xa936, "_DeleteMenu",     Handle_MenuStateChange, NULL);
-	ToolboxTrap_Register(0xa937, "_DrawMenuBar",    Handle_MenuStateChange, NULL);
-	ToolboxTrap_Register(0xa93c, "_SetMenuBar",     Handle_MenuStateChange, NULL);
-	ToolboxTrap_Register(0xa81d, "_InvalMenuBar",   Handle_MenuStateChange, NULL);
-	ToolboxTrap_Register(0xa826, "_InsertMenuItem", Handle_MenuStateChange, NULL);
-	ToolboxTrap_Register(0xa827, "_DeleteMenuItem", Handle_MenuStateChange, NULL);
-
-	printf("[MENU-BRIDGE] Registered Menu Manager trap hooks for native macOS menu sync.\n");
-	fflush(stdout);
+	ToolboxMenu_RegisterTraps();
 }

@@ -36,18 +36,40 @@ extern "C" uint32 cpu_engine_last_pc = 0;
 // Maximum supported concurrently registered CPU engines
 #define MAX_CPU_ENGINES 8
 
+// Which built-in engines this build actually links.  Musashi is the golden
+// path and is always present; Amiberry (interpreter + compemu JIT) and the
+// Rust m68k-rs core are optional because not every port builds them -- the
+// Windows/MinGW port ships Musashi only.  A port opts out by defining these
+// to 0 on the command line, and the registry below then simply holds fewer
+// entries; nothing else in the file needs to know.
+#ifndef ENABLE_AMIBERRY_CPU
+#define ENABLE_AMIBERRY_CPU 1
+#endif
+#ifndef ENABLE_M68K_RS_CPU
+#define ENABLE_M68K_RS_CPU 1
+#endif
+
 // Forward declarations for built-in CPU engines
 extern const CPUEngine musashi_cpu_engine;
+#if ENABLE_AMIBERRY_CPU
 extern const CPUEngine amiberry_cpu_engine;
+#endif
+#if ENABLE_M68K_RS_CPU
 extern const CPUEngine m68k_rs_cpu_engine;
+#endif
 
-// Engine registry state
+// Engine registry state.  The initialiser and s_engine_count must agree, so
+// both are driven by the same ENABLE_* switches.
 static const CPUEngine *s_engines[MAX_CPU_ENGINES] = {
 	&musashi_cpu_engine,
+#if ENABLE_AMIBERRY_CPU
 	&amiberry_cpu_engine,
+#endif
+#if ENABLE_M68K_RS_CPU
 	&m68k_rs_cpu_engine
+#endif
 };
-static int s_engine_count = 3;
+static int s_engine_count = 1 + ENABLE_AMIBERRY_CPU + ENABLE_M68K_RS_CPU;
 static const CPUEngine *s_active_engine = &musashi_cpu_engine;
 
 // Global JIT preference flags
@@ -744,8 +766,12 @@ static void EnsureEnginesRegistered(void)
 	// Re-register defaults if table is empty
 	if (s_engine_count == 0) {
 		RegisterCPUEngine(&musashi_cpu_engine);
+#if ENABLE_AMIBERRY_CPU
 		RegisterCPUEngine(&amiberry_cpu_engine);
+#endif
+#if ENABLE_M68K_RS_CPU
 		RegisterCPUEngine(&m68k_rs_cpu_engine);
+#endif
 	}
 }
 

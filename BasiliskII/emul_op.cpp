@@ -45,6 +45,7 @@
 #include "emul_op.h"
 #include "menu_bar.h"
 #include "toolbox_traps.h"
+#include "toolbox_window.h"
 
 #if ENABLE_MON
 #include "mon.h"
@@ -519,6 +520,17 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 			 * follows -- see toolbox_traps.cpp.
 			 */
 			ToolboxTrap_Dispatch(r);
+			break;
+
+		case M68K_EMUL_OP_WINDOW_SAFEPOINT:
+			/*
+			 * Entered from a stub installed in the jGNEFilter low memory vector,
+			 * so the guest is inside GetNextEvent/EventAvail in an application's
+			 * own context -- the documented place for this kind of work, and the
+			 * only one from which calling the Window Manager has proved safe.
+			 * See toolbox_window.cpp.
+			 */
+			Toolbox_WindowSafePoint(r);
 			break;
 
 		case M68K_EMUL_OP_BLOCK_MOVE:		// BlockMove() replacement

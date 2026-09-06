@@ -13,8 +13,9 @@ Toolbox Traps** subsystem already in the tree (`toolbox_traps.cpp`,
 | Area | File |
 |------|------|
 | Toolbox trap registry & dispatch | `BasiliskII/toolbox_traps.cpp`, `BasiliskII/include/toolbox_traps.h` |
+| Menu Manager hooks (registry client) | `BasiliskII/toolbox_menu.cpp`, `BasiliskII/include/toolbox_menu.h` |
 | EmulOp routing | `BasiliskII/emul_op.cpp`, `BasiliskII/include/emul_op.h` |
-| Guest menu snapshot (MenuList decode) | `Toolbox_SnapshotMenuBar()` in `toolbox_traps.cpp` |
+| Guest menu snapshot (MenuList decode) | `Toolbox_SnapshotMenuBar()` in `toolbox_menu.cpp` |
 | macOS NSMenu bridge (current approach) | `BasiliskII/bridge/darwin/macos_menu_bridge.mm` |
 | SDL video blit & input | `BasiliskII/SDL/video_sdl.cpp` |
 | Thread-safe menu commands | `BasiliskII/SDL/menu_bar.cpp`, `BasiliskII/include/menu_bar.h` |
@@ -41,10 +42,11 @@ The user sees one Classic-style surface; input routing is transparent.
 
 ## 2. Why not the current NSMenu bridge?
 
-The existing `macos_menu_bridge.mm` path hooks Menu Manager traps in
-**passthrough** mode, snapshots guest `MenuList` (`0x0A1C`), and rebuilds
-`NSApp.mainMenu` on the macOS main thread. That works for driving the guest
-from the system menu bar but:
+The existing path hooks Menu Manager traps in **passthrough** mode
+(`ToolboxMenu_RegisterTraps()` in `toolbox_menu.cpp`), snapshots guest
+`MenuList` (`0x0A1C`), and rebuilds `NSApp.mainMenu` on the macOS main thread
+(`macos_menu_bridge.mm`, wired in as the sync callback). That works for driving
+the guest from the system menu bar but:
 
 - Guest `_DrawMenuBar` still paints into the framebuffer → **double menu** unless
   cropped or suppressed.
@@ -107,7 +109,15 @@ graph TB
 The registry API is in `toolbox_traps.h`:
 
 - `ToolboxTrap_Register(trap, name, handler, user_data)`
-- `ToolboxTrap_InstallAll()` — called from `M68K_EMUL_OP_INSTALL_DRIVERS`
+- `ToolboxTrap_InstallAll()` — writes the trampolines into guest RAM. Called once
+  per boot from `PatchAfterStartup()` (Sony accRun), after the System file has
+  installed its own trap patches, so our stub sits at the head of the chain.
+  Gated on the `toolbox_hooks` pref, which is off by default.
+- `ToolboxTrap_HooksEnabled()` — that same pref, exported. It is the master
+  switch for everything built on the registry, not only for registration: the
+  `MenuList` poll (§4.3.1) and the `jGNEFilter` stub run from the 60 Hz drain
+  rather than from a trap, so they check it themselves. With it false a boot
+  differs from an unpatched one only in what it prints.
 - Handler returns `TOOLBOX_ACTION_PASSTHROUGH` or `TOOLBOX_ACTION_REPLACE`
 - `ToolboxArgs` — Pascal stack helpers for replace-mode handlers
 
@@ -137,13 +147,79 @@ Deferred sync (already implemented): trap pre-hook sets
 `Toolbox_ProcessPendingMenuBarSync()` so ROM finishes updating `MenuList`
 before snapshot.
 
-### 4.3 Menu interaction traps (optional, phase 2+)
+### 4.3 Making a host menu choice take effect
+
+There is no Toolbox call that *performs* a menu command. `_MenuSelect` and
+`_MenuKey` only report which item the user picked; the application acts on the
+result, in its own event loop. So the host cannot dispatch a menu choice by
+calling something — it has to get the application to ask, and then answer.
 
 | Trap | Name | Use |
 |------|------|-----|
-| `0xA93D` | `_MenuSelect` | Track open menu / item highlight while mouse down |
-| `0xA93E` | `_MenuKey` | Usually leave to guest; host may call via stub for shortcuts |
-| `0xA9B5` | `_SystemMenu` | Host menu click → `(menuID << 16) \| itemIndex` (see `Toolbox_DispatchGuestMenuSelect`) |
+| `0xA93D` | `_MenuSelect` | **Hooked, `TOOLBOX_ACTION_REPLACE`.** With a host choice pending, returns that `menuResult` instead of tracking the mouse. Otherwise passthrough, so the guest's own menu bar still works |
+| `0xA93E` | `_MenuKey` | Left to the guest: command-key equivalents are handled by the application |
+
+`Toolbox_DispatchGuestMenuSelect(menuID, itemIndex)` records
+`(menuID << 16) | itemIndex`. The mouseDown that makes the application ask is
+then written **straight into the event record** the Event Manager is about to
+return, from the `jGNEFilter` safe point — `Toolbox_MenuSafePoint()`. The filter
+is entered with `A1` pointing at that record and the Boolean `GetNextEvent` will
+return sitting above the return address, both documented at
+`ToolboxEventMgr.a:265-280`, so the event and the "there is an event" answer can
+be supplied together.
+
+Only a **null event** is overwritten, so no real event is ever lost; null events
+are frequent enough that the wait is a frame or two. An unanswered choice is
+discarded after five seconds, so it cannot be picked up by a later real
+selection.
+
+Two details decide whether this works at all:
+
+- **The Boolean goes in the high byte.** `GetNextEvent`'s result occupies a word
+  on the stack, and the value is the byte at its *low address*: `GNECommon`
+  builds it with `CLR.W` followed by `ADDQ.B #1` at the same address
+  (`ToolboxEventMgr.a`), and `WaitNextEvent` reads it back with
+  `MOVE.B (SP)+` (`WaitNextEvent.a:56`). Writing a word of `1` sets the other
+  byte, and every caller then reads false — the event record was being filled in
+  correctly and thrown away unlooked at, with the symptom that the application
+  never called `_MenuSelect` and the choice timed out.
+- **Only the owning application may be asked.** Every process calls
+  `GetNextEvent`, background ones included, so the filter runs in whichever one
+  happens to be asking. The Process Manager swaps `MenuList` per process, so the
+  list visible from the filter identifies whose event loop this is: the event is
+  placed only if the pending menu ID and item are in it. Otherwise the Finder
+  would take a menu choice meant for the front application and dispatch some
+  unrelated item of its own, or none — swallowing the selection either way.
+
+Nothing about the mouse is touched: the guest pointer does not move, and no
+click is injected. This matters because the pointer is the user's — parking it
+in the menu bar to dispatch a command taken from the host menu bar is visible,
+and it interferes with whatever the user was doing.
+
+**What this replaced.**
+
+1. Calling `_MenuKey` or `_SystemMenu` through 68k stubs. This could not work at
+   all: it used `Execute68k` from the 60 Hz interrupt, which is not a context
+   the Toolbox may be entered from, and the return value went nowhere — nothing
+   in the guest was waiting for it. `_SystemMenu` is for desk accessory menus in
+   any case.
+2. Injecting a real click through ADB. This worked, but moved the guest pointer
+   to the menu bar and left it there.
+
+### 4.3.1 Following the front application
+
+The hooked traps catch an application building its own menu bar, but not the
+Process Manager handing the menu bar over when the front application changes: a
+context switch swaps the low-memory globals directly, `MenuList` among them
+(`ProcessMgr/LomemTab.Color.a`). `poll_menu_list()` therefore fingerprints
+`MenuList` — its handle, master pointer, length and the menu handles in it — on
+every interrupt and requests a sync when it moves. Without it the host menu bar
+keeps showing whichever application last called `_SetMenuBar`, in practice the
+Finder, for the whole session.
+
+The first observation is a baseline only. Requesting a sync from it would run
+the decode on the first interrupt after boot, when `MenuList` still holds
+whatever the ROM left in that longword.
 
 ### 4.4 ROM low-memory hooks (alternative / supplement)
 
@@ -252,8 +328,8 @@ SDL_KEYDOWN / KEYUP:
 
 Menu item activation from host:
 
-- `Toolbox_DispatchGuestMenuSelect(menuID, itemIndex)` — already calls guest
-  `_SystemMenu` or `_MenuKey` via small 68k stubs in `toolbox_traps.cpp`.
+- `Toolbox_DispatchGuestMenuSelect(menuID, itemIndex)` — arms the `_MenuSelect`
+  hook and injects a menu-bar click; see §4.3.
 - Still use `MenuQueue` if UI thread posts commands; IRQ drain on CPU thread.
 
 Command-key shortcuts: **passthrough** to guest; `_MenuKey` in the app handles
@@ -310,7 +386,8 @@ until phase 2 is stable.
 ## 11. Relation to existing docs
 
 - Boot and trap install timing: [basilisk-ii-boot-and-patch.md](basilisk-ii-boot-and-patch.md)
-  (`InstallDrivers` → `ToolboxTrap_InstallAll`).
+  (`InstallDrivers` installs the drivers and the runtime OS traps; the later
+  `PatchAfterStartup` is where `ToolboxTrap_InstallAll` runs).
 - CPU / EmulOp: [cpu-engine-opcode-fixes.md](cpu-engine-opcode-fixes.md).
 
 When implementing, update `AGENTS.md` with a pointer to this file and note

@@ -47,7 +47,8 @@ endif
 CFLAGS ?= -O2 -Wall -Wno-unused
 CXXFLAGS ?= -O2 -Wall -Wno-unused -Wno-deprecated-declarations -Wno-c++11-narrowing
 CPPFLAGS = -I../include -I. -I$(MUSASHIDIR) -I$(MUSASHIDIR)/softfloat -I../SDL -ISDL -Ipcap $(SDL_CFLAGS)
-DEFS = -DHAVE_CONFIG_H -DENABLE_MON=0 -D_REENTRANT -D_FILE_OFFSET_BITS=64
+DEFS = -DHAVE_CONFIG_H -DENABLE_MON=0 -D_REENTRANT -D_FILE_OFFSET_BITS=64 \
+	-DENABLE_AMIBERRY_CPU=0 -DENABLE_M68K_RS_CPU=0
 
 LDFLAGS =
 LIBS = ../slirp/libslirp.a $(SDL_LIBS) -lws2_32 -liphlpapi -lcomdlg32 -luser32 \
@@ -61,15 +62,18 @@ ifeq ($(ARCH),x86)
 endif
 
 SYSSRCS = ../SDL/sdl_pcap.cpp ../dummy/scsi_dummy.cpp ../SDL/audio_sdl.cpp ../dummy/prefs_editor_dummy.cpp 
-CPUSRCS = ../memory.cpp $(MUSASHIDIR)/basilisk_glue.cpp $(MUSASHIDIR)/memory_musashi.cpp $(MUSASHIDIR)/m68kcpu.c $(MUSASHIDIR)/m68kops.c $(MUSASHIDIR)/m68kdasm.c $(MUSASHIDIR)/softfloat/softfloat.c
+# Windows ships the Musashi engine only: Amiberry's JIT and the Rust m68k-rs
+# core are not cross-built here, so cpu_engine.cpp is told to leave them out of
+# the engine registry (see the ENABLE_*_CPU switches in DEFS above).
+CPUSRCS = ../cpu_engine.cpp ../cpu_glue.cpp ../memory.cpp $(MUSASHIDIR)/musashi_glue.cpp $(MUSASHIDIR)/memory_musashi.cpp $(MUSASHIDIR)/m68kcpu.c $(MUSASHIDIR)/m68kops.c $(MUSASHIDIR)/m68kdasm.c $(MUSASHIDIR)/softfloat/softfloat.c
 
 ## Files
 SRCS = ../main.cpp ../SDL/main_sdl.cpp ../prefs.cpp ../dummy/prefs_dummy.cpp ../SDL/sys_unix_sdl.cpp \
-    ../rom_patches.cpp ../slot_rom.cpp ../rsrc_patches.cpp ../emul_op.cpp \
+    ../rom_patches.cpp ../slot_rom.cpp ../rsrc_patches.cpp ../emul_op.cpp ../toolbox_traps.cpp ../toolbox_menu.cpp ../toolbox_window.cpp \
     ../macos_util.cpp ../xpram.cpp ../dummy/xpram_dummy.cpp ../timer.cpp ../SDL/timer_common.cpp \
     ../dummy/clip_dummy.cpp ../adb.cpp ../serial.cpp ../dummy/serial_dummy.cpp ../scc.cpp ../ether.cpp ../sony.cpp \
     ../disk.cpp ../cdrom.cpp ../scsi.cpp ../video.cpp ../SDL/video_sdl.cpp ../audio.cpp \
-    ../extfs.cpp ../user_strings.cpp user_strings_unix.cpp ../SDL/menu_bar.cpp \
+    ../extfs.cpp ../user_strings.cpp user_strings_unix.cpp ../SDL/menu_bar.cpp ../windows/menu_bar_win32.cpp \
     $(SYSSRCS) $(CPUSRCS)
 
 APP = CockatriceIII.exe

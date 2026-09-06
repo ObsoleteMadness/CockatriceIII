@@ -11,6 +11,11 @@
  *  a modular registry where any subsystem can intercept, monitor, or replace any Toolbox
  *  or OS trap at runtime.
  *
+ *  This file is the mechanism only -- it knows no trap by name. A subsystem that
+ *  wants a trap brings a handler and a registration call of its own;
+ *  toolbox_menu.cpp is the worked example of one, and the Menu Manager code that
+ *  used to live here is now in it.
+ *
  *  Trampoline Structure (12 bytes per hooked trap):
  *    Offset +0: 0x7130 (M68K_EMUL_OP_TOOLBOX_DISPATCH)
  *    Offset +2: 0x2E49 (move.l a1, a7)  -> Restores caller stack or sets new stack
@@ -21,7 +26,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <vector>
 
 #include "sysdeps.h"
 #include "cpu_emulation.h"
@@ -53,200 +57,27 @@ static uint32 s_stub_pool_cursor = 0;
 
 /*
  * Returns true when CockatriceIII_Prefs enables guest trap hooking (toolbox_hooks true).
+ *
+ * This is the master switch for every client of the registry, not just for
+ * ToolboxTrap_Register(): with it off, nothing here or in any client may touch
+ * guest state -- no trampolines, no jGNEFilter stub, no MenuList polling, no
+ * window walk. The result must be a boot that differs from an unpatched one
+ * only in what it prints.
+ *
+ * Asked once per 60 Hz interrupt by the periodic clients, which is cheap enough
+ * not to be worth caching -- and caching would quietly ignore a pref set after
+ * the first call, which the tests do.
  */
-static bool toolbox_hooks_enabled(void)
+bool ToolboxTrap_HooksEnabled(void)
 {
 	return PrefsFindBool("toolbox_hooks");
 }
+
+static bool toolbox_hooks_enabled(void)
+{
+	return ToolboxTrap_HooksEnabled();
+}
 static bool s_traps_installed = false;
-
-// Deferred menu bar sync flag (processed on CPU thread during IRQ)
-static volatile bool s_menu_bar_sync_pending = false;
-
-// Guest helper stubs allocated once from the System heap
-static uint32 s_menu_key_stub = 0;
-static uint32 s_system_menu_stub = 0;
-
-/*
- * Allocates guest RAM for Menu Manager helper stubs if not yet present.
- */
-static void ensure_menu_helper_stubs(void)
-{
-	if (s_menu_key_stub && s_system_menu_stub)
-		return;
-
-	M68kRegisters r;
-	r.d[0] = 32;
-	Execute68kTrap(0xa71e, &r); // NewPtrSysClear()
-	uint32 base = r.a[0];
-	if (!base)
-		return;
-
-	// MenuKey stub: MOVE.W D0,-(A7); _MenuKey; ADDQ.L #4,A7; RTS
-	s_menu_key_stub = base;
-	WriteMacInt16(s_menu_key_stub + 0, 0x3f00);
-	WriteMacInt16(s_menu_key_stub + 2, kTrap_MenuKey);
-	WriteMacInt16(s_menu_key_stub + 4, 0x588f);
-	WriteMacInt16(s_menu_key_stub + 6, 0x4e75);
-
-	// SystemMenu stub: MOVE.L D0,-(A7); _SystemMenu; ADDQ.L #4,A7; RTS
-	s_system_menu_stub = base + 8;
-	WriteMacInt16(s_system_menu_stub + 0, 0x2f00);
-	WriteMacInt16(s_system_menu_stub + 2, kTrap_SystemMenu);
-	WriteMacInt16(s_system_menu_stub + 4, 0x588f);
-	WriteMacInt16(s_system_menu_stub + 6, 0x4e75);
-
-	cpu_engine_invalidate_code(base, 16);
-}
-
-/*
- * Verifies that a menu ID and 1-based item index exist in the guest MenuList.
- * Optionally returns the item command-key character and submenu flag.
- *
- * Returns:
- *   true if the menu/item exists in guest memory.
- */
-static bool lookup_menu_item(int16 menuID, int16 itemIndex, char *cmd_char_out, bool *is_submenu_out)
-{
-	if (menuID <= 0 || itemIndex <= 0)
-		return false;
-
-	if (cmd_char_out)
-		*cmd_char_out = '\0';
-	if (is_submenu_out)
-		*is_submenu_out = false;
-
-	MacMenuBarSnapshot snapshot;
-	if (!Toolbox_SnapshotMenuBar(snapshot))
-		return false;
-
-	for (size_t m = 0; m < snapshot.menus.size(); m++) {
-		const MacMenuSnapshot &menu = snapshot.menus[m];
-		if (menu.menuID != menuID)
-			continue;
-
-		for (size_t i = 0; i < menu.items.size(); i++) {
-			const MacMenuItemSnapshot &item = menu.items[i];
-			if (item.itemIndex == itemIndex) {
-				if (cmd_char_out)
-					*cmd_char_out = item.cmdChar;
-				if (is_submenu_out)
-					*is_submenu_out = item.isSubmenu;
-				return true;
-			}
-		}
-		// Menu exists but item index was not found
-		return false;
-	}
-
-	return false;
-}
-
-/*
- * Invokes guest _MenuKey with the given command-key character in D0.
- */
-static void invoke_menu_key(char cmd_char)
-{
-	ensure_menu_helper_stubs();
-	if (!s_menu_key_stub)
-		return;
-
-	M68kRegisters r;
-	memset(&r, 0, sizeof(r));
-	r.d[0] = (uint32)(uint8)cmd_char;
-	Execute68k(s_menu_key_stub, &r);
-}
-
-/*
- * Invokes guest _SystemMenu with menuResult = (menuID << 16) | itemIndex.
- * Inside Mac: call after the user (or host) chooses a menu command.
- */
-static void invoke_system_menu(int16 menuID, int16 itemIndex)
-{
-	ensure_menu_helper_stubs();
-	if (!s_system_menu_stub)
-		return;
-
-	M68kRegisters r;
-	memset(&r, 0, sizeof(r));
-	r.d[0] = ((uint32)(uint16)menuID << 16) | (uint32)(uint16)itemIndex;
-	Execute68k(s_system_menu_stub, &r);
-}
-
-/*
- * Activates a guest menu item by menu ID and 1-based item index.
- * Prefers _SystemMenu with the standard menuResult encoding; falls back to
- * _MenuKey when the item has a command-key equivalent and no submenu arrow.
- */
-bool Toolbox_DispatchGuestMenuSelect(int16 menuID, int16 itemIndex)
-{
-	char cmd_char = '\0';
-	bool is_submenu = false;
-	if (!lookup_menu_item(menuID, itemIndex, &cmd_char, &is_submenu))
-		return false;
-
-	if (is_submenu) {
-		printf("[TOOLBOX-TRAP] MenuID=%d ItemIndex=%d is a submenu (hMenuCmd); not dispatching\n",
-		       (int)menuID, (int)itemIndex);
-		fflush(stdout);
-		return false;
-	}
-
-	// Items with a real command-key can also be driven through MenuKey
-	if (cmd_char != '\0' && cmd_char != (char)kMenuNoMark && cmd_char != (char)kMenuHierCmd) {
-		printf("[TOOLBOX-TRAP] MenuKey('%c') for MenuID=%d ItemIndex=%d\n",
-		       cmd_char, (int)menuID, (int)itemIndex);
-		fflush(stdout);
-		invoke_menu_key(cmd_char);
-		return true;
-	}
-
-	printf("[TOOLBOX-TRAP] SystemMenu(0x%08X) MenuID=%d ItemIndex=%d\n",
-	       (unsigned)(((uint16)menuID << 16) | (uint16)itemIndex), (int)menuID, (int)itemIndex);
-	fflush(stdout);
-	invoke_system_menu(menuID, itemIndex);
-	return true;
-}
-
-/*
- * Schedules a deferred guest-to-host menu bar sync (processed on the next IRQ).
- */
-void Toolbox_RequestMenuBarSync(void)
-{
-	s_menu_bar_sync_pending = true;
-}
-
-/*
- * Runs a pending menu bar sync if one was requested. Platform code registers the callback.
- */
-static void (*s_menu_bar_sync_callback)(void) = NULL;
-
-void Toolbox_SetMenuBarSyncCallback(void (*callback)(void))
-{
-	s_menu_bar_sync_callback = callback;
-}
-
-void Toolbox_ProcessPendingMenuBarSync(void)
-{
-	if (!s_menu_bar_sync_pending)
-		return;
-	s_menu_bar_sync_pending = false;
-	if (s_menu_bar_sync_callback)
-		s_menu_bar_sync_callback();
-}
-
-/*
- * Low Memory Global Offsets for Menu Manager
- */
-enum {
-	LM_MenuList    = 0x0a1c, // Handle to current MenuList record
-	LM_MBarEnable  = 0x0a20, // Menu bar enable flags (0 = app owns menu bar)
-	LM_TheMenu     = 0x0a26, // Menu ID of highlighted menu in menu bar
-	LM_TopMenuItem = 0x0a0a, // Pixel value at top of scrollable menu
-	LM_MBarHook    = 0x0a3c, // Menu bar drawing hook procedure
-	LM_MenuHook    = 0x0a30, // Menu selection hook (MenuSelect while button down)
-	LM_MBarHeight  = 0x0baa  // Current menu bar height in pixels
-};
 
 /*
  * Finds a registered trap entry by its trap number.
@@ -430,17 +261,121 @@ static uint32 alloc_stub_slot(void)
 }
 
 /*
- * Allocates guest system memory for the trap trampoline pool and installs all registered hooks.
- * Called during boot from InstallDrivers() or PatchAfterStartup().
+ * Reads a trap's current entry out of the Mac OS trap table.
+ *
+ * Arguments:
+ *   trap_num: A-line trap number; bit 11 selects the Toolbox table.
+ *
+ * Returns:
+ *   Address the trap currently dispatches to.
+ */
+static uint32 get_trap_address(uint16 trap_num)
+{
+	M68kRegisters r;
+	memset(&r, 0, sizeof(r));
+	r.d[0] = trap_num;
+	// _GetToolTrapAddress (0xA746) for Toolbox traps, _GetOSTrapAddress (0xA346) for OS traps
+	Execute68kTrap((trap_num & 0x0800) ? 0xa746 : 0xa346, &r);
+	return r.a[0];
+}
+
+/*
+ * Reports whether the trap table still dispatches through the trampolines this
+ * module installed.
+ *
+ * Used to tell a second boot from a second call inside one boot; see the
+ * comment in ToolboxTrap_InstallAll().
+ *
+ * Returns:
+ *   true if a trap we installed still points at our own stub.
+ */
+static bool trap_table_still_ours(void)
+{
+	for (int i = 0; i < s_trap_count; i++) {
+		const ToolboxTrapDesc &desc = s_trap_table[i];
+		if (!desc.is_installed || !desc.stub_addr)
+			continue;
+		if (get_trap_address(desc.trap_num) != desc.stub_addr)
+			continue;
+		/*
+		 * The address matching is not enough on its own: a rebuilt System heap
+		 * can hand the same address to something else. The trampoline's own
+		 * contents settle it -- if the EmulOp word and the trap number are
+		 * still there, this really is our stub.
+		 */
+		if (ReadMacInt16(desc.stub_addr) == (uint16)M68K_EMUL_OP_TOOLBOX_DISPATCH &&
+		    ReadMacInt16(desc.stub_addr + 6) == desc.trap_num)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * Drops every trace of a previous boot's installation.
+ *
+ * The pool pointer and the stub addresses describe a System heap that no longer
+ * exists, so they are cleared rather than reused; the registrations themselves
+ * (trap number, name, handler, user_data) survive, because those came from the
+ * host side and are not affected by the guest resetting.
+ */
+static void forget_previous_installation(void)
+{
+	ToolboxTrap_SetStubPool(0);
+	for (int i = 0; i < s_trap_count; i++) {
+		s_trap_table[i].stub_addr = 0;
+		s_trap_table[i].original_addr = 0;
+		s_trap_table[i].is_installed = false;
+	}
+	s_traps_installed = false;
+}
+
+/*
+ * Allocates guest system memory for the trap trampoline pool and installs all
+ * registered hooks.
+ *
+ * Called once per boot from PatchAfterStartup(), which is the first point where
+ * both preconditions hold: there is a Mac heap for NewPtrSysClear to allocate
+ * the pool from, and -- the reason it is not InstallDrivers() -- the System file
+ * has finished installing its own trap patches. Installing after those leaves
+ * our trampoline at the head of the chain, so a hook still runs and a
+ * TOOLBOX_ACTION_PASSTHROUGH still reaches whatever the System installed. Going
+ * first would mean the System overwrote our entry (hook silently dead), or
+ * chained onto it and left us passing through to whatever the trap resolved to
+ * mid-boot -- for a trap the System itself implements, that is the ROM's
+ * Unimplemented handler.
+ *
+ * Resetting the machine re-runs all of this, so the function has to distinguish
+ * the two ways it can be entered a second time:
+ *
+ *   - after a reset, where the System heap was rebuilt and the trap table
+ *     refilled from ROM: last boot's pool and stubs are gone, and everything
+ *     must be installed again.
+ *   - twice inside one boot, where re-installing would read our own stub as the
+ *     "original" address and chain a second trampoline onto the first, running
+ *     every handler twice.
+ *
+ * The trap table itself tells them apart: if it still dispatches through a stub
+ * we installed, we are inside the same boot.
  */
 void ToolboxTrap_InstallAll(void)
 {
 	if (!toolbox_hooks_enabled())
 		return;
 
-	// Exit early if no traps registered or already installed
+	// Exit early if no traps registered
 	if (s_trap_count == 0)
 		return;
+
+	if (s_traps_installed) {
+		if (trap_table_still_ours()) {
+			printf("[TOOLBOX-TRAP] Hooks are already installed in this boot; nothing to do\n");
+			fflush(stdout);
+			return;
+		}
+		// The guest reset: the heap and trap table are new, so install again.
+		printf("[TOOLBOX-TRAP] Trap table no longer holds our stubs (machine reset); reinstalling\n");
+		forget_previous_installation();
+	}
 
 	printf("[TOOLBOX-TRAP] Installing %d registered trap hooks...\n", s_trap_count);
 	fflush(stdout);
@@ -461,6 +396,15 @@ void ToolboxTrap_InstallAll(void)
 		       s_stub_pool_base, pool_size);
 	}
 
+	/*
+	 * _Unimplemented ($A89F) is where the trap table sends every trap this
+	 * System does not implement. Hooking such a trap is legal -- a handler
+	 * returning TOOLBOX_ACTION_REPLACE is how a subsystem would implement one --
+	 * but a passthrough hook on it is a hook that goes nowhere, which is worth
+	 * saying out loud rather than leaving to be discovered as a bomb.
+	 */
+	uint32 unimplemented = get_trap_address(0xa89f);
+
 	// Install trampolines for each registered trap hook
 	for (int i = 0; i < s_trap_count; i++) {
 		ToolboxTrapDesc &desc = s_trap_table[i];
@@ -468,11 +412,7 @@ void ToolboxTrap_InstallAll(void)
 			continue;
 
 		// 1. Fetch current/original trap address from Mac OS trap table
-		M68kRegisters r_get;
-		r_get.d[0] = desc.trap_num;
-		// Use _GetToolTrapAddress (0xA746) for Toolbox traps, _GetOSTrapAddress (0xA346) for OS traps
-		Execute68kTrap((desc.trap_num & 0x0800) ? 0xa746 : 0xa346, &r_get);
-		desc.original_addr = r_get.a[0];
+		desc.original_addr = get_trap_address(desc.trap_num);
 
 		// 2. Assign trampoline memory location
 		desc.stub_addr = alloc_stub_slot();
@@ -493,8 +433,9 @@ void ToolboxTrap_InstallAll(void)
 		Execute68kTrap((desc.trap_num & 0x0800) ? 0xa647 : 0xa247, &r_set);
 
 		desc.is_installed = true;
-		printf("[TOOLBOX-TRAP] Hooked 0x%04X (%s) -> stub 0x%08X (orig 0x%08X)\n",
-		       desc.trap_num, desc.name, desc.stub_addr, desc.original_addr);
+		printf("[TOOLBOX-TRAP] Hooked 0x%04X (%s) -> stub 0x%08X (orig 0x%08X)%s\n",
+		       desc.trap_num, desc.name, desc.stub_addr, desc.original_addr,
+		       desc.original_addr == unimplemented ? "  [trap is unimplemented]" : "");
 	}
 
 	s_traps_installed = true;
@@ -583,119 +524,4 @@ void ToolboxTrap_Dispatch(struct M68kRegisters *r)
 	} else if (action == TOOLBOX_ACTION_REPLACE) {
 		// Replace mode: handler has already set A0 to caller return PC and A1 to new stack pointer
 	}
-}
-
-/*
- * Decodes the guest Mac OS MenuList global (0x0A1C) and all MenuInfo records from guest RAM.
- *
- * Arguments:
- *   snapshot_out: Reference to snapshot structure to populate.
- *
- * Returns:
- *   true if MenuList was valid and decoded, false otherwise.
- */
-bool Toolbox_SnapshotMenuBar(MacMenuBarSnapshot &snapshot_out)
-{
-	snapshot_out.menus.clear();
-
-	// Read MenuList handle from Low Memory global (0x0A1C)
-	uint32 menu_list_handle = ReadMacInt32(LM_MenuList);
-	if (!menu_list_handle)
-		return false;
-
-	// Validate handle against guest RAM boundaries
-	if (menu_list_handle < 0x1000 || menu_list_handle >= RAMSize)
-		return false;
-
-	// Dereference MenuList handle to get master pointer
-	uint32 list_ptr = ReadMacInt32(menu_list_handle);
-	if (!list_ptr || list_ptr < 0x1000 || list_ptr >= RAMSize)
-		return false;
-
-	// Read total length in bytes of menu list table
-	int16 total_bytes = (int16)ReadMacInt16(list_ptr);
-	if (total_bytes <= 6 || total_bytes > 4096)
-		return false;
-
-	// Iterate over 6-byte menu list entries starting at offset 6
-	// Format: [0..3]: MenuHandle, [4..5]: leftEdge coordinate
-	for (int16 offset = 6; offset < total_bytes; offset += 6) {
-		uint32 menu_handle = ReadMacInt32(list_ptr + offset);
-		if (!menu_handle || menu_handle < 0x1000 || menu_handle >= RAMSize)
-			continue;
-
-		// Dereference MenuHandle to get MenuInfo record
-		uint32 menu_info_ptr = ReadMacInt32(menu_handle);
-		if (!menu_info_ptr || menu_info_ptr < 0x1000 || menu_info_ptr >= RAMSize)
-			continue;
-
-		MacMenuSnapshot menu;
-		menu.menuID = (int16)ReadMacInt16(menu_info_ptr + 0);
-		uint32 enable_flags = ReadMacInt32(menu_info_ptr + 10);
-		// Bit 0 of enableFlags indicates whether the entire menu is enabled
-		menu.isEnabled = (enable_flags & 1) != 0;
-
-		// Read Menu Title Pascal string at menu_info_ptr + 14
-		uint32 title_addr = menu_info_ptr + 14;
-		std::string raw_title = ToolboxArgs::ReadPascalString(title_addr);
-		uint8 title_len = (uint8)ReadMacInt8(title_addr);
-
-		// Handle classic Apple symbol (char code 0x14)
-		if (raw_title.length() == 1 && (uint8)raw_title[0] == 0x14) {
-			menu.title = "\xEF\xA3\xBF"; // UTF-8 Apple Logo  (U+F8FF)
-		} else {
-			menu.title = raw_title;
-		}
-
-		// Item definitions start immediately after the menu title Pascal string
-		uint32 item_cursor = title_addr + 1 + title_len;
-		int16 item_index = 1;
-
-		// Parse variable-length item records until terminating null length byte
-		while (item_cursor < menu_info_ptr + 4096) {
-			uint8 item_text_len = (uint8)ReadMacInt8(item_cursor);
-			// Length byte of 0 indicates the end of the item definition list
-			if (item_text_len == 0)
-				break;
-
-			std::string item_text;
-			item_text.reserve(item_text_len);
-			for (uint32 k = 0; k < item_text_len; k++) {
-				item_text.push_back((char)ReadMacInt8(item_cursor + 1 + k));
-			}
-
-			// Advance cursor past text string
-			uint32 meta_cursor = item_cursor + 1 + item_text_len;
-			// uint8 icon_num = (uint8)ReadMacInt8(meta_cursor + 0);
-			char cmd_char = (char)ReadMacInt8(meta_cursor + 1);
-			uint8 mark_char = (uint8)ReadMacInt8(meta_cursor + 2);
-			// uint8 item_style = (uint8)ReadMacInt8(meta_cursor + 3);
-
-			MacMenuItemSnapshot item;
-			item.text = item_text;
-			item.cmdChar = cmd_char;
-			item.markChar = mark_char;
-			item.isSeparator = (item_text == "-");
-			item.isSubmenu = ((uint8)cmd_char == (uint8)kMenuHierCmd);
-			item.menuID = menu.menuID;
-			item.itemIndex = item_index;
-
-			// Check if this item is enabled: bit (itemIndex) in enableFlags
-			if (item_index <= 31) {
-				item.isEnabled = menu.isEnabled && ((enable_flags & (1 << item_index)) != 0);
-			} else {
-				item.isEnabled = menu.isEnabled;
-			}
-
-			menu.items.push_back(item);
-
-			// Each item metadata block is 4 bytes (icon, cmd, mark, style)
-			item_cursor = meta_cursor + 4;
-			item_index++;
-		}
-
-		snapshot_out.menus.push_back(menu);
-	}
-
-	return !snapshot_out.menus.empty();
 }
