@@ -75,33 +75,39 @@ if(yearoffset>0)
 printf("Offsetting the year by %d billion ticks\n",yearoffset);
 
 #if EMULATED_68K
-	// Set CPU and FPU type (UAE emulation)
-	switch (ROMVersion) {
-		case ROM_VERSION_64K:
-		case ROM_VERSION_PLUS:
-		case ROM_VERSION_CLASSIC:
-			CPUType = 0;
-			FPUType = 0;
-			TwentyFourBitAddressing = true;
-			break;
-		case ROM_VERSION_II:
-			CPUType = PrefsFindInt32("cpu");
-			if (CPUType < 2) CPUType = 2;
-			if (CPUType > 4) CPUType = 4;
-			FPUType = PrefsFindBool("fpu") ? 1 : 0;
-			//if (CPUType == 4) FPUType = 1;	// 68040 always with FPU
-			TwentyFourBitAddressing = true;
-			break;
-		case ROM_VERSION_32:
-			CPUType = PrefsFindInt32("cpu");
-			if (CPUType < 2) CPUType = 2;
-			if (CPUType > 4) CPUType = 4;
-			FPUType = PrefsFindBool("fpu") ? 1 : 0;
-			//if (CPUType == 4) FPUType = 1;	// 68040 always with FPU
-			TwentyFourBitAddressing = false;
-			break;
+	// The emulated machine is always a fixed 68040 with 32-bit addressing.
+	// Classic-Mac targets (68000/68010/68020, 24-bit-addressing ROMs) are
+	// no longer supported; the "cpu" pref is ignored.
+	CPUType = 4;
+	FPUType = 1;
+	TwentyFourBitAddressing = false;
+	const char *engine_name = "Musashi";
+	const char *req_engine = PrefsFindString("cpu_emulator");
+	if (req_engine && strcmp(req_engine, "uae") == 0) {
+		engine_name = "Amiberry";
+	} else if (req_engine && strcmp(req_engine, "m68k_rs") == 0) {
+		engine_name = "m68k_rs";
+	} else {
+		engine_name = "Musashi";
 	}
-	printf("Setting up for a 680%d0, %s and %sbit addressing\n",CPUType,FPUType ? "With FPU":"Without FPU",TwentyFourBitAddressing ? "24":"32");
+
+	printf("Setting up for a 680%d0, %s and %sbit addressing via %s\n",
+	       CPUType, FPUType ? "With FPU" : "Without FPU",
+	       TwentyFourBitAddressing ? "24" : "32", engine_name);
+
+	bool jit_enabled = false;
+	if (strcmp(engine_name, "Amiberry") == 0 && PrefsFindBool("jit")) {
+		jit_enabled = true;
+	}
+
+	if (jit_enabled) {
+		if (strcmp(engine_name, "Amiberry") == 0 && PrefsFindBool("jitfpu")) {
+			printf("JIT enabled (with JIT FPU)\n");
+		} else {
+			printf("JIT enabled\n");
+		}
+	}
+	fflush(stdout);
 	CPUIs68060 = false;
 #endif
 

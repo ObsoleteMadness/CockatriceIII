@@ -44,6 +44,8 @@
 #include "prefs.h"
 #include "emul_op.h"
 #include "menu_bar.h"
+#include "toolbox_traps.h"
+#include "toolbox_window.h"
 
 #if ENABLE_MON
 #include "mon.h"
@@ -59,7 +61,8 @@
 
 void EmulOp(uint16 opcode, M68kRegisters *r)
 {
-	D(bug("EmulOp %04x\n", opcode));
+	if (opcode != M68K_EMUL_OP_IRQ)
+		D(bug("EmulOp %04x\n", opcode));
 	switch (opcode) {
 		case M68K_EMUL_BREAK: {				// Breakpoint
 			printf("*** Breakpoint\n");
@@ -147,7 +150,7 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 					D(bug("Read XPRAM %02x->%02lx\n", reg, r->d[2]));
 				} else {
 					D(bug("Write XPRAM %02x<-%02lx\n", reg, r->d[2] & 0xff));
-					if (reg == 0x8a && !TwentyFourBitAddressing)
+					if (reg == 0x8a)
 						r->d[2] |= 0x05;	// 32bit mode is always enabled if possible
 					XPRAM[reg] = r->d[2];
 				}
@@ -226,7 +229,14 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 			r->d[0] = PrimeTime(r->a[0], r->d[0]);
 			break;
 
-		case M68K_EMUL_OP_MICROSECONDS: 	// Microseconds() replacement
+		case M68K_EMUL_OP_MICROSECONDS:	// Microseconds() replacement
+			/*
+			 * The ROM stub is EMUL_OP + RTS (see rom_patches.cpp). Callers of
+			 * trap $A093 expect the 64-bit count in A0 (hi) and D0 (lo), which
+			 * is also original Basilisk II behavior. Writing through A0 as an
+			 * UnsignedWide* (commit 23e7721) left A0 as a heap/data pointer
+			 * and produced the 32-bit boot Type 10 at 0x65AAx.
+			 */
 			Microseconds(r->a[0], r->d[0]);
 			break;
 
@@ -501,6 +511,27 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 			WriteMacInt16(r->a[7] + 20, ExtFSHFS(ReadMacInt32(r->a[7] + 16), ReadMacInt16(r->a[7] + 14), ReadMacInt32(r->a[7] + 10), ReadMacInt32(r->a[7] + 6), ReadMacInt16(r->a[7] + 4)));
 			break;
 #endif
+
+		case M68K_EMUL_OP_TOOLBOX_DISPATCH:	// Modular Toolbox/OS trap hook
+			/*
+			 * Entered from a trampoline installed by ToolboxTrap_InstallAll().
+			 * The dispatcher works out which hooked trap this is from the guest
+			 * PC and leaves A0/A1 for the "move.l a1,a7 / jmp (a0)" that
+			 * follows -- see toolbox_traps.cpp.
+			 */
+			ToolboxTrap_Dispatch(r);
+			break;
+
+		case M68K_EMUL_OP_WINDOW_SAFEPOINT:
+			/*
+			 * Entered from a stub installed in the jGNEFilter low memory vector,
+			 * so the guest is inside GetNextEvent/EventAvail in an application's
+			 * own context -- the documented place for this kind of work, and the
+			 * only one from which calling the Window Manager has proved safe.
+			 * See toolbox_window.cpp.
+			 */
+			Toolbox_WindowSafePoint(r);
+			break;
 
 		case M68K_EMUL_OP_BLOCK_MOVE:		// BlockMove() replacement
 			memmove(Mac2HostAddr(r->a[1]), Mac2HostAddr(r->a[0]), r->d[0]);

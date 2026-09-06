@@ -23,4 +23,28 @@
 
 extern bool InstallSlotROM(void);
 
+/*
+ * Recalculates the declaration-ROM CRC in place after a VModeParms patch.
+ */
+void ChecksumSlotROM(void);
+
+/*
+ * Patches the slot-ROM VModeParms for one Apple depth (rowBytes and bounds)
+ * and refreshes the CRC. Display Manager and pre-7.6 InitGDevice re-read
+ * these sResources after cscSwitchMode / cscSetMode.
+ *
+ * Arguments:
+ *   mode: VMODE_* depth whose sResource 0x80+mode table is updated.
+ *   width, height: New pixel size written into vpBounds.
+ *   row_bytes: Packed bytes per row written into vpRowBytes.
+ */
+void SlotROM_PatchMode(int mode, int width, int height, uint32 row_bytes);
+
+/*
+ *  ROM offset the synthesised declaration ROM was copied to, set by
+ *  InstallSlotROM(). It is placed at the tail of the ROM image, so this is
+ *  ROMSize minus the generated size. 0 before InstallSlotROM() runs.
+ */
+extern uint32 SlotROMOffset;
+
 #endif

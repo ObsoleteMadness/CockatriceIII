@@ -5,6 +5,9 @@
 #import <SDL/SDL.h>
 #import "sdlmain.h"
 #import "menu_bar.h"
+#import "video.h"
+#import "macos_menu_bridge.h"
+#import "macos_window_bridge.h"
 #import "scsi.h"
 #import <sys/param.h>
 #import <unistd.h>
@@ -50,6 +53,7 @@ static NSString *getApplicationName(void)
 - (void)menuAddFloppy:(id)sender;
 - (void)menuAttachSCSI:(id)sender;
 - (void)menuDetachSCSI:(id)sender;
+- (void)menuSetVideoMode:(id)sender;
 @end
 
 @implementation CocoaMenuHandler
@@ -93,6 +97,14 @@ static NSString *getApplicationName(void)
 {
     int scsiId = (int)[sender tag];
     MenuAction_DetachSCSI(scsiId);
+}
+
+- (void)menuSetVideoMode:(id)sender
+{
+    int packed = (int)[sender tag];
+    int width = (packed >> 16) & 0xffff;
+    int height = packed & 0xffff;
+    MenuAction_SetVideoMode(width, height);
 }
 @end
 
@@ -223,6 +235,38 @@ static void setupDiskMenu(void)
     [diskMenuItem release];
 }
 
+static void setupVideoMenu(void)
+{
+    NSScreen *screen = [NSScreen mainScreen];
+    if (screen) {
+        NSRect frame = [screen frame];
+        Video_BuildPresets((int)frame.size.width, (int)frame.size.height);
+    }
+
+    NSMenu *videoMenu = [[NSMenu alloc] initWithTitle:@"Video"];
+    int count = Menu_VideoPresetCount();
+    for (int i = 0; i < count; i++) {
+        int width = 0, height = 0;
+        if (!Menu_VideoPresetAt(i, &width, &height))
+            continue;
+        NSString *title = [NSString stringWithFormat:@"%d × %d", width, height];
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
+                                                      action:@selector(menuSetVideoMode:)
+                                               keyEquivalent:@""];
+        [item setTarget:g_menuHandler];
+        [item setTag:((width & 0xffff) << 16) | (height & 0xffff)];
+        [videoMenu addItem:item];
+        [item release];
+    }
+
+    NSMenuItem *videoMenuItem = [[NSMenuItem alloc] initWithTitle:@"Video" action:nil keyEquivalent:@""];
+    [videoMenuItem setSubmenu:videoMenu];
+    [[NSApp mainMenu] addItem:videoMenuItem];
+
+    [videoMenu release];
+    [videoMenuItem release];
+}
+
 static void setupWindowMenu(void)
 {
     NSMenu      *windowMenu;
@@ -281,6 +325,8 @@ void MenuBar_UpdateAll(void)
 
 void MenuBar_Init(void *native_window_handle)
 {
+    MacMenuBridge_RegisterMenuTraps();
+    MacWindowBridge_RegisterWindowTraps();
     MenuBar_UpdateAll();
 }
 
@@ -343,6 +389,7 @@ static void CustomApplicationMain (int argc, char **argv)
     setApplicationMenu();
     setupFileMenu();
     setupDiskMenu();
+    setupVideoMenu();
     setupWindowMenu();
     MenuBar_UpdateAll();
 
@@ -405,7 +452,16 @@ static void CustomApplicationMain (int argc, char **argv)
 
 int main (int argc, char **argv)
 {
-    if ( argc >= 2 && strncmp (argv[1], "-psn", 4) == 0 ) {
+    /* Earliest possible stderr marker — if this never appears, dyld/kernel killed us before main */
+    write(STDERR_FILENO, "[CockatriceIII] entering main\n", 31);
+
+    /* Finder hasn't passed "-psn_..." since ~OS X 10.9, so a double-clicked
+       (or otherwise no-arg) launch looks just like `argc == 1` now. Treat
+       that the same as the old -psn case: chdir into the bundle directory
+       so PREFS_FILE_NAME / the ROM resolve relative to it instead of
+       whatever cwd Finder/launchd happened to set. Explicit CLI args (argc
+       >= 2, not -psn) keep respecting the caller's cwd. */
+    if ( argc < 2 || strncmp (argv[1], "-psn", 4) == 0 ) {
         gArgv = (char **) malloc(sizeof (char *) * 2);
         gArgv[0] = argv[0];
         gArgv[1] = NULL;

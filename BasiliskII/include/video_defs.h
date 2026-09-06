@@ -51,12 +51,15 @@ enum {
 	cscGetMode = 2,
 	cscGetEntries,
 	cscGetPageCnt,
+	cscGetPages = 4,
 	cscGetPageBase,
+	cscGetBaseAddress = 5,
 	cscGetGray,
 	cscGetInterrupt,
 	cscGetGamma,
 	cscGetDefaultMode,
 	cscGetCurMode,
+	cscGetCurrentMode = 10,
 	cscGetSync,
 	cscGetConnection,
 	cscGetModeTiming,
@@ -91,6 +94,10 @@ enum {	// VDSetEntry struct
 	csCount = 6
 };
 
+enum {	// VDGammaRecord
+	csGTable = 0
+};
+
 enum {	// VDDisplayConnectInfo struct
 	csDisplayType = 0,
 	csConnectTaggedType = 2,
@@ -106,6 +113,97 @@ enum {	// VDTimingInfo struct
 	csTimingFormat = 8,
 	csTimingData = 12,
 	csTimingFlags = 16
+};
+
+enum {	// VDResolutionInfo struct (cscGetNextResolution)
+	csPreviousDisplayModeID = 0,
+	csRIDisplayModeID = 4,
+	csHorizontalPixels = 8,
+	csVerticalLines = 12,
+	csRefreshRate = 16,
+	csMaxDepthMode = 20,
+	csResolutionFlags = 22
+};
+
+enum {	// VDVideoParametersInfo struct (cscGetVideoParameters)
+	csDisplayModeID = 0,
+	csDepthMode = 4,
+	csVPBlockPtr = 6,
+	csPageCount = 10,
+	csDeviceType = 14
+};
+
+enum {	// VPBlock struct
+	vpBaseOffset = 0,
+	vpRowBytes = 4,
+	vpBounds = 6,
+	vpVersion = 14,
+	vpPackType = 16,
+	vpPackSize = 18,
+	vpHRes = 22,
+	vpVRes = 26,
+	vpPixelType = 30,
+	vpPixelSize = 32,
+	vpCmpCount = 34,
+	vpCmpSize = 36,
+	vpPlaneBytes = 38
+};
+
+/* DisplayModeID sentinels used by cscGetNextResolution (Video.h / Displays.h). */
+enum {
+	kDisplayModeIDCurrent             = 0x00000000,
+	kDisplayModeIDInvalid             = 0xFFFFFFFF,
+	kDisplayModeIDFindFirstResolution = 0xFFFFFFFE,
+	kDisplayModeIDNoMoreResolutions   = 0xFFFFFFFD
+};
+
+enum {	// SPBlock struct (Slot Manager)
+	spResult = 0,
+	spPointer = 4,
+	spSize = 8,
+	spOffsetData = 12,
+	spIOFileName = 16,
+	spExecPBlk = 20,
+	spParamData = 24,
+	spMisc = 28,
+	spReserved = 32,
+	spIOReserved = 36,
+	spRefNum = 38,
+	spCategory = 40,
+	spCType = 42,
+	spDrvrSW = 44,
+	spDrvrHW = 46,
+	spTBMask = 48,
+	spSlot = 49,
+	spID = 50,
+	spExtDev = 51,
+	spHwDev = 52,
+	spByteLanes = 53,
+	spFlags = 54,
+	spKey = 55,
+	SIZEOF_SPBlock = 56
+};
+
+enum {	// VDMultiConnectInfo
+	csDisplayCountOrNumber = 0,
+	csConnectInfo = 4
+};
+
+/*
+ * Apple Video.h connection / timing bits used by cscGetConnection and
+ * cscGetModeTiming. kModelessConnect tells Display Manager to walk
+ * cscGetNextResolution rather than a fixed CRT sense-code table.
+ */
+enum {
+	kAllModesValidBit     = 0,
+	kAllModesSafeBit      = 1,
+	kTaggingInfoNonStandardBit = 6,
+	kModelessConnect      = 8,
+	kModeValidBit         = 0,
+	kModeSafeBit          = 1,
+	kModeDefaultBit       = 2,
+	kModeShowNowBit       = 3,
+	kDeclROMTimingFormat  = 0x6465636c /* 'decl' */
 };
 
 #endif

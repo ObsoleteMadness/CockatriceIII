@@ -22,10 +22,13 @@
 #else
 #include <fcntl.h>
 #include <sys/fcntl.h>
+#include <sys/param.h>
+#include <mach-o/dyld.h>
 #endif
 
 
 #include "cpu_emulation.h"
+#include "cpu_engine.h"
 #include "sys.h"
 #include "rom_patches.h"
 #include "xpram.h"
@@ -81,12 +84,81 @@ void fixstdio(void);
 extern void slirp_tic(void);	//to keep slirp happy
 
 
+#include <signal.h>
+#include <string.h>
+
+// The POSIX crash reporter below needs <execinfo.h> backtrace(), sigaction()
+// with SA_SIGINFO, and sys_siglist -- none of which the MinGW/Windows CRT
+// provides.  Windows builds get their crash dumps from DrMinGW (exchndl)
+// instead, wired up in main() further down, so compile the handler out there.
+#ifndef WIN32
+#include <execinfo.h>
+
+static void crash_handler(int sig, siginfo_t *info, void *ucontext)
+{
+	printf("\n*** CRASH SIGNAL %d (%s) at faulting address %p ***\n", sig, sys_siglist[sig], info->si_addr);
+#if defined(__APPLE__) && defined(__arm64__)
+	ucontext_t *uc = (ucontext_t *)ucontext;
+	if (uc) {
+		uintptr_t pc = (uintptr_t)uc->uc_mcontext->__ss.__pc;
+		uintptr_t lr = (uintptr_t)uc->uc_mcontext->__ss.__lr;
+		printf("  PC: 0x%llx, LR: 0x%llx, SP: 0x%llx\n",
+		       (unsigned long long)pc,
+		       (unsigned long long)lr,
+		       uc->uc_mcontext->__ss.__sp);
+		for (int i = 0; i < 30; i += 2) {
+			printf("  x%02d: 0x%016llx  x%02d: 0x%016llx\n",
+			       i, uc->uc_mcontext->__ss.__x[i],
+			       i+1, uc->uc_mcontext->__ss.__x[i+1]);
+		}
+
+		// Report which GPRs hold the faulting address so a NULL/unmapped load is obvious
+		uintptr_t fault = (uintptr_t)info->si_addr;
+		for (int i = 0; i < 29; i++) {
+			if (uc->uc_mcontext->__ss.__x[i] == (uint64_t)fault)
+				printf("  x%02d matches faulting address\n", i);
+		}
+	}
+#else
+	(void)ucontext;
+#endif
+	void *callstack[128];
+	int frames = backtrace(callstack, 128);
+	backtrace_symbols_fd(callstack, frames, 1);
+	fflush(stdout);
+	_exit(sig);
+}
+
+static void install_crash_handler(void)
+{
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_sigaction = crash_handler;
+	sa.sa_flags = SA_SIGINFO;
+	sigaction(SIGSEGV, &sa, NULL);
+	sigaction(SIGBUS, &sa, NULL);
+	sigaction(SIGILL, &sa, NULL);
+	// JIT-emitted SVC is a Darwin syscall; unregistered immediates raise SIGSYS
+	sigaction(SIGSYS, &sa, NULL);
+}
+
+#else
+
+// Windows: DrMinGW's exception handler covers this, so installing the POSIX
+// signal handler is a no-op rather than a per-call-site #ifdef.
+static void install_crash_handler(void)
+{
+}
+
+#endif
+
 #ifdef __APPLE__
 int SDL_main(int argc, char *argv[])
 #else
 int main(int argc, char *argv[])
 #endif
 {
+	install_crash_handler();
 
 	//	_chdir("c:\\test\\");
 	// Initialize variables
@@ -141,11 +213,11 @@ int main(int argc, char *argv[])
 		RAMSize = 1024*1024;
 	}
 
-	// Create areas for Mac RAM and ROM
-	RAMBaseHost = new uint8[RAMSize];
-	ROMBaseHost = new uint8[0x100000];
-
-	memset(ROMBaseHost,0xAA,0x100000);
+	// Initialize unified 4GB flat memory window
+	RAMBaseMac = 0;
+	ROMBaseMac = 0x40800000;
+	memory_init();
+	memset(ROMBaseHost, 0xAA, 0x100000);
 
 	// Get rom file path from preferences
 	const char *rom_path = PrefsFindString("rom");
@@ -153,6 +225,37 @@ int main(int argc, char *argv[])
 	// Load Mac ROM
 	int rom_fd = _open(rom_path ? rom_path : ROM_FILE_NAME, _O_RDONLY|_O_BINARY);
 	//int rom_fd = _open("c:\\test\\ROM",_O_RDONLY|_O_BINARY );
+#ifdef __APPLE__
+	// Not found relative to cwd: when running from an app bundle the ROM
+	// ships in Contents/Resources rather than beside the executable (see
+	// the OSX64 Makefile's `bundle` target), so fall back to looking it up
+	// there by filename before giving up. Walk up from the executable's own
+	// real path (.../CockatriceIII.app/Contents/MacOS/CockatriceIII) rather
+	// than going through CFBundle, which drags in MacTypes.h and collides
+	// with this codebase's own classic-Mac OSErr/noErr definitions.
+	if (rom_fd < 0) {
+		const char *rom_name = rom_path ? rom_path : ROM_FILE_NAME;
+		const char *rom_base = strrchr(rom_name, '/');
+		rom_base = rom_base ? rom_base + 1 : rom_name;
+
+		char exe_path[MAXPATHLEN];
+		uint32_t exe_path_size = sizeof(exe_path);
+		char real_path[MAXPATHLEN];
+		if (_NSGetExecutablePath(exe_path, &exe_path_size) == 0 && realpath(exe_path, real_path)) {
+			char *macos_slash = strrchr(real_path, '/');		// .../Contents/MacOS/CockatriceIII -> .../Contents/MacOS
+			if (macos_slash) {
+				*macos_slash = '\0';
+				char *contents_slash = strrchr(real_path, '/');	// .../Contents/MacOS -> .../Contents
+				if (contents_slash) {
+					*contents_slash = '\0';
+					char full_path[MAXPATHLEN];
+					snprintf(full_path, sizeof(full_path), "%s/Resources/%s", real_path, rom_base);
+					rom_fd = _open(full_path, _O_RDONLY|_O_BINARY);
+				}
+			}
+		}
+	}
+#endif
 	if (rom_fd < 0) {
 		ErrorAlert(GetString(STR_NO_ROM_FILE_ERR));
 		QuitEmulator();
@@ -223,6 +326,7 @@ void ErrorAlert(const char *p)
 #if EMULATED_68K
 void FlushCodeCache(void *start, uint32 size)
 {
+	cpu_engine_invalidate_code(Host2MacAddr((uint8 *)start), size);
 }
 #endif
 
@@ -282,6 +386,7 @@ static void one_tickbbbb(...)
 
 	// Trigger 60Hz interrupt
 	if (ROMVersion != ROM_VERSION_CLASSIC || HasMacStarted()) {
+		cpu_engine_note_tick();
 		SetInterruptFlag(INTFLAG_60HZ);
 		TriggerInterrupt();
 		slirp_tic();

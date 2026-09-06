@@ -54,7 +54,12 @@ prefs_desc common_prefs_items[] = {
 	{"ramsize", TYPE_INT32, false},		// Size of Mac RAM in bytes (main_*.cpp)
 	{"frameskip", TYPE_INT32, false},	// Number of frames to skip in refreshed video modes (video_*.cpp)
 	{"modelid", TYPE_INT32, false},		// Mac Model ID (Gestalt Model ID minus 6) (rom_patches.cpp)
-	{"cpu", TYPE_INT32, false},			// CPU type (0 = 68000, 1 = 68010 etc.) (main.cpp)
+	{"cpu", TYPE_INT32, false},			// Unused: CPU is hardcoded to 68040 (main.cpp). Kept for prefs-file compatibility.
+	{"cpu_emulator", TYPE_STRING, false}, // CPU emulator backend (musashi | uae | m68k_rs)
+	{"jit", TYPE_BOOLEAN, false},		// Enable JIT compilation
+	{"jitfpu", TYPE_BOOLEAN, false},	// Enable JIT for FPU instructions
+	{"jitcachesize", TYPE_INT32, false}, // JIT translation cache size in KB
+	{"m68k_rs_fastmem", TYPE_STRING, false}, // m68k-rs fastmem mode (off | ram | multi | legacy)
 	{"fpu", TYPE_BOOLEAN, false},		// Enable FPU emulation (main.cpp)
 	{"nocdrom", TYPE_BOOLEAN, false},	// Don't install CD-ROM driver (cdrom.cpp/rom_patches.cpp)
 	{"nosound", TYPE_BOOLEAN, false},	// Don't enable sound output (audio_*.cpp)
@@ -62,7 +67,13 @@ prefs_desc common_prefs_items[] = {
 	{"idlewait",TYPE_BOOLEAN,true},		// enable idle..
 	{"yearoffset",TYPE_INT16,false},	// remove x billion seconds from the clock
 	{"ltoudp", TYPE_BOOLEAN, false},	// Enable LocalTalk over UDP (LToUDP)
+	{"dump_memory", TYPE_BOOLEAN, false}, // Write RAM snapshot on unhandled CPU system error
+	{"dump_file", TYPE_STRING, false},	// Output path for binary crash memory dump
 	{"scsi_debug", TYPE_BOOLEAN, false}, // Enable verbose SCSI and CD-ROM logging
+	{"toolbox_hooks", TYPE_BOOLEAN, false}, // Hook Toolbox/OS traps at runtime (toolbox_traps.cpp)
+	{"mdi_windows", TYPE_BOOLEAN, false}, // Mirror each guest window into a host window (toolbox_window.cpp)
+	{"window_redirect", TYPE_BOOLEAN, false}, // Give each mirrored window its own offscreen pixel buffer
+	{"native_alerts", TYPE_BOOLEAN, false}, // Rebuild guest dialogs as host controls instead of mirroring their pixels
 	{NULL, TYPE_END, false}	// End of list
 };
 
@@ -95,13 +106,24 @@ void PrefsInit(void)
 	PrefsAddInt32("ramsize", 64 * 1024 * 1024);
 	PrefsAddInt32("frameskip", 2);
 	PrefsAddInt32("modelid", 29);	// Quadra 800
-	PrefsAddInt32("cpu", 4);		// 68040
+	PrefsAddInt32("cpu", 4);		// Unused: CPU is hardcoded to 68040 (main.cpp)
+	PrefsAddString("cpu_emulator", "musashi"); // musashi | uae | m68k_rs
+	PrefsAddBool("jit", false);
+	PrefsAddBool("jitfpu", false);
+	PrefsAddInt32("jitcachesize", 2048);
+	PrefsAddString("m68k_rs_fastmem", "off");
 	PrefsAddBool("fpu", false);		// 68040LC
 	PrefsAddBool("nocdrom", false);
 	PrefsAddBool("nosound", false);
 	PrefsAddBool("nogui", false);
 	PrefsAddBool("ltoudp", false);
+	PrefsAddBool("dump_memory", false);
+	PrefsAddString("dump_file", "/tmp/memory.bin");
 	PrefsAddBool("scsi_debug", true);
+	PrefsAddBool("toolbox_hooks", false);
+	PrefsAddBool("mdi_windows", false);
+	PrefsAddBool("window_redirect", false);
+	PrefsAddBool("native_alerts", false);
 	PrefsAddString("screen","win/1152/870");	//fantastic monitor for the era
 	PrefsAddString("rom","Quadra800.rom");
 	PrefsAddString("ether","slirp");

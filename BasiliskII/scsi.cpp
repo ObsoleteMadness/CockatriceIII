@@ -362,6 +362,7 @@ int16 SCSIWrite(uint32 tib)
 	}
 
 	// Execute TIB, fill S/G table
+	reading = false;
 	int16 res = exec_tib(tib);
 	SCSI_LOG("[SCSI-MGR] SCSIWrite: TIB 0x%08X -> total %u bytes in %d S/G segment(s), result %d\n",
 	         tib, sg_total_length, sg_index, res);

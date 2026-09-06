@@ -91,7 +91,16 @@ void MountVolume(void *fh)
 
 bool HasMacStarted(void)
 {
-	return ReadMacInt32(0xcfc) == 'WLSC';	// Mac warm start flag
+	bool started = ReadMacInt32(0xcfc) == 'WLSC';	// Mac warm start flag
+	if (started) {
+		static int s_started_logged = 0;
+		if (!s_started_logged) {
+			s_started_logged = 1;
+			printf("[BOOT] HasMacStarted: warm-start flag WLSC is set\n");
+			fflush(stdout);
+		}
+	}
+	return started;
 }
 
 

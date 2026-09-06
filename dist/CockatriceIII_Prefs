@@ -1,11 +1,12 @@
-#screen win/1152/870
-screen win/640/480
+cpu_emulator musashi
+screen win/1152/870
+#screen win/640/480
 ether slirp
 rom Quadra800.rom
 bootdrive 0
 bootdriver -33
 ramsize 67108864
-frameskip 2
+frameskip 0
 modelid 29
 cpu 4
 fpu true
@@ -14,6 +15,7 @@ nosound false
 nogui false
 idlewait false
 yearoffset 0
+scsi_debug false
 
 # LocalTalk over UDP
 # Similar to Mini vMac LToUDP support

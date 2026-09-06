@@ -39,8 +39,21 @@
 // Temporary buffer for slot ROM
 static uint8 srom[4096];
 
+// ROM offset the declaration ROM was copied to (see slot_rom.h)
+uint32 SlotROMOffset = 0;
+
 // Index in srom
 static uint32 p;
+
+// Generated declaration-ROM size, used by ChecksumSlotROM()
+static int slot_rom_size = 0;
+
+/*
+ * srom-relative offsets of each depth's VModeParms (50-byte VPBlock).
+ * SlotROM_PatchMode writes rowBytes and bounds here after a live switch so
+ * Display Manager / InitGDevice re-read the new size from the sResource.
+ */
+static uint32 s_vmode_parm_off[6];
 
 
 /*
@@ -102,13 +115,141 @@ static void PString(char *str)
 		srom[p++] = 0;
 }
 
+/*
+ * Builds one VPBlock (video mode parameters) for a depth at the boot size.
+ * Display Manager later asks cscGetVideoParameters for other resolutions;
+ * this table is what pre-DM InitGDevice and the patched sResource use.
+ *
+ * Arguments:
+ *   depth: VMODE_* pixel depth.
+ *
+ * Returns:
+ *   srom offset of the 50-byte parameter block.
+ */
+static uint32 VModeParms(int depth)
+{
+	uint32 ret = p;
+	uint32 row_bytes = Video_BytesPerRowForMode((int)VideoMonitor.x, depth);
+	Long(50);					// Length
+	Long(0);					// Base offset
+	Word((uint16)row_bytes);
+	Word(0);					// Bounds
+	Word(0);
+	Word((uint16)VideoMonitor.y);
+	Word((uint16)VideoMonitor.x);
+	Word(0);					// Version
+	Word(0);					// Pack type
+	Long(0);					// Pack size
+	Long(0x00480000);			// HRes (72 dpi)
+	Long(0x00480000);			// VRes
+	switch (depth) {
+		case VMODE_1BIT:
+			Word(0); Word(1); Word(1); Word(1);
+			break;
+		case VMODE_2BIT:
+			Word(0); Word(2); Word(1); Word(2);
+			break;
+		case VMODE_4BIT:
+			Word(0); Word(4); Word(1); Word(4);
+			break;
+		case VMODE_8BIT:
+			Word(0); Word(8); Word(1); Word(8);
+			break;
+		case VMODE_16BIT:
+			Word(16); Word(16); Word(3); Word(5);
+			break;
+		case VMODE_32BIT:
+			Word(16); Word(32); Word(3); Word(8);
+			break;
+		default:
+			Word(0); Word(8); Word(1); Word(8);
+			break;
+	}
+	Long(0);					// Plane size
+	Long(0);					// Reserved
+	return ret;
+}
+
+/*
+ * Builds the sResource list that names one depth's parameter block.
+ *
+ * Arguments:
+ *   params: Offset of the VPBlock from VModeParms().
+ *   direct: true for 16/32-bit (device type 2), false for CLUT depths.
+ *
+ * Returns:
+ *   srom offset of the mode description list.
+ */
+static uint32 VModeDesc(uint32 params, bool direct)
+{
+	uint32 ret = p;
+	Offs(0x01, params);			// Video parameters
+	Rsrc(0x03, 1);				// Page count
+	Rsrc(0x04, direct ? 2 : 0);	// Device type (0 = CLUT, 2 = direct)
+	EndOfList();
+	return ret;
+}
+
+/*
+ * Recalculates the declaration-ROM CRC in place after a VModeParms patch.
+ */
+void ChecksumSlotROM(void)
+{
+	if (slot_rom_size <= 12 || !ROMBaseHost)
+		return;
+
+	uint8 *rom = ROMBaseHost + SlotROMOffset;
+	rom[slot_rom_size - 12] = 0;
+	rom[slot_rom_size - 11] = 0;
+	rom[slot_rom_size - 10] = 0;
+	rom[slot_rom_size - 9] = 0;
+	uint32 crc = 0;
+	for (int i = 0; i < slot_rom_size; i++) {
+		crc = (crc << 1) | (crc >> 31);
+		crc += rom[i];
+	}
+	rom[slot_rom_size - 12] = (uint8)(crc >> 24);
+	rom[slot_rom_size - 11] = (uint8)(crc >> 16);
+	rom[slot_rom_size - 10] = (uint8)(crc >> 8);
+	rom[slot_rom_size - 9] = (uint8)crc;
+}
+
+/*
+ * Patches the slot-ROM VModeParms for one Apple depth and refreshes the CRC.
+ *
+ * Arguments:
+ *   mode: VMODE_* depth whose sResource table is updated.
+ *   width, height: New pixel size written into vpBounds.
+ *   row_bytes: Packed bytes per row written into vpRowBytes.
+ */
+void SlotROM_PatchMode(int mode, int width, int height, uint32 row_bytes)
+{
+	if (mode < VMODE_1BIT || mode > VMODE_32BIT)
+		return;
+	if (!ROMBaseHost || SlotROMOffset == 0)
+		return;
+	uint32 off = s_vmode_parm_off[mode];
+	if (off == 0)
+		return;
+
+	uint8 *block = ROMBaseHost + SlotROMOffset + off;
+	block[8] = (uint8)(row_bytes >> 8);
+	block[9] = (uint8)row_bytes;
+	block[14] = (uint8)((uint16)height >> 8);
+	block[15] = (uint8)height;
+	block[16] = (uint8)((uint16)width >> 8);
+	block[17] = (uint8)width;
+	ChecksumSlotROM();
+}
+
 bool InstallSlotROM(void)
 {
 	uint32 boardType, boardName, vendorID, revLevel, partNum, date;
 	uint32 vendorInfo, sRsrcBoard;
 
 	uint32 videoType, videoName, minorBase, minorLength, videoDrvr, vidDrvrDir;
-	uint32 defaultGamma, gammaDir, vidModeParms, vidMode, sRsrcVideo;
+	uint32 defaultGamma, gammaDir, sRsrcVideo;
+	uint32 vidModeParms[6], vidMode[6];
 
 	uint32 cpuType, cpuName, cpuMajor, cpuMinor, sRsrcCPU;
 
@@ -156,7 +297,7 @@ bool InstallSlotROM(void)
 	minorBase = p;
 	Long(VideoMonitor.mac_frame_base);					// Frame buffer base
 	minorLength = p;
-	Long(VideoMonitor.bytes_per_row * VideoMonitor.y);	// Frame buffer size
+	Long(MacFrameSize ? MacFrameSize : VideoMonitor.bytes_per_row * VideoMonitor.y);	// Frame buffer size
 
 	videoDrvr = p;						// Video driver
 	Long(0x72);							// Length
@@ -229,65 +370,17 @@ bool InstallSlotROM(void)
 	Offs(0x80, defaultGamma);
 	EndOfList();
 
-	vidModeParms = p;					// Video mode parameters
-	Long(50);							// Length
-	Long(0);							// Base offset
-	Word(VideoMonitor.bytes_per_row);	// Row bytes
-	Word(0);							// Bounds
-	Word(0);
-	Word(VideoMonitor.y);
-	Word(VideoMonitor.x);
-	Word(0);							// Version
-	Word(0);							// Pack type
-	Long(0);							// Pack size
-	Long(0x00480000);					// HRes
-	Long(0x00480000);					// VRes
-	switch (VideoMonitor.mode) {
-		case VMODE_1BIT:
-			Word(0);					// Pixel type (indirect)
-			Word(1);					// Pixel size
-			Word(1);					// CmpCount
-			Word(1);					// CmpSize
-			break;
-		case VMODE_2BIT:
-			Word(0);					// Pixel type (indirect)
-			Word(2);					// Pixel size
-			Word(1);					// CmpCount
-			Word(2);					// CmpSize
-			break;
-		case VMODE_4BIT:
-			Word(0);					// Pixel type (indirect)
-			Word(4);					// Pixel size
-			Word(1);					// CmpCount
-			Word(4);					// CmpSize
-			break;
-		case VMODE_8BIT:
-			Word(0);					// Pixel type (indirect)
-			Word(8);					// Pixel size
-			Word(1);					// CmpCount
-			Word(8);					// CmpSize
-			break;
-		case VMODE_16BIT:
-			Word(16);					// Pixel type (direct)
-			Word(16);					// Pixel size
-			Word(3);					// CmpCount
-			Word(5);					// CmpSize
-			break;
-		case VMODE_32BIT:
-			Word(16);					// Pixel type (direct)
-			Word(32);					// Pixel size
-			Word(3);					// CmpCount
-			Word(8);					// CmpSize
-			break;
+	/*
+	 * One sResource per Apple depth (0x80..0x85). They are contiguous so
+	 * pre-Display Manager Mac OS can walk them as "modes". Each VPBlock is
+	 * baked at the boot size; SlotROM_PatchMode rewrites rowBytes/bounds
+	 * when cscSetMode / cscSwitchMode (or the host Video menu) changes it.
+	 */
+	for (int d = VMODE_1BIT; d <= VMODE_32BIT; d++) {
+		vidModeParms[d] = VModeParms(d);
+		s_vmode_parm_off[d] = vidModeParms[d];
+		vidMode[d] = VModeDesc(vidModeParms[d], IsDirectMode(d));
 	}
-	Long(0);							// Plane size
-	Long(0);							// Reserved
-
-	vidMode = p;						// Video mode description
-	Offs(0x01, vidModeParms);			// Video parameters
-	Rsrc(0x03, 1);						// Page count
-	Rsrc(0x04, IsDirectMode(VideoMonitor.mode) ? 2 :0);	// Device type
-	EndOfList();
 
 	sRsrcVideo = p;
 	Offs(0x01, videoType);				// Video type descriptor
@@ -298,7 +391,12 @@ bool InstallSlotROM(void)
 	Offs(0x0b, minorLength);			// Frame buffer length
 	Offs(0x40, gammaDir);				// Gamma directory
 	Rsrc(0x7d, 6);						// Video attributes: Default to color, built-in
-	Offs(0x80, vidMode);				// Video mode parameters
+	Offs(0x80, vidMode[VMODE_1BIT]);
+	Offs(0x81, vidMode[VMODE_2BIT]);
+	Offs(0x82, vidMode[VMODE_4BIT]);
+	Offs(0x83, vidMode[VMODE_8BIT]);
+	Offs(0x84, vidMode[VMODE_16BIT]);
+	Offs(0x85, vidMode[VMODE_32BIT]);
 	EndOfList();
 
 	// CPU sResource
@@ -390,18 +488,10 @@ bool InstallSlotROM(void)
 	Long(0x5a932bc7);					// Test pattern
 	Word(0x000f);						// Byte lanes
 
-	// Calculate CRC
-	uint32 crc = 0;
-	for (uint32 i=0; i<p; i++) {
-		crc = (crc << 1) | (crc >> 31);
-		crc += srom[i];
-	}
-	srom[p - 12] = crc >> 24;
-	srom[p - 11] = crc >> 16;
-	srom[p - 10] = crc >> 8;
-	srom[p - 9] = crc;
-
-	// Copy slot ROM to Mac ROM
-	memcpy(ROMBaseHost + ROMSize - p, srom, p);
+	// Copy slot ROM to Mac ROM, then stamp the CRC in place
+	slot_rom_size = (int)p;
+	SlotROMOffset = ROMSize - p;
+	memcpy(ROMBaseHost + SlotROMOffset, srom, p);
+	ChecksumSlotROM();
 	return true;
 }

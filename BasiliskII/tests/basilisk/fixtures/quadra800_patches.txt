@@ -1,0 +1,56 @@
+UniversalInfo	003728	required	applied
+UniversalInfo NuBus disable	003724	required	applied
+UniversalInfo ProductKind	00372a	required	applied
+RESET trampoline	00008c	required	applied
+GetHardwareInfo	0000c2	required	applied
+InitVIAs	0000c6	required	applied
+WhichCPU	0007c0	required	applied
+BootGlobs clear loop	000ab2	optional	applied
+InitMMU CPU-type check	0817bc	required	applied
+InitMMU RBV check	081a00	optional	applied
+InitMMU enable	0814fe	required	applied
+ReadXPRAM (ROM10)	000000	optional	MISSED
+ReadXPRAM (ROM11)	000000	optional	MISSED
+ReadXPRAM (ROM15)	000000	optional	MISSED
+ClkNoMem ($A053)	0b35c6	required	applied
+BootGlobs	00010e	required	applied
+InitSCC	000a30	required	applied
+InitIWM	0009c0	required	applied
+InitSCSIMgr	0009a0	required	applied
+InitSndHW (ASC)	0042dc	optional	applied
+EnableExtCache	000190	required	applied
+DisableIntSources	009f4c	required	applied
+SetUpTimeK	000800	required	applied
+InitTimeMgr VIA write	00b0e2	required	applied
+ModelID read (ROM20)	000000	optional	MISSED
+ModelID read (ROM27/32)	004b80	optional	applied
+InstallSlotROM	100000	required	applied
+NuBus slot probe	000000	optional	MISSED
+EnableOneSecInts	000226	required	applied
+Enable60HzInts	000230	required	applied
+CompBootStack	000490	required	applied
+RAM size fixup	04c03e	optional	applied
+.Sound open hook	001142	required	applied
+SonyVars access	001144	required	applied
+InitADB VIA wait (ROM22+)	0b2c6a	required	applied
+EnableSlotInts	0002ee	required	applied
+GetDevBase	005b78	required	applied
+GetDevBase (ROM22+)	08c2e6	optional	applied
+VIA2 write	00a022	required	applied
+VIA2 write (ROM19/20)	000000	optional	MISSED
+BlockMove PTEST	0870cc	optional	applied
+SANE PTEST	0e9ad2	optional	applied
+MemoryDispatch	04f140	optional	applied
+.EDisk driver (DRVR 51)	0e7500	optional	applied
+.EDisk ROM scan limit	0e75ee	optional	applied
+.Sony driver (DRVR 4)	06c3e0	required	applied
+SERD 0 + serial drivers	06ab90	required	applied
+InsTime ($A058)	00aeec	required	applied
+RmvTime ($A059)	00ae90	required	applied
+PrimeTime ($A05A)	00af1a	required	applied
+SCSIDispatch ($A815)	007460	required	applied
+vCheckLoad hook	01b8f4	required	applied
+PutScrap ($A9FE)	025ef0	required	applied
+BlockMove ($A02E)	00ca10	required	applied
+PACK 4 (SANE)	073940	required	applied
+VIA level-1 dispatcher	009bc4	required	applied

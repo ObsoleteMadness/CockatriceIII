@@ -21,6 +21,26 @@
 #ifndef RSRC_PATCHES_H
 #define RSRC_PATCHES_H
 
+#include <vector>
+
+#include "rom_patches.h"	// PatchRecord
+
 extern void CheckLoad(uint32 type, int16 id, uint8 *p, uint32 size);
+
+/*
+ *  Resource patches are located by byte signature inside a freshly loaded
+ *  resource. A System version whose bytes differ silently gets no patch, so
+ *  CheckLoad() records every attempt the same way PatchROM() does.
+ *
+ *  Unlike the ROM patch log this one is not bounded by a single pass --
+ *  CheckLoad() runs for every resource the Mac loads -- so only patch
+ *  *attempts* are recorded (a resource we have no patch for adds nothing), and
+ *  tests call ClearRsrcPatchLog() to scope it.
+ *
+ *  See docs/rom-patches-vs-supermario.md section 4 for what each patch
+ *  corresponds to in the Apple Mac OS ROM sources.
+ */
+const std::vector<PatchRecord> &GetRsrcPatchLog(void);
+void ClearRsrcPatchLog(void);
 
 #endif

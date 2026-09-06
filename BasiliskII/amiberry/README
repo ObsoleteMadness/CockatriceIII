@@ -1,0 +1,19 @@
+# Amiberry 680x0 CPU / JIT (hosted by Cockatrice III)
+
+This directory is a trimmed copy of [Amiberry](https://github.com/BlitterStudio/amiberry)
+(`src/` CPU interpreter, FPU, JIT for ARM64 and x86-64, plus the headers
+those units include). It is not a full Amiberry emulator tree.
+
+Copied at commit `cf365446`. Extra CPUEMU cores (`cpuemu_11`–`35`) and
+`cpummu.cpp` / `cpummu30.cpp` are included so `newcpu.cpp` type-checks the
+cycle-exact and MMU accessors; runtime still uses `cpuemu_0` or JIT.
+
+Cockatrice Mac adapters live here:
+
+- `hosted/` — include overlays (no Amiga chipset) and `amiberry_host.cpp` / `amiberry_memory.cpp`
+- `amiberry_glue.cpp` — Basilisk `CPUEngine` for prefs `cpu_emulator uae`
+- `sysconfig.h` — CPUEMU_0/11–35/40/50 plus MMUEMU so newcpu.cpp type-checks;
+  debugger/savestate/autoconfig stay off. Runtime uses `cpuemu_0` or JIT.
+
+`jit true` uses `src/jit/arm` on ARM64 and `src/jit/x86` on amd64.
+`jit false` uses the `cpuemu_0.cpp` interpreter.

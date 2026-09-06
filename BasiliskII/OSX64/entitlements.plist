@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Apple Silicon JIT (UAE ARM64): mmap(MAP_JIT) requires this when the
+      binary is signed with Hardened Runtime. Pair it with
+      pthread_jit_write_protect_np() — see jit_host_darwin.cpp.
+      https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.allow-jit
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!--
+      Intel x86 JIT only: that backend still mprotects RWX, which is not a
+      MAP_JIT region. Apple Silicon must not rely on this; it uses MAP_JIT.
+    -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!--
+      Do NOT add com.apple.security.cs.disable-executable-page-protection.
+      AMFI SIGKILLs adhoc-signed dev binaries that claim it before main().
+      Do NOT ship the saagarjha libfixjit APRR poke; call
+      pthread_jit_write_protect_np() instead.
+    -->
+</dict>
+</plist>

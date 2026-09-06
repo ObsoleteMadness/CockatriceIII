@@ -19,11 +19,13 @@
  */
 
 #include <string.h>
+#include <vector>
 
 #include "sysdeps.h"
 #include "cpu_emulation.h"
 #include "main.h"
 #include "emul_op.h"
+#include "cpu_engine.h"
 #include "macos_util.h"
 #include "slot_rom.h"
 #include "sony.h"
@@ -33,6 +35,7 @@
 #include "extfs.h"
 #include "prefs.h"
 #include "rom_patches.h"
+#include "toolbox_traps.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -46,10 +49,73 @@ bool PrintROMInfo = false;	// Flag: print ROM information in PatchROM()
 
 static uint32 sony_offset;				// ROM offset of .Sony driver
 static uint32 serd_offset;				// ROM offset of SERD resource (serial drivers)
-static uint32 microseconds_offset;		// ROM offset of Microseconds() replacement routine
 
 // Prototypes
 uint16 ROMVersion;
+
+
+/*
+ *  Patch application log
+ *
+ *  Every patch PatchROM() attempts appends one record here, whether or not its
+ *  site was found. Two consumers:
+ *
+ *    - Console output. A patch that silently misses used to be invisible until
+ *      the machine bombed tens of thousands of instructions later; now the miss
+ *      is one line at patch time.
+ *    - Offline tests. BasiliskII/tests asserts the whole log against a golden
+ *      manifest for dist/Quadra800.rom, so a patch that stops matching a ROM is
+ *      a unit-test diff rather than a boot bomb.
+ *
+ *  See docs/rom-patches-vs-supermario.md for what each patch corresponds to in
+ *  the Apple Mac OS ROM sources.
+ */
+
+static std::vector<PatchRecord> patch_log;
+
+/*
+ *  Returns the patch log for the most recent PatchROM() call.
+ */
+
+const std::vector<PatchRecord> &GetPatchLog(void)
+{
+	return patch_log;
+}
+
+/*
+ *  Record one patch attempt and report it on the console.
+ *
+ *  Arguments:
+ *    name:       stable identifier for this patch; matched by the golden
+ *                manifest, so renaming one requires regenerating it.
+ *    source_ref: Mac OS ROM source that justifies the patch, or NULL where no
+ *                source exists (Sound Mgr, serial, AppleTalk).
+ *    offset:     ROM offset the patch was applied at, or 0 if the site was not
+ *                found.
+ *    required:   true if a miss should fail the whole patch pass. This function
+ *                only records and reports; the caller still decides to return
+ *                false, because the recovery differs from site to site.
+ *
+ *  Returns:
+ *    offset, so call sites can wrap a locator without adding a statement.
+ */
+
+static uint32 log_patch(const char *name, const char *source_ref, uint32 offset, bool required)
+{
+	PatchRecord rec;
+	rec.name = name;
+	rec.source_ref = source_ref;
+	rec.offset = offset;
+	rec.required = required;
+	rec.applied = (offset != 0);
+	patch_log.push_back(rec);
+
+	if (offset)
+		printf("[ROM-PATCH] %-34s @ %06x\n", name, offset);
+	else
+		printf("[ROM-PATCH] %-34s MISSED (%s)\n", name, required ? "REQUIRED" : "optional");
+	return offset;
+}
 
 
 /*
@@ -294,6 +360,100 @@ static void print_rom_info(void)
 		list_universal_infos();
 	}
 #endif
+}
+
+
+/*
+ *  Verify the bytes at a fixed ROM offset before patching there.
+ *
+ *  A handful of patch sites are bare offsets rather than signature scans. On a
+ *  ROM whose layout differs even slightly, those writes land in unrelated code
+ *  and the machine bombs much later. Checking the instruction bytes we expect
+ *  to be replacing turns that into an immediate, named failure.
+ *
+ *  The expected bytes are the *unpatched* instructions at that offset, chosen
+ *  to be the recognisable head of the routine -- see
+ *  docs/rom-patches-vs-supermario.md for what each routine is.
+ *
+ *  Arguments:
+ *    name:       log label, matching the log_patch() call for the same site.
+ *    offset:     ROM offset to check.
+ *    expect:     expected bytes.
+ *    len:        number of bytes to compare.
+ *
+ *  Returns:
+ *    true if the ROM matches. On mismatch it reports both the expected and the
+ *    actual bytes, because that is the information needed to decide whether the
+ *    ROM is unsupported or the signature simply needs widening.
+ */
+
+static bool verify_rom_bytes(const char *name, uint32 offset, const uint8 *expect, uint32 len)
+{
+	if (offset + len > ROMSize) {
+		printf("[ROM-PATCH] %-34s VERIFY FAILED (offset %06x past end of %06x ROM)\n",
+		       name, offset, ROMSize);
+		return false;
+	}
+	if (memcmp(ROMBaseHost + offset, expect, len) == 0)
+		return true;
+
+	printf("[ROM-PATCH] %-34s VERIFY FAILED @ %06x\n", name, offset);
+	printf("              expected:");
+	for (uint32 i = 0; i < len; i++)
+		printf(" %02x", expect[i]);
+	printf("\n              actual:  ");
+	for (uint32 i = 0; i < len; i++)
+		printf(" %02x", ROMBaseHost[offset + i]);
+	printf("\n");
+	return false;
+}
+
+
+/*
+ *  Resolve an A-trap to its ROM offset, logging the outcome.
+ *
+ *  find_rom_trap() returns 0 both for "trap is unimplemented" and "trap not
+ *  found", and offset 0 is the ROM header -- so an unchecked miss writes the
+ *  replacement routine over the checksum instead of skipping it. Every caller
+ *  goes through here and treats 0 as fatal.
+ *
+ *  Arguments:
+ *    trap:       A-trap number, e.g. 0xa058 for _InsTime.
+ *    name:       log label, conventionally "RoutineName ($ATRAP)".
+ *    source_ref: Mac OS ROM source for the routine being replaced.
+ *
+ *  Returns:
+ *    ROM offset of the trap routine, or 0 if it could not be resolved. Callers
+ *    must return false from the patch pass when this is 0.
+ */
+
+static uint32 require_rom_trap(uint16 trap, const char *name, const char *source_ref)
+{
+	return log_patch(name, source_ref, find_rom_trap(trap), true);
+}
+
+
+/*
+ *  Locate a ROM resource, logging the outcome.
+ *
+ *  Same hazard as require_rom_trap(): find_rom_resource() reports "absent" as
+ *  offset 0, and callers memcpy whole driver images to the returned offset.
+ *
+ *  Arguments:
+ *    type:       resource type, e.g. 'DRVR'.
+ *    id:         resource ID.
+ *    name:       log label.
+ *    source_ref: Mac OS ROM source, or NULL if none exists.
+ *    required:   whether a miss should fail the patch pass.
+ *
+ *  Returns:
+ *    ROM offset of the resource data, or 0 if absent.
+ */
+
+static uint32 locate_rom_resource(uint32 type, int16 id, const char *name,
+                                  const char *source_ref, bool required)
+{
+	return log_patch(name, source_ref, find_rom_resource(type, id), required);
 }
 
 
@@ -692,6 +852,288 @@ static const uint8 adbop_patch[] = {	// Call ADBOp() completion procedure
 
 
 /*
+ *  Traps replaced at runtime instead of by patching the ROM image
+ *  ==============================================================
+ *
+ *  Apple's own way to replace a trap is not to rewrite the ROM's copy of it but
+ *  to point the trap table at a resident replacement:
+ *
+ *      leaResident __MicroSeconds,a0
+ *      moveq       #$93-$100,d0
+ *      _SetTrapAddress newOS           ; $SM/OS/TimeMgr/TimeMgrPatch.a:159-161
+ *
+ *  That is strictly better than a byte patch: it needs no find_rom_trap() scan,
+ *  so it cannot land on the wrong address on a ROM we have not seen; it leaves
+ *  the ROM image intact; and it is the documented interface rather than an
+ *  observation about one build's layout.
+ *
+ *  It is only available once the trap dispatcher exists, which rules out any
+ *  trap the machine uses before InstallDrivers() runs. Which ones those are was
+ *  measured rather than guessed -- a boot instrumented to report the first call
+ *  of every replaced trap gave:
+ *
+ *      before InstallDrivers:  BlockMove, InsTime, SCSIDispatch, CheckLoad
+ *      after InstallDrivers:   ADBOp, PrimeTime, RmvTime, Microseconds
+ *      not during boot:        PowerOff, PutScrap
+ *
+ *  so the four in the first row stay ROM patches and are marked as such at
+ *  their patch sites. Of the rest, the Time Manager pair RmvTime/PrimeTime also
+ *  stays: InsTime is in the first row, and replacing one half of the Time
+ *  Manager through the trap table while the other half is a ROM patch is harder
+ *  to reason about than leaving all three together.
+ *
+ *  That leaves the three below. See docs/rom-patches-vs-supermario.md.
+ */
+
+static const uint8 microseconds_stub[] = {	// Microseconds() -- A0 = high, D0 = low
+	M68K_EMUL_OP_MICROSECONDS >> 8, M68K_EMUL_OP_MICROSECONDS & 0xff,
+	0x4e, 0x75				//	rts
+};
+
+static const uint8 poweroff_stub[] = {		// PowerOff() -- quits the emulator
+	M68K_EMUL_OP_SHUTDOWN >> 8, M68K_EMUL_OP_SHUTDOWN & 0xff,
+	0x4e, 0x75				//	rts
+};
+
+/*
+ * Traps installed by InstallRuntimeTraps(), in the order they are laid out in
+ * the stub block. All three are OS traps ($A05B/$A07C/$A093 are below $A800),
+ * so all three go in through _SetOSTrapAddress.
+ */
+static RuntimeTrapStub runtime_trap_stubs[] = {
+	{ "Microseconds ($A093)", "$SM/OS/TimeMgr/TimeMgr.a:741",       0xa093,
+	  microseconds_stub, sizeof(microseconds_stub), 0 },
+	{ "PowerOff ($A05B)",     "$SM/Toolbox/ShutDownMgr/ShutDownMgr.a", 0xa05b,
+	  poweroff_stub,     sizeof(poweroff_stub),     0 },
+	{ "ADBOp ($A07C)",        "$SM/OS/ADBMgr/ADBMgr.a:337",         0xa07c,
+	  adbop_patch,       sizeof(adbop_patch),       0 },
+};
+
+static const int runtime_trap_stub_count =
+	(int)(sizeof(runtime_trap_stubs) / sizeof(runtime_trap_stubs[0]));
+
+/*
+ *  Returns the runtime trap stub table.
+ *
+ *  Arguments:
+ *    count: receives the number of entries.
+ *
+ *  Returns:
+ *    The table. Each entry's addr is 0 until InstallRuntimeTraps() has run;
+ *    the stub bytes themselves are valid from the start, which is what lets
+ *    the offline tests execute them without a Mac heap.
+ */
+
+const RuntimeTrapStub *GetRuntimeTrapStubs(int *count)
+{
+	if (count)
+		*count = runtime_trap_stub_count;
+	return runtime_trap_stubs;
+}
+
+/*
+ *  Copy the runtime trap stubs into the System heap and point the trap table
+ *  at them.
+ *
+ *  Called from InstallDrivers(), which is late enough that the trap dispatcher
+ *  and the Memory Manager are both up (see the block comment above).
+ *
+ *  Returns:
+ *    true if every stub was installed. On failure the machine keeps the ROM's
+ *    own implementations, which for these three traps means the emulator loses
+ *    the replacement rather than crashing.
+ */
+
+static bool InstallRuntimeTraps(void)
+{
+	// One block for all of them; 16-byte slots keep each stub aligned.
+	const uint32 slot = 64;
+	M68kRegisters r;
+	r.d[0] = slot * runtime_trap_stub_count;
+	Execute68kTrap(0xa71e, &r);		// NewPtrSysClear()
+	uint32 base = r.a[0];
+	if (base == 0) {
+		printf("[TRAP-INSTALL] FATAL: could not allocate the runtime trap stub block\n");
+		fflush(stdout);
+		return false;
+	}
+
+	for (int i = 0; i < runtime_trap_stub_count; i++) {
+		RuntimeTrapStub &st = runtime_trap_stubs[i];
+		if (st.len > slot) {
+			printf("[TRAP-INSTALL] FATAL: %s stub is %u bytes, slot is %u\n",
+			       st.name, st.len, slot);
+			fflush(stdout);
+			return false;
+		}
+		st.addr = base + (uint32)i * slot;
+		memcpy(Mac2HostAddr(st.addr), st.code, st.len);
+		cpu_engine_invalidate_code(st.addr, st.len);
+
+		r.a[0] = st.addr;
+		r.d[0] = st.trap;
+		Execute68kTrap(0xa247, &r);		// _SetOSTrapAddress
+
+		printf("[TRAP-INSTALL] %-22s -> %08x via _SetOSTrapAddress (%s)\n",
+		       st.name, st.addr, st.source_ref);
+	}
+	fflush(stdout);
+	return true;
+}
+
+
+/*
+ *  Take over the 60 Hz VBL interrupt through the jVBLInt vector
+ *  ============================================================
+ *
+ *  The ROM dispatches VIA1 interrupts through Via1DT == Lvl1DT ($192), and
+ *  jVBLInt is the ifCA1 slot -- Lvl1DT + 4 ($196), per
+ *  $SM/OS/InterruptHandlers.a:489-496. InitRomVectors fills the whole table in,
+ *  so by the time InstallDrivers() runs the ROM has already told us where its
+ *  own VBL handler is; on the Quadra 800 image every one of the seven slots
+ *  holds a real ROM address.
+ *
+ *  Cockatrice used to reach that handler by byte-patching a fixed ROM offset
+ *  (0xa296) and letting the dispatcher walk into the patched bytes. Installing
+ *  a vector instead is the documented mechanism, and it is also the more robust
+ *  one for a reason worth spelling out: the old code verified an 8-byte
+ *  signature at an address we guessed, while this verifies the same signature
+ *  at the address the ROM itself nominates. The continuation is then derived
+ *  from that address rather than hardcoded, so no ROM offset appears here at
+ *  all.
+ *
+ *  Behaviour is unchanged. The handler we install is exactly what the byte
+ *  patch used to be:
+ *
+ *      M68K_EMUL_OP_IRQ            ; do the 60 Hz work on the host
+ *      tst.l   d0
+ *      beq.s   done                ; nothing for the ROM to do
+ *      jmp     (vbl_continue).L    ; ROM's deferred-VBL-task processing
+ *  done:
+ *      rts
+ *
+ *  where vbl_continue is the ROM handler's entry plus the ten bytes the old
+ *  patch overwrote ("addq.l #1,Ticks" and "move.b #2,$1A00(a1)"): the tick
+ *  count is bumped by M68K_EMUL_OP_IRQ instead, and there is no VIA to
+ *  acknowledge.
+ *
+ *  Timing: measured, not assumed. The first level-1 interrupt arrives after
+ *  InstallDrivers(), so there is no window in which the ROM's unpatched handler
+ *  could run.
+ */
+
+static uint32 vbl_handler_stub;			// Mac address of the installed handler
+static uint32 vbl_original_vector;		// what jVBLInt held before we took it
+
+#define LM_LVL1DT	0x192				// $SM/Interfaces/AIncludes/SysEqu.a:1203
+#define JVBLINT		(LM_LVL1DT + 4 * 1)	// +4*ifCA1
+
+// "addq.l #1,Ticks" (4) + "move.b #2,$1A00(a1)" (6): the ROM VBL prologue our
+// handler stands in for, and so the offset of the continuation.
+#define VBL_PROLOGUE_BYTES	10
+
+/*
+ *  Returns the installed VBL handler and the vector it replaced, for tests.
+ *
+ *  Arguments:
+ *    original: receives the previous jVBLInt value; may be NULL.
+ *
+ *  Returns:
+ *    Mac address of our handler, or 0 if it has not been installed.
+ */
+
+uint32 GetVBLHandlerStub(uint32 *original)
+{
+	if (original)
+		*original = vbl_original_vector;
+	return vbl_handler_stub;
+}
+
+/*
+ *  Validate a jVBLInt vector and work out where the ROM handler continues.
+ *
+ *  Split out from the installer so it can be exercised offline: it is the part
+ *  that decides whether we understand this ROM's VBL handler, and it replaces a
+ *  fixed-offset check inside PatchROM() that the patch-guard tests covered.
+ *
+ *  Arguments:
+ *    vector:   value read from jVBLInt ($196).
+ *    cont_out: receives the address the ROM handler continues at, past the
+ *              prologue our handler stands in for; 0 on failure. May be NULL.
+ *
+ *  Returns:
+ *    true if the vector points at a ROM VBL handler we recognise.
+ */
+
+bool ResolveVBLContinuation(uint32 vector, uint32 *cont_out)
+{
+	if (cont_out)
+		*cont_out = 0;
+
+	if (vector < ROMBaseMac || vector + VBL_PROLOGUE_BYTES > ROMBaseMac + ROMSize) {
+		printf("[VBL-INSTALL] FATAL: jVBLInt = %08x is not a ROM address\n", vector);
+		fflush(stdout);
+		return false;
+	}
+
+	// addq.l #1,Ticks ($016A) / move.b #2,$1A00(a1) -- the ROM VBL handler
+	// bumping the tick count and acknowledging the VIA.
+	static const uint8 sixtyhz_dat[] = {0x52, 0xb8, 0x01, 0x6a, 0x13, 0x7c, 0x00, 0x02};
+	if (!verify_rom_bytes("VBL handler (via jVBLInt)", vector - ROMBaseMac,
+	                      sixtyhz_dat, sizeof(sixtyhz_dat)))
+		return false;
+
+	if (cont_out)
+		*cont_out = vector + VBL_PROLOGUE_BYTES;
+	return true;
+}
+
+/*
+ *  Build the VBL handler and point jVBLInt at it.
+ *
+ *  Returns:
+ *    true if the vector was taken over. On failure the ROM keeps its own
+ *    handler, which without a VIA to acknowledge will not do the 60 Hz work --
+ *    so the caller reports it loudly.
+ */
+
+static bool InstallVBLHandler(void)
+{
+	uint32 orig = ReadMacInt32(JVBLINT);
+	uint32 cont = 0;
+	if (!ResolveVBLContinuation(orig, &cont))
+		return false;
+
+	M68kRegisters r;
+	r.d[0] = 16;
+	Execute68kTrap(0xa71e, &r);		// NewPtrSysClear()
+	uint32 stub = r.a[0];
+	if (stub == 0) {
+		printf("[VBL-INSTALL] FATAL: could not allocate the VBL handler stub\n");
+		fflush(stdout);
+		return false;
+	}
+
+	WriteMacInt16(stub + 0, (uint16)M68K_EMUL_OP_IRQ);
+	WriteMacInt16(stub + 2, 0x4a80);	// tst.l	d0
+	WriteMacInt16(stub + 4, 0x6706);	// beq.s	done
+	WriteMacInt16(stub + 6, M68K_JMP);	// jmp		(cont).L
+	WriteMacInt32(stub + 8, cont);
+	WriteMacInt16(stub + 12, M68K_RTS);	// done: rts
+	cpu_engine_invalidate_code(stub, 16);
+
+	vbl_handler_stub = stub;
+	vbl_original_vector = orig;
+	WriteMacInt32(JVBLINT, stub);
+
+	printf("[VBL-INSTALL] jVBLInt ($%03x) %08x -> %08x, ROM continuation %08x\n",
+	       JVBLINT, orig, stub, cont);
+	fflush(stdout);
+	return true;
+}
+
+
+/*
  *  Install .Sony, disk and CD-ROM drivers
  */
 
@@ -700,10 +1142,14 @@ void InstallDrivers(uint32 pb)
 	D(bug("InstallDrivers\n"));
 	M68kRegisters r;
 
-	// Install Microseconds() replacement routine
-	r.a[0] = ROMBaseMac + microseconds_offset;
-	r.d[0] = 0xa093;
-	Execute68kTrap(0xa247, &r);		// SetOSTrapAddress()
+	// Point the trap table at our System-heap replacements for the traps that
+	// do not have to be ROM patches (Microseconds, PowerOff, ADBOp).
+	InstallRuntimeTraps();
+
+	// Take over the 60 Hz interrupt through the ROM's own jVBLInt vector.
+	if (!InstallVBLHandler())
+		printf("[VBL-INSTALL] the 60 Hz interrupt was NOT taken over; "
+		       "the machine will not run\n");
 
 	// Install disk driver
 	r.a[0] = ROMBaseMac + sony_offset + 0x100;
@@ -763,11 +1209,39 @@ void PatchAfterStartup(void)
 	// Install external file system
 	InstallExtFS();
 #endif
+
+	/*
+	 *  Install the RAM trampolines for whatever Toolbox/OS traps the host side
+	 *  registered before the machine was started (toolbox_traps.cpp; the Menu
+	 *  Manager hooks in toolbox_menu.cpp are the current caller). No-op unless
+	 *  the toolbox_hooks pref is set.
+	 *
+	 *  Here rather than in InstallDrivers() because this runs from the Sony
+	 *  driver's accRun, once the System file has installed its own trap
+	 *  patches: our trampoline then sits at the head of the chain, so a hook
+	 *  runs and a passthrough still reaches the System's implementation. See
+	 *  the block comment on ToolboxTrap_InstallAll().
+	 */
+	ToolboxTrap_InstallAll();
 }
 
 
 /*
- *  Check ROM version, returns false if ROM version is not supported
+ *  Check ROM version, returns false if the ROM version is not supported
+ *
+ *  Sets ROMVersion from the version word at ROMBase+8. PatchROM() has code for
+ *  exactly two of these, so anything else is rejected here rather than being
+ *  accepted and then patched with the wrong offset table.
+ *
+ *  This used to return ROM_VERSION_CLASSIC (0x0276, and therefore truthy) for
+ *  every unrecognised image, so an unknown ROM was accepted and run through
+ *  patch_rom_classic() -- which is raw magic offsets with no verification.
+ *
+ *  Note that the version word does not uniquely identify a ROM image; see the
+ *  comment on the ROM_VERSION_* enum in rom_patches.h.
+ *
+ *  Returns:
+ *    true if PatchROM() knows how to patch this ROM.
  */
 
 bool CheckROM(void)
@@ -775,12 +1249,13 @@ bool CheckROM(void)
 	// Read version
 	ROMVersion = ntohs(*(uint16 *)(ROMBaseHost + 8));
 
-	// Virtual addressing mode works with 32-bit clean Mac II ROMs and Classic ROMs
-	//return (ROMVersion == ROM_VERSION_CLASSIC) || (ROMVersion == ROM_VERSION_32);
-	if (ROMVersion == ROM_VERSION_32)
-		return(ROM_VERSION_32);
-	else
-		return (ROM_VERSION_CLASSIC);
+	switch (ROMVersion) {
+		case ROM_VERSION_32:		// 32-bit clean Mac II / Quadra ROMs
+		case ROM_VERSION_CLASSIC:	// SE/Classic ROMs
+			return true;
+		default:
+			return false;
+	}
 }
 
 
@@ -893,10 +1368,9 @@ printf("Patching for a Mac Classic/SE (version $0276)\n");
 	*wp++ = htons(0x0700);
 	*wp++ = htons(M68K_EMUL_OP_PRIMETIME);
 	*wp++ = htons(0x46df);		// move	(sp)+,sr
-	*wp++ = htons(M68K_RTS);
-	microseconds_offset = (uint8 *)wp - ROMBaseHost;
-	*wp++ = htons(M68K_EMUL_OP_MICROSECONDS);
 	*wp = htons(M68K_RTS);
+	// Microseconds ($A093) is installed at runtime for Classic ROMs too --
+	// see InstallRuntimeTraps().
 
 
 	// Replace SCSIDispatch()
@@ -966,39 +1440,52 @@ static bool patch_rom_32(void)
 
 	printf("Patching a 32-bit clean ROM (version $067c or higher)\n");
 
-	// Find UniversalInfo
+	// Find UniversalInfo. The scanned bytes are the tail of a ProductInfo
+	// record; UniversalInfo is the record base, 0x10 earlier. Record layout:
+	// $SM/Internal/Asm/UniversalEqu.a:519-557, tables in $SM/OS/UniversalTables.a.
 	static const uint8 universal_dat[] = {0xdc, 0x00, 0x05, 0x05, 0x3f, 0xff, 0x01, 0x00};
-	if ((base = find_rom_data(0x3400, 0x3c00, universal_dat, sizeof(universal_dat))) == 0) return false;
+	base = find_rom_data(0x3400, 0x3c00, universal_dat, sizeof(universal_dat));
+	if (log_patch("UniversalInfo", "$SM/Internal/Asm/UniversalEqu.a:519", base, true) == 0) return false;
 	UniversalInfo = base - 0x10;
 	D(bug("universal %08lx\n", UniversalInfo));
 
-	// Patch UniversalInfo (disable NuBus slots)
+	// Patch UniversalInfo (disable NuBus slots). ProductInfo.NuBusInfoPtr is at
+	// +12; byte 0 is the slot count/flags, 1..15 the per-slot entries.
 	bp = ROMBaseHost + UniversalInfo + ReadMacInt32(ROMBaseMac + UniversalInfo + 12);	// nuBusInfoPtr
 	bp[0] = 0x03;
 	for (int i=1; i<16; i++)
 		bp[i] = 0x08;
+	log_patch("UniversalInfo NuBus disable", "$SM/Internal/Asm/UniversalEqu.a:522 NuBusInfoPtr", UniversalInfo + 12, true);
 
-	// Set model ID from preferences
+	// Set model ID from preferences. ProductInfo.ProductKind at +18 is the
+	// boxFlag value; the names are $SM/Internal/Asm/InternalOnlyEqu.a:625+.
 	bp = ROMBaseHost + UniversalInfo + 18;		// productKind
 	*bp = PrefsFindInt32("modelid");
+	log_patch("UniversalInfo ProductKind", "$SM/Internal/Asm/UniversalEqu.a:526 ProductKind", UniversalInfo + 18, true);
 
-	// Make FPU optional
+	// Make FPU optional. ProductInfo.DefaultRSRCs at +22 selects the default ROM
+	// resource configuration.
 	if (FPUType == 0) {
 		bp = ROMBaseHost + UniversalInfo + 22;	// defaultRSRCs
 		*bp = 4;	// FPU optional
+		log_patch("UniversalInfo DefaultRSRCs", "$SM/Internal/Asm/UniversalEqu.a:529 DefaultRSRCs", UniversalInfo + 22, false);
 	}
 
-	// Install special reset opcode and jump (skip hardware detection and tests)
+	// Install special reset opcode and jump (skip hardware detection and tests).
+	// This replaces the whole StartInit.a hardware bring-up; the individual
+	// suppressions below cover routines reached on other paths.
 	wp = (uint16 *)(ROMBaseHost + 0x8c);
 	*wp++ = htons(M68K_EMUL_OP_RESET);
 	*wp++ = htons(M68K_JMP);
 	*wp++ = htons((ROMBaseMac + 0xba) >> 16);
 	*wp = htons((ROMBaseMac + 0xba) & 0xffff);
+	log_patch("RESET trampoline", "$SM/OS/StartMgr/StartInit.a:1139 MyROM", 0x8c, true);
 
 	// Don't GetHardwareInfo
 	wp = (uint16 *)(ROMBaseHost + 0xc2);
 	*wp++ = htons(M68K_NOP);
 	*wp = htons(M68K_NOP);
+	log_patch("GetHardwareInfo", "$SM/OS/StartMgr/StartInit.a:1331", 0xc2, true);
 
 	// Don't init VIAs
 	wp = (uint16 *)(ROMBaseHost + 0xc6);
@@ -1017,15 +1504,18 @@ static bool patch_rom_32(void)
 	*wp++ = htons(M68K_NOP);
 	*wp++ = htons(M68K_NOP);
 	*wp = htons(M68K_NOP);
+	log_patch("InitVIAs", "$SM/OS/StartMgr/StartInit.a:1352 / $SM/OS/Universal.a", 0xc6, true);
 
 	// Fake CPU type test
 	wp = (uint16 *)(ROMBaseHost + 0x7c0);
 	*wp++ = htons(0x7e00 + CPUType);
 	*wp = htons(M68K_RTS);
+	log_patch("WhichCPU", "$SM/OS/StartMgr/StartInit.a:1367 WhichCPU", 0x7c0, true);
 
 	// Don't clear end of BootGlobs upto end of RAM (address xxxx0000)
 	static const uint8 clear_globs_dat[] = {0x42, 0x9a, 0x36, 0x0a, 0x66, 0xfa};
 	base = find_rom_data(0xa00, 0xb00, clear_globs_dat, sizeof(clear_globs_dat));
+	log_patch("BootGlobs clear loop", "$SM/OS/StartMgr/StartInit.a", base, false);
 	D(bug("clear_globs %08lx\n", base));
 	if (base) {		// ROM15/20/22/23/26/27/32
 		wp = (uint16 *)(ROMBaseHost + base + 2);
@@ -1033,14 +1523,16 @@ static bool patch_rom_32(void)
 		*wp = htons(M68K_NOP);
 	}
 
-	// Patch InitMMU (no MMU present, don't choke on unknown CPU types)
+	// Patch InitMMU (no MMU present, don't choke on unknown CPU types).
+	// InitMMU is $SM/OS/MMU/MMUTables.a, called from StartInit.a:1376.
 	if (ROMSize <= 0x80000) {
 		static const uint8 init_mmu_dat[] = {0x0c, 0x47, 0x00, 0x03, 0x62, 0x00, 0xfe};
-		if ((base = find_rom_data(0x4000, 0x50000, init_mmu_dat, sizeof(init_mmu_dat))) == 0) return false;
+		base = find_rom_data(0x4000, 0x50000, init_mmu_dat, sizeof(init_mmu_dat));
 	} else {
 		static const uint8 init_mmu_dat[] = {0x0c, 0x47, 0x00, 0x04, 0x62, 0x00, 0xfd};
-		if ((base = find_rom_data(0x80000, 0x90000, init_mmu_dat, sizeof(init_mmu_dat))) == 0) return false;
+		base = find_rom_data(0x80000, 0x90000, init_mmu_dat, sizeof(init_mmu_dat));
 	}
+	if (log_patch("InitMMU CPU-type check", "$SM/OS/StartMgr/StartInit.a:1376 / $SM/OS/MMU/MMUTables.a", base, true) == 0) return false;
 	D(bug("init_mmu %08lx\n", base));
 	wp = (uint16 *)(ROMBaseHost + base);
 	*wp++ = htons(M68K_NOP);
@@ -1058,6 +1550,7 @@ static bool patch_rom_32(void)
 	} else {
 		base = find_rom_data(0x80000, 0x90000, init_mmu2_dat, sizeof(init_mmu2_dat));
 	}
+	log_patch("InitMMU RBV check", "$SM/OS/MMU/MMU.a", base, false);
 	D(bug("init_mmu2 %08lx\n", base));
 	if (base) {		// ROM11/10/13/26
 		bp = (uint8 *)(ROMBaseHost + base + 4);
@@ -1067,17 +1560,20 @@ static bool patch_rom_32(void)
 	// Patch InitMMU (don't init MMU)
 	static const uint8 init_mmu3_dat[] = {0x0c, 0x2e, 0x00, 0x01, 0xff, 0xe6, 0x66, 0x0c, 0x4c, 0xed, 0x03, 0x87, 0xff, 0xe8};
 	if (ROMSize <= 0x80000) {
-		if ((base = find_rom_data(0x4000, 0x50000, init_mmu3_dat, sizeof(init_mmu3_dat))) == 0) return false;
+		base = find_rom_data(0x4000, 0x50000, init_mmu3_dat, sizeof(init_mmu3_dat));
 	} else {
-		if ((base = find_rom_data(0x80000, 0x90000, init_mmu3_dat, sizeof(init_mmu3_dat))) == 0) return false;
+		base = find_rom_data(0x80000, 0x90000, init_mmu3_dat, sizeof(init_mmu3_dat));
 	}
+	if (log_patch("InitMMU enable", "$SM/OS/MMU/MMUTables.a", base, true) == 0) return false;
 	D(bug("init_mmu3 %08lx\n", base));
 	wp = (uint16 *)(ROMBaseHost + base + 6);
 	*wp = htons(M68K_NOP);
 
-	// Replace XPRAM routines
+	// Replace XPRAM routines. ReadXPram is $SM/OS/Clock.a, reached through the
+	// clock/PRAM primitives in $SM/OS/IoPrimitives/ClockPRAMPrimitives.a.
 	static const uint8 read_xpram_dat[] = {0x26, 0x4e, 0x41, 0xf9, 0x50, 0xf0, 0x00, 0x00, 0x08, 0x90, 0x00, 0x02};
 	base = find_rom_data(0x40000, 0x50000, read_xpram_dat, sizeof(read_xpram_dat));
+	log_patch("ReadXPRAM (ROM10)", "$SM/OS/Clock.a", base, false);
 	D(bug("read_xpram %08lx\n", base));
 	if (base) {			// ROM10
 		wp = (uint16 *)(ROMBaseHost + base);
@@ -1086,6 +1582,7 @@ static bool patch_rom_32(void)
 	}
 	static const uint8 read_xpram2_dat[] = {0x26, 0x4e, 0x08, 0x92, 0x00, 0x02, 0xea, 0x59, 0x02, 0x01, 0x00, 0x07, 0x00, 0x01, 0x00, 0xb8};
 	base = find_rom_data(0x40000, 0x50000, read_xpram2_dat, sizeof(read_xpram2_dat));
+	log_patch("ReadXPRAM (ROM11)", "$SM/OS/Clock.a", base, false);
 	D(bug("read_xpram2 %08lx\n", base));
 	if (base) {			// ROM11
 		wp = (uint16 *)(ROMBaseHost + base);
@@ -1095,6 +1592,7 @@ static bool patch_rom_32(void)
 	if (ROMSize > 0x80000) {
 		static const uint8 read_xpram3_dat[] = {0x48, 0xe7, 0xe0, 0x60, 0x02, 0x01, 0x00, 0x70, 0x0c, 0x01, 0x00, 0x20};
 		base = find_rom_data(0x80000, 0x90000, read_xpram3_dat, sizeof(read_xpram3_dat));
+		log_patch("ReadXPRAM (ROM15)", "$SM/OS/Clock.a", base, false);
 		D(bug("read_xpram3 %08lx\n", base));
 		if (base) {		// ROM15
 			wp = (uint16 *)(ROMBaseHost + base);
@@ -1103,13 +1601,16 @@ static bool patch_rom_32(void)
 		}
 	}
 
-	// Patch ClkNoMem
+	// Patch ClkNoMem ($A053). Trap wiring: $SM/OS/DispTable.a; implementation
+	// $SM/OS/Clock.a. On ROM23/26/27/32 the trap entry is a jmp (a5) stub, so
+	// re-locate the real body by signature.
 	base = find_rom_trap(0xa053);
 	wp = (uint16 *)(ROMBaseHost + base);
 	if (ntohs(*wp) == 0x4ed5) {	// ROM23/26/27/32
 		static const uint8 clk_no_mem_dat[] = {0x40, 0xc2, 0x00, 0x7c, 0x07, 0x00, 0x48, 0x42};
-		if ((base = find_rom_data(0xb0000, 0xb8000, clk_no_mem_dat, sizeof(clk_no_mem_dat))) == 0) return false;
+		base = find_rom_data(0xb0000, 0xb8000, clk_no_mem_dat, sizeof(clk_no_mem_dat));
 	}
+	if (log_patch("ClkNoMem ($A053)", "$SM/OS/Clock.a", base, true) == 0) return false;
 	D(bug("clk_no_mem %08lx\n", base));
 	wp = (uint16 *)(ROMBaseHost + base);
 	*wp++ = htons(M68K_EMUL_OP_CLKNOMEM);
@@ -1119,10 +1620,12 @@ static bool patch_rom_32(void)
 	wp = (uint16 *)(ROMBaseHost + 0x10e);
 	*wp++ = htons(M68K_EMUL_OP_PATCH_BOOT_GLOBS);
 	*wp = htons(M68K_NOP);
+	log_patch("BootGlobs", "$SM/Internal/Asm/BootEqu.a", 0x10e, true);
 
-	// Don't init SCC
+	// Don't init SCC. InitSCC is exported from StartInit.a:1146, called at :1553.
 	static const uint8 init_scc_dat[] = {0x08, 0x38, 0x00, 0x01, 0x0d, 0xd1, 0x67, 0x04};
-	if ((base = find_rom_data(0xa00, 0xa80, init_scc_dat, sizeof(init_scc_dat))) == 0) return false;
+	base = find_rom_data(0xa00, 0xa80, init_scc_dat, sizeof(init_scc_dat));
+	if (log_patch("InitSCC", "$SM/OS/StartMgr/StartInit.a:1553", base, true) == 0) return false;
 	D(bug("init_scc %08lx\n", base));
 	wp = (uint16 *)(ROMBaseHost + base);
 	*wp = htons(M68K_RTS);
@@ -1137,33 +1640,41 @@ static bool patch_rom_32(void)
 		*wp = htons(M68K_NOP);
 	}
 
-	// Don't init IWM
+	// Don't init IWM. InitIWM is $SM/Drivers/Sony/SonyMFM.a, called at
+	// StartInit.a:1556.
 	wp = (uint16 *)(ROMBaseHost + 0x9c0);
 	*wp = htons(M68K_RTS);
+	log_patch("InitIWM", "$SM/OS/StartMgr/StartInit.a:1556", 0x9c0, true);
 
 
-	// Don't init SCSI
+	// Don't init SCSI. InitSCSIMgr is $SM/OS/SCSIMgr/SCSIMgrInit.a:161,
+	// called at StartInit.a:1758.
 	wp = (uint16 *)(ROMBaseHost + 0x9a0);
 	*wp = htons(M68K_RTS);
+	log_patch("InitSCSIMgr", "$SM/OS/SCSIMgr/SCSIMgrInit.a:161", 0x9a0, true);
 
 
 	// Don't init ASC
 	static const uint8 init_asc_dat[] = {0x26, 0x68, 0x00, 0x30, 0x12, 0x00, 0xeb, 0x01};
 	base = find_rom_data(0x4000, 0x5000, init_asc_dat, sizeof(init_asc_dat));
+	log_patch("InitSndHW (ASC)", "$SM/OS/StartMgr/StartInit.a:1563 InitSndHW", base, false);
 	D(bug("init_asc %08lx\n", base));
 	if (base) {		// ROM15/22/23/26/27/32
 		wp = (uint16 *)(ROMBaseHost + base);
 		*wp = htons(0x4ed6);		// jmp	(a6)
 	}
 
-	// Don't EnableExtCache
+	// Don't EnableExtCache. $SM/OS/HwPriv.a, called at StartInit.a:1604.
 	wp = (uint16 *)(ROMBaseHost + 0x190);
 	*wp++ = htons(M68K_NOP);
 	*wp = htons(M68K_NOP);
+	log_patch("EnableExtCache", "$SM/OS/StartMgr/StartInit.a:1604 / $SM/OS/HwPriv.a", 0x190, true);
 
-	// Don't DisableIntSources
+	// Don't DisableIntSources. $SM/OS/InterruptHandlers.a, called at
+	// StartInit.a:1606 and again at :1633.
 	wp = (uint16 *)(ROMBaseHost + 0x9f4c);
 	*wp = htons(M68K_RTS);
+	log_patch("DisableIntSources", "$SM/OS/InterruptHandlers.a", 0x9f4c, true);
 
 	// Fake CPU speed test (SetupTimeK)
 	wp = (uint16 *)(ROMBaseHost + 0x800);
@@ -1180,6 +1691,9 @@ static bool patch_rom_32(void)
 	*wp++ = htons(100);
 	*wp++ = htons(0x0cea);
 	*wp = htons(M68K_RTS);
+	// SetUpTimeK is StartInit.a:2032, driven by TimingTable at :2151 (TimeDBRA,
+	// TimeSCCDB, TimeSCSIDB). Leaving these zero is the UAE Type 4 zero-divide.
+	log_patch("SetUpTimeK", "$SM/OS/StartMgr/StartInit.a:2032", 0x800, true);
 
 #if REAL_ADDRESSING
 	// Move system zone to start of Mac RAM
@@ -1208,15 +1722,18 @@ static bool patch_rom_32(void)
 	*wp = htons(M68K_NOP);
 #endif
 
-	// Don't write to VIA in InitTimeMgr
+	// Don't write to VIA in InitTimeMgr. $SM/OS/TimeMgr/TimeMgr.a, called at
+	// StartInit.a:1689.
 	wp = (uint16 *)(ROMBaseHost + 0xb0e2);
 	*wp++ = htons(0x4cdf);			// movem.l	(sp)+,d0-d5/a0-a4
 	*wp++ = htons(0x1f3f);
 	*wp = htons(M68K_RTS);
+	log_patch("InitTimeMgr VIA write", "$SM/OS/TimeMgr/TimeMgr.a", 0xb0e2, true);
 
 	// Don't read ModelID from 0x5ffffffc
 	static const uint8 model_id_dat[] = {0x20, 0x7c, 0x5f, 0xff, 0xff, 0xfc, 0x72, 0x07, 0xc2, 0x90};
 	base = find_rom_data(0x40000, 0x50000, model_id_dat, sizeof(model_id_dat));
+	log_patch("ModelID read (ROM20)", "$SM/OS/Universal.a GetCPUIDReg", base, false);
 	D(bug("model_id %08lx\n", base));
 	if (base) {		// ROM20
 		wp = (uint16 *)(ROMBaseHost + base + 8);
@@ -1229,6 +1746,7 @@ static bool patch_rom_32(void)
 	// Don't read ModelID from 0x5ffffffc
 	static const uint8 model_id2_dat[] = {0x45, 0xf9, 0x5f, 0xff, 0xff, 0xfc, 0x20, 0x12};
 	base = find_rom_data(0x4000, 0x5000, model_id2_dat, sizeof(model_id2_dat));
+	log_patch("ModelID read (ROM27/32)", "$SM/OS/Universal.a GetCPUIDReg", base, false);
 	D(bug("model_id2 %08lx\n", base));
 	if (base) {		// ROM27/32
 		wp = (uint16 *)(ROMBaseHost + base + 6);
@@ -1237,13 +1755,16 @@ static bool patch_rom_32(void)
 		*wp = htons(0x4ed6);	// jmp		(a6)
 	}
 
-	// Install slot ROM
+	// Install slot ROM. Real declaration ROMs are $SM/DeclData/DeclData.r; the
+	// Slot Manager that walks them is $SM/OS/SlotMgr/SlotMgr.a.
 	if (!InstallSlotROM())
 		return false;
+	log_patch("InstallSlotROM", "$SM/DeclData/DeclData.r", SlotROMOffset, true);
 
 	// Don't probe NuBus slots
 	static const uint8 nubus_dat[] = {0x45, 0xfa, 0x00, 0x0a, 0x42, 0xa7, 0x10, 0x11};
 	base = find_rom_data(0x5000, 0x6000, nubus_dat, sizeof(nubus_dat));
+	log_patch("NuBus slot probe", "$SM/OS/SlotMgr/SlotMgrInit.a", base, false);
 	D(bug("nubus %08lx\n", base));
 	if (base) {		// ROM10/11
 		wp = (uint16 *)(ROMBaseHost + base + 6);
@@ -1254,7 +1775,8 @@ static bool patch_rom_32(void)
 
 	// Don't EnableOneSecInts
 	static const uint8 lea_dat[] = {0x41, 0xf9};
-	if ((base = find_rom_data(0x226, 0x22a, lea_dat, sizeof(lea_dat))) == 0) return false;
+	base = find_rom_data(0x226, 0x22a, lea_dat, sizeof(lea_dat));
+	if (log_patch("EnableOneSecInts", "$SM/OS/InterruptHandlers.a:590", base, true) == 0) return false;
 	D(bug("enable_one_sec_ints %08lx\n", base));
 	wp = (uint16 *)(ROMBaseHost + base);
 	*wp++ = htons(M68K_NOP);
@@ -1271,6 +1793,7 @@ static bool patch_rom_32(void)
 		else
 			return false;
 	}
+	log_patch("Enable60HzInts", "$SM/OS/InterruptHandlers.a:549", base, true);
 	D(bug("enable_60hz_ints %08lx\n", base));
 	wp = (uint16 *)(ROMBaseHost + base);
 	*wp++ = htons(M68K_NOP);
@@ -1293,9 +1816,11 @@ static bool patch_rom_32(void)
 	*wp++ = htons(0x2040);	// move.l	d0,a0
 	*wp++ = htons(M68K_EMUL_OP_FIX_MEMSIZE);
 	*wp++ = htons(M68K_RTS);
+	log_patch("CompBootStack", "$SM/OS/StartMgr/StartInit.a:1642", 0x490, true);
 
 	static const uint8 fix_memsize2_dat[] = {0x22, 0x30, 0x81, 0xe2, 0x0d, 0xdc, 0xff, 0xba, 0xd2, 0xb0, 0x81, 0xe2, 0x0d, 0xdc, 0xff, 0xec, 0x21, 0xc1, 0x1e, 0xf8};
 	base = find_rom_data(0x4c000, 0x4c080, fix_memsize2_dat, sizeof(fix_memsize2_dat));
+	log_patch("RAM size fixup", "$SM/OS/StartMgr/SizeMem.a", base, false);
 	D(bug("fix_memsize2 %08lx\n", base));
 	if (base) {		// ROM15/22/23/26/27/32
 		wp = (uint16 *)(ROMBaseHost + base + 16);
@@ -1303,11 +1828,22 @@ static bool patch_rom_32(void)
 		*wp = htons(M68K_NOP);
 	}
 
-	// Don't open .Sound driver but install our own drivers
+	// Don't open .Sound driver but install our own drivers. The Sound Manager
+	// has no SuperMario source (ships as SoundMgr.rsrc), so this site is
+	// anchored only to the ROM image.
+	// _Open followed by "movea.l SonyVars,a1" -- the .Sony driver globals at
+	// $0134. The next patch NOPs that access, so both are verified here.
+	static const uint8 sound_open_dat[] = {0xa0, 0x00, 0x22, 0x78, 0x01, 0x34};
+	if (!verify_rom_bytes(".Sound open hook", 0x1142, sound_open_dat, sizeof(sound_open_dat))) {
+		log_patch(".Sound open hook", NULL, 0, true);
+		return false;
+	}
 	wp = (uint16 *)(ROMBaseHost + 0x1142);
 	*wp = htons(M68K_EMUL_OP_INSTALL_DRIVERS);
+	log_patch(".Sound open hook", NULL, 0x1142, true);
 
-	// Don't access SonyVars
+	// Don't access SonyVars ($SM/Drivers/Sony/Sony.a driver globals)
+	log_patch("SonyVars access", "$SM/Drivers/Sony/Sony.a", 0x1144, true);
 	wp = (uint16 *)(ROMBaseHost + 0x1144);
 	*wp++ = htons(M68K_NOP);
 	*wp++ = htons(M68K_NOP);
@@ -1316,9 +1852,23 @@ static bool patch_rom_32(void)
 	wp += 2;
 	*wp = htons(M68K_NOP);
 
-	// Don't write to VIA in InitADB
+	// Don't write to VIA in InitADB. The spin being removed is the state-3 wait
+	// at $SM/OS/ADBMgr/ADBMgrPatch.a:159-174 (movea.l VIA,a1 / move.b vBufB(a1),d0
+	// / andi.b #$30,d0 / cmpi.b #$30,d0 / bne.s @wait). InitADB itself is
+	// $SM/OS/ADBMgr/ADBMgr.a, called at StartInit.a:1765.
 	wp = (uint16 *)(ROMBaseHost + 0xa8a8);
 	if (*wp == 0) {		// ROM22/23/26/27/32
+		// move.b #$84,$1C00(a0) / rts -- the VIA write and its return.
+		static const uint8 adb1_dat[] = {0x11, 0x7c, 0x00, 0x84, 0x1c, 0x00, 0x4e, 0x75};
+		// and.b (a1),d1 / cmpi.b #$30,d1 / bne.s -- the state-3 test from
+		// $SM/OS/ADBMgr/ADBMgrPatch.a:166-174.
+		static const uint8 adb2_dat[] = {0xc2, 0x11, 0x0c, 0x01, 0x00, 0x30, 0x66};
+		if (!verify_rom_bytes("InitADB VIA wait (ROM22+)", 0xb2c6a, adb1_dat, sizeof(adb1_dat)) ||
+		    !verify_rom_bytes("InitADB state wait (ROM22+)", 0xb2d2e, adb2_dat, sizeof(adb2_dat))) {
+			log_patch("InitADB VIA wait (ROM22+)", "$SM/OS/ADBMgr/ADBMgrPatch.a:166", 0, true);
+			return false;
+		}
+		log_patch("InitADB VIA wait (ROM22+)", "$SM/OS/ADBMgr/ADBMgrPatch.a:166", 0xb2c6a, true);
 		wp = (uint16 *)(ROMBaseHost + 0xb2c6a);
 		*wp++ = htons(M68K_NOP);
 		*wp++ = htons(M68K_NOP);
@@ -1340,6 +1890,7 @@ static bool patch_rom_32(void)
 		*wp++ = htons(M68K_NOP);
 		*wp = htons(M68K_NOP);
 	} else {
+		log_patch("InitADB VIA wait", "$SM/OS/ADBMgr/ADBMgr.a", 0xa8a8, true);
 		*wp++ = htons(M68K_NOP);
 		*wp++ = htons(M68K_NOP);
 		*wp = htons(M68K_NOP);
@@ -1355,7 +1906,8 @@ static bool patch_rom_32(void)
 	}
 
 	// Don't EnableSlotInts
-	if ((base = find_rom_data(0x2ee, 0x2f2, lea_dat, sizeof(lea_dat))) == 0) return false;
+	base = find_rom_data(0x2ee, 0x2f2, lea_dat, sizeof(lea_dat));
+	if (log_patch("EnableSlotInts", "$SM/OS/InterruptHandlers.a:612", base, true) == 0) return false;
 	D(bug("enable_slot_ints %08lx\n", base));
 	wp = (uint16 *)(ROMBaseHost + base);
 	*wp++ = htons(M68K_NOP);
@@ -1364,17 +1916,26 @@ static bool patch_rom_32(void)
 	*wp++ = htons(M68K_NOP);
 	*wp = htons(M68K_NOP);
 
-	// Don't mangle frame buffer base (GetDevBase)
+	// Don't mangle frame buffer base (GetDevBase). Video sResources and the
+	// built-in video drivers are $SM/DeclData/DeclVideo/.
+	// andi.l #$00FFFFFF,d1 -- the 24-bit strip applied to the frame buffer base.
+	static const uint8 devbase_dat[] = {0x02, 0x81, 0x00, 0xff, 0xff, 0xff};
+	if (!verify_rom_bytes("GetDevBase", 0x5b78, devbase_dat, sizeof(devbase_dat))) {
+		log_patch("GetDevBase", "$SM/DeclData/DeclVideo/", 0, true);
+		return false;
+	}
 	wp = (uint16 *)(ROMBaseHost + 0x5b78);
 	*wp++ = htons(M68K_NOP);
 	*wp++ = htons(M68K_NOP);
 	*wp++ = htons(0x2401);		// move.l	d1,d2
 	*wp = htons(0x605e);		// bra		0x40805bde
+	log_patch("GetDevBase", "$SM/DeclData/DeclVideo/", 0x5b78, true);
 
 	// Really don't mangle frame buffer base
 	if (ROMSize > 0x80000) {
 		static const uint8 frame_base_dat[] = {0x22, 0x78, 0x0d, 0xd8, 0xd3, 0xe9, 0x00, 0x08};
 		base = find_rom_data(0x8c000, 0x8d000, frame_base_dat, sizeof(frame_base_dat));
+		log_patch("GetDevBase (ROM22+)", "$SM/DeclData/DeclVideo/", base, false);
 		D(bug("frame_base %08lx\n", base));
 		if (base) {		// ROM22/23/26/27/32
 			wp = (uint16 *)(ROMBaseHost + base);
@@ -1385,7 +1946,8 @@ static bool patch_rom_32(void)
 
 	// Don't write to VIA2
 	static const uint8 via2_dat[] = {0x20, 0x78, 0x0c, 0xec, 0x11, 0x7c, 0x00, 0x90};
-	if ((base = find_rom_data(0xa000, 0xa400, via2_dat, sizeof(via2_dat))) == 0) return false;
+	base = find_rom_data(0xa000, 0xa400, via2_dat, sizeof(via2_dat));
+	if (log_patch("VIA2 write", "$SM/Internal/Asm/HardwarePrivateEqu.a", base, true) == 0) return false;
 	D(bug("via2 %08lx\n", base));
 	wp = (uint16 *)(ROMBaseHost + base + 4);
 	*wp = htons(M68K_RTS);
@@ -1393,6 +1955,7 @@ static bool patch_rom_32(void)
 	// Don't write to VIA2, even on ROM20
 	static const uint8 via2b_dat[] = {0x20, 0x78, 0x0c, 0xec, 0x11, 0x7c, 0x00, 0x90, 0x00, 0x13, 0x4e, 0x75};
 	base = find_rom_data(0x40000, 0x44000, via2b_dat, sizeof(via2b_dat));
+	log_patch("VIA2 write (ROM19/20)", "$SM/Internal/Asm/HardwarePrivateEqu.a", base, false);
 	D(bug("via2b %08lx\n", base));
 	if (base) {		// ROM19/20
 		wp = (uint16 *)(ROMBaseHost + base + 4);
@@ -1402,9 +1965,10 @@ static bool patch_rom_32(void)
 	// Don't use PTEST instruction on 68040/060
 	if (ROMSize > 0x80000) {
 
-		// BlockMove()
+		// BlockMove() — NOP PTEST/cpusha tail; trap 0xA02E is replaced by EMUL_OP below.
 		static const uint8 ptest_dat[] = {0xa0, 0x8d, 0x0c, 0x81, 0x00, 0x00, 0x0c, 0x00, 0x6d, 0x06, 0x4e, 0x71, 0xf4, 0xf8};
 		base = find_rom_data(0x87000, 0x87800, ptest_dat, sizeof(ptest_dat));
+		log_patch("BlockMove PTEST", "$SM/OS/MemoryMgr/BlockMove.a:435", base, false);
 		D(bug("ptest %08lx\n", base));
 		if (base) {		// ROM15/22/23/26/27/32
 			wp = (uint16 *)(ROMBaseHost + base + 8);
@@ -1417,6 +1981,7 @@ static bool patch_rom_32(void)
 	if(FPUType==1) {
 		static const uint8 ptest2_dat[] = {0x0c, 0x38, 0x00, 0x04, 0x01, 0x2f, 0x6d, 0x54, 0x48, 0xe7, 0xf8, 0x60};
 		base = find_rom_data(0, ROMSize, ptest2_dat, sizeof(ptest2_dat));
+		log_patch("SANE PTEST", "$SM/Toolbox/SANE/", base, false);
 		D(bug("ptest2 %08lx\n", base));
 		if (base) {		// ROM15/20/22/23/26/27/32
 			wp = (uint16 *)(ROMBaseHost + base + 8);
@@ -1433,6 +1998,7 @@ static bool patch_rom_32(void)
 	// Don't set MemoryDispatch() to unimplemented trap
 	static const uint8 memdisp_dat[] = {0x30, 0x3c, 0xa8, 0x9f, 0xa7, 0x46, 0x30, 0x3c, 0xa0, 0x5c, 0xa2, 0x47};
 	base = find_rom_data(0x4f100, 0x4f180, memdisp_dat, sizeof(memdisp_dat));
+	log_patch("MemoryDispatch", "$SM/OS/MemoryMgr/MemoryMgrExtensions.a", base, false);
 	D(bug("memdisp %08lx\n", base));
 	if (base) {	// ROM15/22/23/26/27/32
 		wp = (uint16 *)(ROMBaseHost + base + 10);
@@ -1440,10 +2006,11 @@ static bool patch_rom_32(void)
 	}
 
 	// Patch .EDisk driver (don't scan for EDisks in the area ROMBase..0xe00000)
-	uint32 edisk_offset = find_rom_resource('DRVR', 51);
+	uint32 edisk_offset = locate_rom_resource('DRVR', 51, ".EDisk driver (DRVR 51)", "$SM/Drivers/EDisk/EDiskDriver.a", false);
 	if (edisk_offset) {
 		static const uint8 edisk_dat[] = {0xd5, 0xfc, 0x00, 0x01, 0x00, 0x00, 0xb5, 0xfc, 0x00, 0xe0, 0x00, 0x00};
 		base = find_rom_data(edisk_offset, edisk_offset + 0x10000, edisk_dat, sizeof(edisk_dat));
+		log_patch(".EDisk ROM scan limit", "$SM/Drivers/EDisk/EDiskDriver.a", base, false);
 		D(bug("edisk %08lx\n", base));
 		if (base) {
 			wp = (uint16 *)(ROMBaseHost + base + 8);
@@ -1452,8 +2019,18 @@ static bool patch_rom_32(void)
 		}
 	}
 
-	// Replace .Sony driver
-	sony_offset = find_rom_resource('DRVR', 4);
+	// Replace .Sony driver. Real driver: $SM/Drivers/Sony/Sony.a (DiskOpen :253,
+	// DiskPrime jump table :199, CtlTbl :495).
+	sony_offset = locate_rom_resource('DRVR', 4, ".Sony driver (DRVR 4)", "$SM/Drivers/Sony/Sony.a", true);
+	if (sony_offset == 0) return false;
+	// Everything below treats the .Sony resource as scratch space out to +0xc10
+	// (.Disk driver, icons, vCheckLoad stub, PutScrap trampoline). Refuse rather
+	// than run off the end of the image.
+	if (sony_offset + 0xc10 > ROMSize) {
+		printf("[ROM-PATCH] .Sony driver at %06x leaves too little room (need 0xc10, ROM is %06x)\n",
+		       sony_offset, ROMSize);
+		return false;
+	}
 	D(bug("sony %08lx\n", sony_offset));
 	memcpy(ROMBaseHost + sony_offset, sony_driver, sizeof(sony_driver));
 
@@ -1473,7 +2050,10 @@ static bool patch_rom_32(void)
 
 	// Install SERD patch and serial drivers
 	if (!PrefsFindBool("ltoudp")) {
-		serd_offset = find_rom_resource('SERD', 0);
+		// No SuperMario source: the serial driver ships as Serial.rsrc
+		// (see docs/rom-patches-vs-supermario.md section 6).
+		serd_offset = locate_rom_resource('SERD', 0, "SERD 0 + serial drivers", NULL, true);
+		if (serd_offset == 0) return false;
 		D(bug("serd %08lx\n", serd_offset));
 		wp = (uint16 *)(ROMBaseHost + serd_offset + 12);
 		*wp++ = htons(M68K_EMUL_OP_SERD);
@@ -1484,38 +2064,81 @@ static bool patch_rom_32(void)
 		memcpy(ROMBaseHost + serd_offset + 0x400, bout_driver, sizeof(bout_driver));
 	}
 
-	// Replace ADBOp()
-	memcpy(ROMBaseHost + find_rom_trap(0xa07c), adbop_patch, sizeof(adbop_patch));
-
-	// Replace Time Manager (the Microseconds patch is activated in InstallDrivers())
-	wp = (uint16 *)(ROMBaseHost + find_rom_trap(0xa058));
+	// Replace Time Manager (the Microseconds patch is activated in InstallDrivers()).
+	// Trap wiring $SM/OS/DispTable.a; bodies $SM/OS/TimeMgr/TimeMgr.a. The
+	// sr save / ori #$0700,sr wrapper mirrors what Apple's own Time Manager
+	// swap does ($SM/OS/TimeMgr/TimeMgrPatch.a:186-187).
+	// Stays a ROM patch: InsTime is called before InstallDrivers() runs, so the
+	// trap table is not ours to change yet. RmvTime and PrimeTime are only used
+	// later, but they stay here with InsTime -- splitting the Time Manager across
+	// two installation mechanisms buys nothing and is harder to reason about.
+	uint32 trap_instime = require_rom_trap(0xa058, "InsTime ($A058)", "$SM/OS/TimeMgr/TimeMgr.a");
+	if (trap_instime == 0) return false;
+	wp = (uint16 *)(ROMBaseHost + trap_instime);
 	*wp++ = htons(M68K_EMUL_OP_INSTIME);
 	*wp = htons(M68K_RTS);
-	wp = (uint16 *)(ROMBaseHost + find_rom_trap(0xa059));
+	uint32 trap_rmvtime = require_rom_trap(0xa059, "RmvTime ($A059)", "$SM/OS/TimeMgr/TimeMgr.a");
+	if (trap_rmvtime == 0) return false;
+	wp = (uint16 *)(ROMBaseHost + trap_rmvtime);
 	*wp++ = htons(0x40e7);		// move	sr,-(sp)
 	*wp++ = htons(0x007c);		// ori	#$0700,sr
 	*wp++ = htons(0x0700);
 	*wp++ = htons(M68K_EMUL_OP_RMVTIME);
 	*wp++ = htons(0x46df);		// move	(sp)+,sr
 	*wp = htons(M68K_RTS);
-	wp = (uint16 *)(ROMBaseHost + find_rom_trap(0xa05a));
+	uint32 trap_primetime = require_rom_trap(0xa05a, "PrimeTime ($A05A)", "$SM/OS/TimeMgr/TimeMgr.a:482");
+	if (trap_primetime == 0) return false;
+	wp = (uint16 *)(ROMBaseHost + trap_primetime);
 	*wp++ = htons(0x40e7);		// move	sr,-(sp)
 	*wp++ = htons(0x007c);		// ori	#$0700,sr
 	*wp++ = htons(0x0700);
 	*wp++ = htons(M68K_EMUL_OP_PRIMETIME);
 	*wp++ = htons(0x46df);		// move	(sp)+,sr
-	*wp++ = htons(M68K_RTS);
-	microseconds_offset = (uint8 *)wp - ROMBaseHost;
-	*wp++ = htons(M68K_EMUL_OP_MICROSECONDS);
 	*wp = htons(M68K_RTS);
+	// Microseconds ($A093) is not patched into the ROM at all: it is installed
+	// at runtime through _SetTrapAddress from a System-heap stub, which is how
+	// Apple installs it too ($SM/OS/TimeMgr/TimeMgrPatch.a:159-161). See
+	// InstallRuntimeTraps().
 
-	// Replace SCSIDispatch()
-	wp = (uint16 *)(ROMBaseHost + find_rom_trap(0xa815));
+	// Replace SCSIDispatch() ($A815). $SM/OS/DispTable.a:377
+	// "ToolBox $015,SCSIDispatchCommon"; body $SM/OS/SCSIMgr/SCSILinkPatch.a:221.
+	// Stays a ROM patch: the boot blocks are read over SCSI before
+	// InstallDrivers() runs.
+	uint32 trap_scsi = require_rom_trap(0xa815, "SCSIDispatch ($A815)", "$SM/OS/SCSIMgr/SCSILinkPatch.a:221");
+	if (trap_scsi == 0) return false;
+	wp = (uint16 *)(ROMBaseHost + trap_scsi);
 	*wp++ = htons(M68K_EMUL_OP_SCSI_DISPATCH);
 	*wp++ = htons(0x2e49);		// move.l	a1,a7
 	*wp = htons(M68K_JMP_A0);
 
-	// Modify vCheckLoad() so we can patch resources
+	// Modify vCheckLoad() so we can patch resources.
+	//
+	// Stays a ROM patch, deliberately. Apple's own way to hook the resource
+	// loader is the jCheckLoad vector at $07F0
+	// ($SM/Interfaces/AIncludes/Private.a:386; install idiom
+	// $SM/Patches/BeforePatches.a:690-697), and this hook does call through it --
+	// but it must not be *installed* into it.
+	//
+	// $07F0 is a stack that later installers push onto: each one saves the old
+	// value and chains in front, Apple's decompressor included. A Quadra 800
+	// boot re-hooks it three times (calls 72, 109 and 228 of 3105). We patch
+	// resource contents, so we have to see what every other hook has finished
+	// with -- which means being entered first and calling the whole chain with
+	// jsr before running EMUL_OP_CHECKLOAD. 0x1b8f4 is the ROM's own CheckLoad
+	// entry, ahead of the vector read, so patching it here is the only place
+	// that position is guaranteed. Installing into $07F0 instead would put us
+	// inside those three System hooks, and the audio component patches
+	// ('thng'/'sift' -16563 -- all host sound) arrive on calls 549 and 550.
+	//
+	// See docs/rom-patches-vs-supermario.md section 3.1 for the measurements.
+	//
+	// movea.l $07F0,a0 / jmp (a0) -- $SM/Toolbox/ResourceMgr/ResourceMgr.a:4562.
+	static const uint8 checkload_dat[] = {0x20, 0x78, 0x07, 0xf0, 0x4e, 0xd0};
+	if (!verify_rom_bytes("vCheckLoad hook", 0x1b8f4, checkload_dat, sizeof(checkload_dat))) {
+		log_patch("vCheckLoad hook", "$SM/Patches/BeforePatches.a:690", 0, true);
+		return false;
+	}
+	log_patch("vCheckLoad hook", "$SM/Patches/BeforePatches.a:690", 0x1b8f4, true);
 	wp = (uint16 *)(ROMBaseHost + 0x1b8f4);
 	*wp++ = htons(M68K_JMP);
 	*wp++ = htons((ROMBaseMac + sony_offset + 0x300) >> 16);
@@ -1529,13 +2152,11 @@ static bool patch_rom_32(void)
 	*wp++ = htons(M68K_EMUL_OP_CHECKLOAD);
 	*wp = htons(M68K_RTS);
 
-	// Patch PowerOff()
-	wp = (uint16 *)(ROMBaseHost + find_rom_trap(0xa05b));	// PowerOff()
-	*wp = htons(M68K_EMUL_OP_SHUTDOWN);
-
 	// Install PutScrap() patch for clipboard data exchange (the patch is activated by EMUL_OP_INSTALL_DRIVERS)
+	uint32 trap_putscrap = require_rom_trap(0xa9fe, "PutScrap ($A9FE)", "$SM/Toolbox/ScrapMgr/");
+	if (trap_putscrap == 0) return false;
 	PutScrapPatch = ROMBaseMac + sony_offset + 0xc00;
-	base = ROMBaseMac + find_rom_trap(0xa9fe);
+	base = ROMBaseMac + trap_putscrap;
 	wp = (uint16 *)(ROMBaseHost + sony_offset + 0xc00);
 	*wp++ = htons(M68K_EMUL_OP_PUT_SCRAP);
 	*wp++ = htons(M68K_JMP);
@@ -1543,37 +2164,70 @@ static bool patch_rom_32(void)
 	*wp = htons(base & 0xffff);
 
 #if EMULATED_68K
-	// Replace BlockMove()
-	wp = (uint16 *)(ROMBaseHost + find_rom_trap(0xa02e));	// BlockMove()
+	// Replace BlockMove() ($A02E). $SM/OS/MemoryMgr/BlockMove.a
+	// Stays a ROM patch: BlockMove is the first replaced trap the machine calls,
+	// long before InstallDrivers().
+	uint32 trap_blockmove = require_rom_trap(0xa02e, "BlockMove ($A02E)", "$SM/OS/MemoryMgr/BlockMove.a");
+	if (trap_blockmove == 0) return false;
+	wp = (uint16 *)(ROMBaseHost + trap_blockmove);	// BlockMove()
 	*wp++ = htons(M68K_EMUL_OP_BLOCK_MOVE);
 	*wp++ = htons(0x7000);
 	*wp = htons(M68K_RTS);
 #endif
 
-	// Look for double PACK 4 resources
-	if ((base = find_rom_resource('PACK', 4)) == 0) return false;
+	// Look for double PACK 4 resources (SANE; $SM/Resources/RomResources.r
+	// 'rrsc' 120/130/140)
+	base = locate_rom_resource('PACK', 4, "PACK 4 (SANE)", "$SM/Resources/RomResources.r", true);
+	if (base == 0) return false;
 	if ((base = find_rom_resource('PACK', 4, true)) == 0 && FPUType == 0)
 		printf("WARNING: This ROM seems to require an FPU\n");
 
-	// Patch VIA interrupt handler
+	// Pin the level-1 secondary dispatcher to the VBL slot.
+	//
+	// Level1Via1Int ($SM/OS/InterruptHandlers.a:1558) builds a mask of pending,
+	// enabled VIA1 sources and indexes Via1DT == Lvl1DT ($192) with it:
+	// jOneSecInt = +4*ifCA2, jVBLInt = +4*ifCA1, jKbdAdbInt = +4*ifSR
+	// ($SM/OS/InterruptHandlers.a:489-496, ifCA2/ifCA1/ifSR = 0/1/2 in
+	// $SM/Interfaces/AIncludes/HardwareEqu.a:374-376).
+	//
+	// This stays a ROM patch, and the reason is worth stating: Cockatrice has no
+	// VIA1 at all. The "and.b $1A00(a1),d0 / and.b $1C00(a1),d0" below reads IFR
+	// and IER out of dummy memory, so the mask it computes is meaningless. The
+	// forced value 2 is the mask for bit 1 = ifCA1, i.e. "VBL pending", which is
+	// how the dispatcher is made to reach jVBLInt every time.
+	//
+	// The cost is that the other slots are never selected, so the ROM's
+	// one-second and ADB shift-register handlers never run. That is survivable
+	// only because the host does their work instead -- Time ($020C) is refreshed
+	// once a second by one_tickbbbb() in SDL/main_sdl.cpp, and ADBInterrupt()
+	// runs from M68K_EMUL_OP_IRQ on every tick. Restoring genuine per-slot
+	// dispatch means emulating the VIA1 IFR/IER first; see
+	// docs/rom-patches-vs-supermario.md section 3.2.
+	//
+	// moveq #$7F,d0 / and.b $1A00(a1),d0 / and.b $1C00(a1),d0
+	static const uint8 lvl1_dat[] = {0x70, 0x7f, 0xc0, 0x29, 0x1a, 0x00, 0xc0, 0x29, 0x1c, 0x00};
+	if (!verify_rom_bytes("VIA level-1 dispatcher", 0x9bc4, lvl1_dat, sizeof(lvl1_dat))) {
+		log_patch("VIA level-1 dispatcher", "$SM/OS/InterruptHandlers.a:1558", 0, true);
+		return false;
+	}
+	log_patch("VIA level-1 dispatcher", "$SM/OS/InterruptHandlers.a:1558", 0x9bc4, true);
 	wp = (uint16 *)(ROMBaseHost + 0x9bc4);	// Level 1 handler
-	*wp++ = htons(0x7002);		// moveq	#2,d0 (always 60Hz interrupt)
+	*wp++ = htons(0x7002);		// moveq	#2,d0 (mask for ifCA1: VBL pending)
 	*wp++ = htons(M68K_NOP);
 	*wp++ = htons(M68K_NOP);
 	*wp++ = htons(M68K_NOP);
 	*wp = htons(M68K_NOP);
 
-	wp = (uint16 *)(ROMBaseHost + 0xa296);	// 60Hz handler (handles everything)
-	*wp++ = htons(M68K_NOP);
-	*wp++ = htons(M68K_NOP);
-	*wp++ = htons(M68K_EMUL_OP_IRQ);
-	*wp++ = htons(0x4a80);		// tst.l	d0
-	*wp = htons(0x67f4);		// beq		0x4080a294
+	// The VBL handler itself is no longer patched here: InstallVBLHandler()
+	// installs ours into the jVBLInt vector at runtime instead.
 	return true;
 }
 
 bool PatchROM(void)
 {
+	// Start a fresh patch log; GetPatchLog() always describes one pass.
+	patch_log.clear();
+
 	// Print some information about the ROM
 	if (PrintROMInfo)
 		print_rom_info();

@@ -81,6 +81,17 @@ BasiliskII/OSX64/CockatriceIII_Prefs
 BasiliskII/OSX64/CockatriceIII
 BasiliskII/OSX64/BasiliskII
 BasiliskII/OSX64/CockatriceIII_XPRAM
-**/obj/ 
+**/obj/
 **/.DS_Store
 BasiliskII/mingw/.cross-win/
+BasiliskII/OSX64/deps/
+dist/dependencies/osx/.build/
+
+# Committed Intel SDL prefix (dylibs are ignored globally above).
+!dist/dependencies/osx/intel/
+!dist/dependencies/osx/intel/**
+!dist/dependencies/osx/intel/**/*.dylib
+!dist/dependencies/osx/intel/**/*.a
+
+# Rust build artifacts
+target/

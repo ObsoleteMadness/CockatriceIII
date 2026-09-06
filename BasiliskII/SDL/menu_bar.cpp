@@ -25,6 +25,10 @@
 #include "prefs.h"
 #include "user_strings.h"
 #include "menu_bar.h"
+#include "toolbox_traps.h"
+#include "toolbox_menu.h"
+#include "toolbox_window.h"
+#include "video.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -70,6 +74,19 @@ void MenuQueue_Post(const MenuCmd *cmd)
  */
 void MenuQueue_Drain(void)
 {
+    /* The Toolbox integration's periodic work. None of it is a trap hook, so
+       the master switch is checked here as well as inside each entry point:
+       with toolbox_hooks false the guest must run exactly as it would with none
+       of this compiled in. Both clients do their real work from the jGNEFilter
+       safe point, so that goes in even when window mirroring is off. */
+    if (ToolboxTrap_HooksEnabled()) {
+        Toolbox_EnableSafePoint();
+        Toolbox_ProcessPendingMenuBarSync();
+        Toolbox_ProcessPendingWindowSync();
+    }
+    if (Toolbox_ScreenResizePending())
+        Toolbox_EnableSafePoint();
+
     while (s_tail != s_head) {
         MenuCmd cmd = s_queue[s_tail];
         __sync_synchronize();
@@ -129,6 +146,49 @@ void MenuQueue_Drain(void)
             MenuBar_UpdateAll();
             break;
 
+        case MENU_CMD_GUEST_MENU_SELECT:
+            printf("MenuQueue: Guest Menu Selected (MenuID=%d, ItemIndex=%d)\n", cmd.param, cmd.param2);
+            fflush(stdout);
+            Toolbox_DispatchGuestMenuSelect((int16)cmd.param, (int16)cmd.param2);
+            break;
+
+        case MENU_CMD_GUEST_WINDOW_CLOSE:
+            printf("MenuQueue: Guest Window Close (WindowPtr=0x%08X)\n", (unsigned)cmd.param);
+            fflush(stdout);
+            Toolbox_DispatchGuestWindowClose((uint32)cmd.param);
+            break;
+
+        case MENU_CMD_GUEST_DIALOG_CLICK:
+            printf("MenuQueue: Guest Dialog Click (WindowPtr=0x%08X, item=%d)\n",
+                   (unsigned)cmd.param, cmd.param2);
+            fflush(stdout);
+            Toolbox_ClickDialogItem((uint32)cmd.param, cmd.param2);
+            break;
+
+        case MENU_CMD_GUEST_WINDOW_SELECT:
+            Toolbox_SelectGuestWindow((uint32)cmd.param);
+            break;
+
+        case MENU_CMD_GUEST_WINDOW_RESIZE:
+            Toolbox_ResizeGuestWindow((uint32)cmd.param, (int16)cmd.param2, (int16)cmd.param3);
+            break;
+
+        case MENU_CMD_GUEST_WINDOW_MOVE:
+            Toolbox_MoveGuestWindow((uint32)cmd.param, (int16)cmd.param2, (int16)cmd.param3);
+            break;
+
+        case MENU_CMD_GUEST_INPUT:
+            Toolbox_ForwardGuestInput((uint32)cmd.param, cmd.param2,
+                                      (int16)cmd.param3, (int16)cmd.param4, cmd.param5);
+            break;
+
+        case MENU_CMD_SET_VIDEO_MODE:
+            printf("MenuQueue: Set Video Mode %dx%d\n", cmd.param, cmd.param2);
+            fflush(stdout);
+            // Queue only: the jGNEFilter safe point calls cscSwitchMode
+            Toolbox_NotifyScreenResized((int16)cmd.param, (int16)cmd.param2);
+            break;
+
         default:
             break;
         }
@@ -138,33 +198,131 @@ void MenuQueue_Drain(void)
 void MenuQueue_Reset(void)
 {
     s_tail = s_head;
+
+    /* Every WindowPtr the mirror is holding points into a heap that the
+       reset has just thrown away, so the host windows must go too. */
+    ToolboxWindow_Reset();
 }
 
 /* =========================================================================
  *  MenuAction_*  [UI thread — build and post commands]
  * ====================================================================== */
 
+void MenuAction_GuestMenuSelect(int menuID, int itemIndex)
+{
+    MenuCmd cmd;
+    cmd.type   = MENU_CMD_GUEST_MENU_SELECT;
+    cmd.param  = menuID;
+    cmd.param2 = itemIndex;
+    cmd.path[0] = '\0';
+    MenuQueue_Post(&cmd);
+}
+
+void MenuAction_GuestWindowClose(int windowPtr)
+{
+    MenuCmd cmd;
+    cmd.type   = MENU_CMD_GUEST_WINDOW_CLOSE;
+    cmd.param  = windowPtr;
+    cmd.param2 = 0;
+    cmd.path[0] = '\0';
+    MenuQueue_Post(&cmd);
+}
+
+void MenuAction_GuestDialogClick(int windowPtr, int itemIndex)
+{
+    MenuCmd cmd;
+    cmd.type   = MENU_CMD_GUEST_DIALOG_CLICK;
+    cmd.param  = windowPtr;
+    cmd.param2 = itemIndex;
+    cmd.path[0] = '\0';
+    MenuQueue_Post(&cmd);
+}
+
+void MenuAction_GuestWindowSelect(int windowPtr)
+{
+    MenuCmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type  = MENU_CMD_GUEST_WINDOW_SELECT;
+    cmd.param = windowPtr;
+    MenuQueue_Post(&cmd);
+}
+
+void MenuAction_GuestWindowResize(int windowPtr, int w, int h)
+{
+    MenuCmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type   = MENU_CMD_GUEST_WINDOW_RESIZE;
+    cmd.param  = windowPtr;
+    cmd.param2 = w;
+    cmd.param3 = h;
+    MenuQueue_Post(&cmd);
+}
+
+void MenuAction_GuestWindowMove(int windowPtr, int x, int y)
+{
+    MenuCmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type   = MENU_CMD_GUEST_WINDOW_MOVE;
+    cmd.param  = windowPtr;
+    cmd.param2 = x;
+    cmd.param3 = y;
+    MenuQueue_Post(&cmd);
+}
+
+void MenuAction_GuestInput(int windowPtr, int kind, int x, int y, int code)
+{
+    MenuCmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type   = MENU_CMD_GUEST_INPUT;
+    cmd.param  = windowPtr;
+    cmd.param2 = kind;
+    cmd.param3 = x;
+    cmd.param4 = y;
+    cmd.param5 = code;
+    MenuQueue_Post(&cmd);
+}
+
+void MenuAction_SetVideoMode(int width, int height)
+{
+    MenuCmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type   = MENU_CMD_SET_VIDEO_MODE;
+    cmd.param  = width;
+    cmd.param2 = height;
+    MenuQueue_Post(&cmd);
+}
+
+int Menu_VideoPresetCount(void)
+{
+    return Video_PresetCount();
+}
+
+bool Menu_VideoPresetAt(int index, int *width, int *height)
+{
+    return Video_GetPreset(index, width, height);
+}
+
 void MenuAction_SaveConfig(void)
 {
-    MenuCmd cmd = {MENU_CMD_SAVE_CONFIG, 0, ""};
+    MenuCmd cmd = {MENU_CMD_SAVE_CONFIG, 0, 0, 0, 0, 0, ""};
     MenuQueue_Post(&cmd);
 }
 
 void MenuAction_ZapPRAM(void)
 {
-    MenuCmd cmd = {MENU_CMD_ZAP_PRAM, 0, ""};
+    MenuCmd cmd = {MENU_CMD_ZAP_PRAM, 0, 0, 0, 0, 0, ""};
     MenuQueue_Post(&cmd);
 }
 
 void MenuAction_ResetMachine(void)
 {
-    MenuCmd cmd = {MENU_CMD_RESET, 0, ""};
+    MenuCmd cmd = {MENU_CMD_RESET, 0, 0, 0, 0, 0, ""};
     MenuQueue_Post(&cmd);
 }
 
 void MenuAction_Shutdown(void)
 {
-    MenuCmd cmd = {MENU_CMD_SHUTDOWN, 0, ""};
+    MenuCmd cmd = {MENU_CMD_SHUTDOWN, 0, 0, 0, 0, 0, ""};
     MenuQueue_Post(&cmd);
 }
 
@@ -216,8 +374,9 @@ void MenuAction_AttachSCSI(int id)
         return;
 
     MenuCmd cmd;
-    cmd.type  = MENU_CMD_ATTACH_SCSI;
-    cmd.param = id;
+    cmd.type   = MENU_CMD_ATTACH_SCSI;
+    cmd.param  = id;
+    cmd.param2 = 0;
     strncpy(cmd.path, path, MENU_CMD_PATH_MAX - 1);
     cmd.path[MENU_CMD_PATH_MAX - 1] = '\0';
     MenuQueue_Post(&cmd);
@@ -227,6 +386,6 @@ void MenuAction_DetachSCSI(int id)
 {
     if (id < 0 || id > 6)
         return;
-    MenuCmd cmd = {MENU_CMD_DETACH_SCSI, id, ""};
+    MenuCmd cmd = {MENU_CMD_DETACH_SCSI, id, 0, 0, 0, 0, ""};
     MenuQueue_Post(&cmd);
 }

@@ -1,0 +1,11 @@
+Cockatrice III committed x86_64 SDL prefix
+built: 2026-09-06T13:31:04Z
+host: arm64 26.6.1
+formulae:
+  sdl3 3.4.16
+  sdl2-compat 2.32.72
+  sdl12-compat 1.2.76
+lipo:
+  Non-fat file: /Users/pete/Source/CockatriceIII/dist/dependencies/osx/intel/lib/libSDL-1.2.0.dylib is architecture: x86_64
+  Non-fat file: /Users/pete/Source/CockatriceIII/dist/dependencies/osx/intel/lib/libSDL2-2.0.0.dylib is architecture: x86_64
+  Non-fat file: /Users/pete/Source/CockatriceIII/dist/dependencies/osx/intel/lib/libSDL3.0.dylib is architecture: x86_64

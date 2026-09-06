@@ -71,7 +71,12 @@ extern void kprintf(const char *, ...);
 
 #endif
 
-#if DEBUG
+/*
+ * D(bug(...)) is compiled in when the translation unit sets DEBUG to a
+ * non-zero value, or when the build passes COCKATRICE_DEBUG (make debug).
+ * Per-file `#define DEBUG 0` would otherwise keep D() as a no-op even then.
+ */
+#if (defined(DEBUG) && DEBUG) || (defined(COCKATRICE_DEBUG) && COCKATRICE_DEBUG)
 #define D(x) (x);
 #else
 #define D(x) ;

@@ -31,7 +31,9 @@ extern int FPUType;
 // Flag: 24-bit-addressing?
 extern bool TwentyFourBitAddressing;
 
-// 68k register structure (for Execute68k())
+// Register file passed to Execute68k() / Execute68kTrap() (see cpu_emulation.h).
+// Callers supply and read back D0-D7 and A0-A6 only; a[7] and sr are unused on
+// that path — the live emulated stack pointer and status register are kept in the CPU.
 struct M68kRegisters {
 	uint32 d[8];
 	uint32 a[8];
