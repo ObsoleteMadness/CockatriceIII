@@ -247,7 +247,9 @@ int16 Video_GuestSwitchToSize(int width, int height);
 
 /*
  * Remembers a drag-resize size that is not in VideoPresets so
- * cscGetVideoParameters / DMSetDisplayMode can look up kCustomDisplayModeID.
+ * cscGetVideoParameters / DMSetDisplayMode can look it up. A new
+ * custom size gets a new DisplayModeID ($C0..) so cscSwitchMode does
+ * not treat 1024x1024 as the same mode as the previous 1024x512.
  *
  * Arguments:
  *   width, height: Pixel size to advertise for the one-shot custom mode.

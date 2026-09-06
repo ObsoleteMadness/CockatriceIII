@@ -35,7 +35,7 @@ starting at `$80` but they are different fields.
 | Field | Meaning | Values |
 |-------|---------|--------|
 | `csMode` | Apple depth (sResource) | `$80` 1-bit … `$85` 32-bit (`0x80 + VMODE_*`) |
-| `csData` | DisplayModeID | `$80` + preset index, or `$C0` for a one-shot custom size |
+| `csData` | DisplayModeID | `$80` + preset index, or `$C0`…`$CF` for a one-shot custom size |
 
 `cscSetMode` changes depth only. `cscSwitchMode` changes both. Status calls
 `cscGetMode` / `cscGetCurMode` / `cscGetNextResolution` / `cscGetVideoParameters`
@@ -59,9 +59,14 @@ That is what pre-7.6 `InitGDevice` and Display Manager re-read. The card
 reports `kModelessConnect` so DM uses `cscGetNextResolution` rather than a
 fixed sResource list.
 
-A drag-resize that is not in `VideoPresets` is registered as
-`kCustomDisplayModeID` (`$C0`) via `Video_RegisterGuestSize()` so
-`cscGetVideoParameters` and `DMSetDisplayMode` can look it up.
+A drag-resize uses the host window size as-is (clamped to 512×384 and
+the reserved desktop). Anything that is not in `VideoPresets` is
+registered as a one-shot custom DisplayModeID (`$C0`…`$CF`) via
+`Video_RegisterGuestSize()` so `cscGetVideoParameters` and
+`DMSetDisplayMode` can look it up — that is how 876×756, 1024×1024,
+or any other size works. Each new custom size gets a fresh id: `$C0`
+reused for two different sizes made `cscSwitchMode` treat the second
+drag as a no-op. The driver also compares pixel size, not just `csData`.
 
 ---
 

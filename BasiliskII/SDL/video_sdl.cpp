@@ -32,7 +32,8 @@ static int keycode_table[256];		// X keycode -> Mac keycode translation table
 static uint8 s_saved_palette[256 * 3];
 static bool s_have_palette = false;
 static bool s_in_mode_switch = false;
-// SDL_SetVideoMode posts VIDEORESIZE; swallow those so 1152x870 is not snapped to 1024
+// SDL_SetVideoMode posts VIDEORESIZE; swallow those so a menu/preset switch
+// is not immediately re-queued as a drag-resize of the same window.
 static int s_swallow_resize = 0;
 
 static const Uint32 kVideoSDLFlags = (SDL_SWSURFACE | SDL_HWPALETTE | SDL_RESIZABLE);
@@ -315,48 +316,6 @@ void set_video_monitor(int width, int height, int bytes_per_row, int mac_mode)
 	bytes_per_pixel = host_bytes_per_pixel(mac_mode);
 	MacFrameLayout = FLAYOUT_DIRECT;
 	printf("SDL_Video %dx%d mac-mode %d host %d-bit\n", width, height, mac_mode, depth);
-}
-
-/*
- * Returns the nearest power of two to v, used to snap a free-drag resize.
- *
- * Arguments:
- *   v: Requested dimension in pixels.
- *
- * Returns:
- *   The nearest power of two (1 if v is not positive).
- */
-static int nearest_pow2(int v)
-{
-	if (v <= 1)
-		return 1;
-	int lower = 1;
-	while ((lower << 1) > 0 && (lower << 1) <= v)
-		lower <<= 1;
-	int upper = lower << 1;
-	if (upper <= 0)
-		return lower;
-	return (v - lower <= upper - v) ? lower : upper;
-}
-
-/*
- * Snaps one axis of a host drag-resize to the nearest power of two, then clamps.
- *
- * Arguments:
- *   v: Requested dimension.
- *   lo, hi: Inclusive clamp range (VIDEO_MIN_* / VIDEO_MAX_*).
- *
- * Returns:
- *   The snapped, clamped size.
- */
-static int snap_resize_dim(int v, int lo, int hi)
-{
-	int snapped = nearest_pow2(v);
-	if (snapped < lo)
-		snapped = lo;
-	if (snapped > hi)
-		snapped = hi;
-	return snapped;
 }
 
 /*
@@ -682,13 +641,11 @@ int emul_suspended=0;
 			s_swallow_resize--;
 			break;
 		}
-		if ((uint32)event.resize.w == VideoMonitor.x &&
-		    (uint32)event.resize.h == VideoMonitor.y)
-			break;
-		int snap_w = snap_resize_dim(event.resize.w, VIDEO_MIN_WIDTH, Video_MaxWidth());
-		int snap_h = snap_resize_dim(event.resize.h, VIDEO_MIN_HEIGHT, Video_MaxHeight());
-		if ((uint32)snap_w != VideoMonitor.x || (uint32)snap_h != VideoMonitor.y)
-			Toolbox_NotifyScreenResized((int16)snap_w, (int16)snap_h);
+		int width = event.resize.w;
+		int height = event.resize.h;
+		clamp_mode_size(&width, &height);
+		if ((uint32)width != VideoMonitor.x || (uint32)height != VideoMonitor.y)
+			Toolbox_NotifyScreenResized((int16)width, (int16)height);
 		break;
 	}
 

@@ -27,7 +27,8 @@
  *  Resolution and depth switching:
  *    This driver follows Apple Video.h / Displays.h and the later Basilisk II
  *    slot driver. csMode is the Apple depth (sResource 0x80..0x85). csData is
- *    the DisplayModeID (0x80 + preset index). cscSetMode changes depth only;
+ *    the DisplayModeID (0x80 + preset index, or a one-shot custom id).
+ *    cscSetMode changes depth only;
  *    cscSwitchMode changes depth and resolution together. Status calls
  *    cscGetMode, cscGetCurMode, cscGetNextResolution and cscGetVideoParameters
  *    are what Display Manager walks. The connection type is kModelessConnect
@@ -114,8 +115,12 @@ static uint8 s_dce_slot_id = 0x80;
 static uint32 s_dce = 0;
 static uint32 s_cntrl_pb = 0;
 static uint32 s_switch_info = 0;
-// One-shot DisplayModeID for a drag-resize that is not in VideoPresets
+// One-shot DisplayModeID base for a drag-resize that is not in VideoPresets.
+// The live custom size is always this id or a later one in the same range so
+// a second free-drag (1024x512 → 1024x1024) is not the same csData as before.
 static const uint32 kCustomDisplayModeID = 0xC0;
+static const uint32 kLastCustomDisplayModeID = 0xCF;
+static uint32 s_custom_id = 0;
 static int s_custom_width = 0;
 static int s_custom_height = 0;
 
@@ -228,7 +233,7 @@ bool Video_GetPreset(int index, int *width, int *height)
  *   width, height: Pixel size to look up.
  *
  * Returns:
- *   0x80 + preset index, or 0 if the size is not in the table.
+ *   0x80 + preset index, the live custom DisplayModeID, or 0 if unknown.
  */
 uint32 Video_ResolutionIDForSize(int width, int height)
 {
@@ -237,24 +242,25 @@ uint32 Video_ResolutionIDForSize(int width, int height)
 			return kFirstAppleMode + (uint32)i;
 	}
 	// Drag-resize can land on a size that is not in the advertised table
-	if (s_custom_width == width && s_custom_height == height)
-		return kCustomDisplayModeID;
+	if (s_custom_id && s_custom_width == width && s_custom_height == height)
+		return s_custom_id;
 	return 0;
 }
 
 /*
- * Looks up a DisplayModeID from the preset table.
+ * Looks up a DisplayModeID from the preset table or the live custom size.
  *
  * Arguments:
- *   id: DisplayModeID as reported by cscGetNextResolution (0x80 + index).
+ *   id: DisplayModeID as reported by cscGetNextResolution (0x80 + index)
+ *       or the current custom id ($C0..).
  *   width, height: Optional out-parameters.
  *
  * Returns:
- *   true if id names a preset.
+ *   true if id names a known size.
  */
 bool Video_SizeForResolutionID(uint32 id, int *width, int *height)
 {
-	if (id == kCustomDisplayModeID && s_custom_width > 0 && s_custom_height > 0) {
+	if (s_custom_id && id == s_custom_id && s_custom_width > 0 && s_custom_height > 0) {
 		if (width)
 			*width = s_custom_width;
 		if (height)
@@ -325,20 +331,27 @@ uint32 Video_CurrentResolutionID(void)
 
 /*
  * Bytes per row for a given pixel width at an explicit VMODE_* depth.
+ *
+ * PixMap.rowBytes must be even (Inside Macintosh: Imaging). An odd guest
+ * width at 1/2/4/8-bit would otherwise produce an illegal pitch.
  */
 uint32 Video_BytesPerRowForMode(int width, int mode)
 {
 	if (width < 0)
 		width = 0;
+	uint32 row;
 	switch (mode) {
-		case VMODE_1BIT:  return (uint32)((width + 7) / 8);
-		case VMODE_2BIT:  return (uint32)((width + 3) / 4);
-		case VMODE_4BIT:  return (uint32)((width + 1) / 2);
-		case VMODE_8BIT:  return (uint32)width;
-		case VMODE_16BIT: return (uint32)width * 2;
-		case VMODE_32BIT: return (uint32)width * 4;
-		default:          return (uint32)width;
+		case VMODE_1BIT:  row = (uint32)((width + 7) / 8); break;
+		case VMODE_2BIT:  row = (uint32)((width + 3) / 4); break;
+		case VMODE_4BIT:  row = (uint32)((width + 1) / 2); break;
+		case VMODE_8BIT:  row = (uint32)width; break;
+		case VMODE_16BIT: row = (uint32)width * 2; break;
+		case VMODE_32BIT: row = (uint32)width * 4; break;
+		default:          row = (uint32)width; break;
 	}
+	if (row & 1)
+		row++;
+	return row;
 }
 
 /*
@@ -427,6 +440,7 @@ void Video_ResetForWarmStart(void)
 	s_slot_param = 0;
 	s_custom_width = 0;
 	s_custom_height = 0;
+	s_custom_id = 0;
 	s_dm_present = false;
 	s_current_id = kFirstAppleMode;
 	s_current_apple = Video_AppleModeForDepth(VMODE_8BIT);
@@ -498,7 +512,12 @@ uint32 Video_RegisterGuestSize(int width, int height)
 		return id;
 	s_custom_width = width;
 	s_custom_height = height;
-	return kCustomDisplayModeID;
+	// Bump csData so a second free-drag is not the same DisplayModeID.
+	if (s_custom_id < kCustomDisplayModeID || s_custom_id >= kLastCustomDisplayModeID)
+		s_custom_id = kCustomDisplayModeID;
+	else
+		s_custom_id++;
+	return s_custom_id;
 }
 
 /*
@@ -852,7 +871,11 @@ int16 VideoDriverControl(uint32 pb, uint32 dce)
 			} else if (!Video_SizeForResolutionID(id, &width, &height)) {
 				return paramErr;
 			}
-			if (apple != s_current_apple || id != s_current_id) {
+			// $C0 is reused for every non-preset drag-resize. 1024x512 and
+			// 1024x1024 share that id, so compare the pixel size too.
+			bool size_changed = (width != (int)VidLocal.desc->x ||
+			                     height != (int)VidLocal.desc->y);
+			if (apple != s_current_apple || id != s_current_id || size_changed) {
 				// Grey only on a depth change. A size-only switch left the
 				// host CLUT grey forever (InitGDevice does not SetEntries).
 				if (apple != s_current_apple)
