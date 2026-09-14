@@ -196,6 +196,11 @@ jobs:
             # CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER=cc then links the result
             # with this MINGW32 shell's own gcc, which is DWARF2-exception-based
             # like that std expects -- see the win32-x86 matrix comment above.
+            echo "HOME=$HOME"
+            echo "USERPROFILE(win)=$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null || true)"
+            ls -la "$HOME/.cargo/bin" 2>&1 || echo "no $HOME/.cargo/bin"
+            ls -la "/c/Users/runneradmin/.cargo/bin" 2>&1 || echo "no /c/Users/runneradmin/.cargo/bin"
+            find / -maxdepth 6 -iname "cargo.exe" 2>/dev/null
             export PATH="$HOME/.cargo/bin:$PATH"
             command -v cargo >/dev/null 2>&1 || { echo "::error::cargo not found on PATH after adding \$HOME/.cargo/bin"; exit 1; }
             EXTRA_MAKE_VARS="ENABLE_M68K_RS_CPU=1"
