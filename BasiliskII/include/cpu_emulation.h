@@ -67,7 +67,13 @@ extern uint32 ROMBaseMac;		// ROM base (Mac address space)
 extern uint8 *ROMBaseHost;		// ROM base (host address space)
 extern uint32 ROMSize;			// Size of ROM
 
-const uint32 MacFrameBaseMac = 0xa0000000;
+// NuBus super-slot $A address (0xa0000000) on every 64-bit host, where a 4GB
+// flat window is cheap. A 32-bit host (Win32/i686) can't reserve that much
+// VA, so there MacFrameBaseMac is instead computed at startup right after
+// RAM+ROM (see SDL/main_sdl.cpp) -- classic Mac OS discovers the framebuffer
+// from the declaration-ROM bytes video.cpp patches at runtime, not from a
+// fixed hardware address, so this is safe to relocate on that platform only.
+extern uint32 MacFrameBaseMac;
 extern uint8 *MacFrameBaseHost;	// Frame buffer base (host address space)
 extern uint32 MacFrameSize;		// Size of frame buffer
 extern int MacFrameLayout;		// Frame buffer layout (see defines below)

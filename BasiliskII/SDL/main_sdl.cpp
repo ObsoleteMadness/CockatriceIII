@@ -213,9 +213,25 @@ int main(int argc, char *argv[])
 		RAMSize = 1024*1024;
 	}
 
-	// Initialize unified 4GB flat memory window
+	// Initialize unified flat memory window
 	RAMBaseMac = 0;
+#if defined(_WIN32) && !defined(_WIN64)
+	/* A 32-bit process can't reserve a 4GB flat window (see memory.cpp's
+	 * memory_compute_window_size()), so lay RAM/ROM/framebuffer out
+	 * contiguously and dynamically instead of at their real hardware
+	 * addresses, matching upstream BasiliskII's DIRECT_ADDRESSING scheme.
+	 * Cap RAMSize well under what the window can hold -- classic Mac OS
+	 * itself never addresses anywhere near this much RAM anyway. */
+	/* Amiberry's UAE JIT bank table has a fixed SCC hole at 0x50000000 (see
+	 * amiberry_host.cpp); keep RAM+ROM+framebuffer safely below it. */
+	static const uint32 WIN32_MAX_RAMSIZE = 512 * 1024 * 1024; // 512MB
+	if (RAMSize > WIN32_MAX_RAMSIZE)
+		RAMSize = WIN32_MAX_RAMSIZE;
+	ROMBaseMac = RAMSize;
+	MacFrameBaseMac = ROMBaseMac + 0x00800000; // matches memory.cpp's 8MB ROM window
+#else
 	ROMBaseMac = 0x40800000;
+#endif
 	memory_init();
 	memset(ROMBaseHost, 0xAA, 0x100000);
 

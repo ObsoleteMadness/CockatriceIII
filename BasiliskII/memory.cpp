@@ -4,11 +4,22 @@
  *  Basilisk II (C) 1997-2008 Christian Bauer
  *  CockatriceIII Multi-Engine Architecture (C) 2026
  *
- *  Musashi, UAE, and m68k-rs share one 4GB virtual window
- *  (Host_Mem_Base) so Mac2HostAddr(addr) stays Host_Mem_Base + addr.
- *  Historic UAE kept the framebuffer and dummy NuBus slots out of the
- *  RAM translate; a RW-zero mmap of the whole 4GB made holes look like
- *  RAM (opcode 0x0000).
+ *  Musashi, UAE, and m68k-rs share one virtual window (Host_Mem_Base) so
+ *  Mac2HostAddr(addr) stays Host_Mem_Base + addr. On 64-bit hosts the window
+ *  covers the full 4GB Mac address space, with RAM/ROM/framebuffer at their
+ *  real hardware addresses (framebuffer at the NuBus slot-$A address
+ *  0xa0000000). Historic UAE kept the framebuffer and dummy NuBus slots out
+ *  of the RAM translate; a RW-zero mmap of the whole 4GB made holes look
+ *  like RAM (opcode 0x0000).
+ *
+ *  A 32-bit host (Win32/i686) cannot reserve 4GB: SIZE_T is 32-bit there, and
+ *  a 32-bit process doesn't have 4GB of free contiguous VA regardless. There,
+ *  RAM/ROM/framebuffer are instead laid out contiguously starting at Mac
+ *  address 0 (see SDL/main_sdl.cpp), matching upstream BasiliskII's
+ *  DIRECT_ADDRESSING scheme -- classic Mac OS discovers the framebuffer from
+ *  the declaration-ROM bytes video.cpp patches at runtime, not from a fixed
+ *  hardware address, so it doesn't need to sit at the real slot-$A address.
+ *  See memory_compute_window_size().
  *
  *  The window is reserved PROT_NONE / PAGE_NOACCESS (Wine/QEMU style)
  *  and only RAM, ROM, and the real framebuffer bytes are committed.
@@ -49,6 +60,15 @@
 // Global 4GB Flat Host Memory Window Base Pointer
 uint8 *Host_Mem_Base = NULL;
 
+// See cpu_emulation.h: fixed NuBus slot-$A address on 64-bit hosts, computed
+// dynamically right after RAM+ROM on Win32/i686 (SDL/main_sdl.cpp).
+uint32 MacFrameBaseMac = 0xa0000000;
+
+// Size of the host VA window actually reserved behind Host_Mem_Base. Equal to
+// the full 4GB on 64-bit hosts; a small window on Win32/i686 (see
+// memory_compute_window_size()).
+static uint64 s_window_size = 0x100000000ULL;
+
 // Registered MMIO regions (see FindMMIORegion() in cpu_emulation.h)
 MMIORegion g_mmio_regions[MMIO_MAX_REGIONS];
 int g_mmio_region_count = 0;
@@ -78,6 +98,32 @@ static size_t memory_page_size(void);
 static void memory_note_range(uint32 start, uint32 end);
 static int memory_host_prot(int prot);
 static void memory_register_builtin_mmio(void);
+
+/*
+ * Size of the host VA window to reserve behind Host_Mem_Base.
+ *
+ * 64-bit hosts reserve the whole 4GB Mac address space, matching UAE's
+ * natmem-free direct addressing. A 32-bit host (Win32/i686) cannot: SIZE_T
+ * is 32-bit there (a literal 4GB silently truncates to 0), and a 32-bit
+ * process doesn't have 4GB of free contiguous VA to begin with. There,
+ * RAM/ROM/framebuffer are instead laid out contiguously starting at Mac
+ * address 0 (see SDL/main_sdl.cpp, which sets ROMBaseMac/MacFrameBaseMac
+ * before calling memory_init()), so the window only needs to cover that
+ * span plus headroom for the largest framebuffer Video_BuildPresets() could
+ * later pick -- the actual resolution isn't known yet at this point.
+ */
+static uint64 memory_compute_window_size(void)
+{
+#if defined(_WIN32) && !defined(_WIN64)
+	const uint64 fb_headroom = 256ULL * 1024 * 1024;
+	uint64 size = (uint64)MacFrameBaseMac + fb_headroom;
+	size_t page = memory_page_size();
+	size = (size + page - 1) & ~((uint64)page - 1);
+	return size;
+#else
+	return 0x100000000ULL;
+#endif
+}
 
 /*
  * Registers a memory-mapped I/O region. See cpu_emulation.h for the intended
@@ -139,7 +185,7 @@ static void memory_apply_window_policy(void)
 
 	memory_register_builtin_mmio();
 
-	const uint64 window_size = 0x100000000ULL;
+	const uint64 window_size = s_window_size;
 	const int full_prot = s_flat_dummy_window
 		? (MEMORY_PROT_READ | MEMORY_PROT_WRITE)
 		: 0;
@@ -162,9 +208,11 @@ static void memory_apply_window_policy(void)
 
 	s_nmapped = 0;
 	if (s_flat_dummy_window) {
-		memory_note_range(0, 0xffffffffU);
-		printf("[MEM] flat 4GB RW dummy window at %p (page %zu)\n",
-		       (void *)Host_Mem_Base, memory_page_size());
+		uint32 mapped_end = (window_size >= 0x100000000ULL) ? 0xffffffffU : (uint32)window_size;
+		memory_note_range(0, mapped_end);
+		printf("[MEM] flat RW dummy window at %p, %llu MB (page %zu)\n",
+		       (void *)Host_Mem_Base, (unsigned long long)(window_size / (1024 * 1024)),
+		       memory_page_size());
 		fflush(stdout);
 		return;
 	}
@@ -179,8 +227,9 @@ static void memory_apply_window_policy(void)
 	if (MacFrameLayout != FLAYOUT_NONE && MacFrameSize > 0)
 		memory_commit_range(MacFrameBaseMac, MacFrameSize, MEMORY_PROT_READ | MEMORY_PROT_WRITE);
 
-	printf("[MEM] strict-hole 4GB PROT_NONE window at %p (page %zu)\n",
-	       (void *)Host_Mem_Base, memory_page_size());
+	printf("[MEM] strict-hole PROT_NONE window at %p, %llu MB (page %zu)\n",
+	       (void *)Host_Mem_Base, (unsigned long long)(window_size / (1024 * 1024)),
+	       memory_page_size());
 	fflush(stdout);
 }
 
@@ -529,7 +578,7 @@ int memory_try_handle_guest_fault(const void *si_addr)
 		return 0;
 
 	const uint8 *p = (const uint8 *)si_addr;
-	if (p < Host_Mem_Base || p >= Host_Mem_Base + 0x100000000ULL)
+	if (p < Host_Mem_Base || p >= Host_Mem_Base + s_window_size)
 		return 0;
 
 	uint32 guest = (uint32)(p - Host_Mem_Base);
@@ -626,16 +675,18 @@ static LONG CALLBACK memory_veh(PEXCEPTION_POINTERS info)
 void memory_init(void)
 {
 	if (!Host_Mem_Base) {
+		s_window_size = memory_compute_window_size();
 #ifdef _WIN32
+		SIZE_T reserve_bytes = (SIZE_T)s_window_size;
 		if (s_flat_dummy_window) {
-			Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, 0x100000000ULL, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+			Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, reserve_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 		} else {
-			Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, 0x100000000ULL, MEM_RESERVE, PAGE_NOACCESS);
+			Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, reserve_bytes, MEM_RESERVE, PAGE_NOACCESS);
 		}
 		if (Host_Mem_Base && !s_veh)
 			s_veh = AddVectoredExceptionHandler(1, memory_veh);
 #else
-		Host_Mem_Base = (uint8 *)mmap(NULL, 0x100000000ULL,
+		Host_Mem_Base = (uint8 *)mmap(NULL, (size_t)s_window_size,
 					      s_flat_dummy_window ? (PROT_READ | PROT_WRITE) : PROT_NONE,
 					      MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
 		if (Host_Mem_Base == MAP_FAILED)
@@ -648,7 +699,8 @@ void memory_init(void)
 	}
 
 	if (!Host_Mem_Base) {
-		printf("[MEM] FATAL: Failed to reserve 4GB host memory window!\n");
+		printf("[MEM] FATAL: Failed to reserve %llu MB host memory window!\n",
+		       (unsigned long long)(s_window_size / (1024 * 1024)));
 		fflush(stdout);
 		return;
 	}
@@ -683,7 +735,7 @@ void memory_exit(void)
 	}
 	VirtualFree(Host_Mem_Base, 0, MEM_RELEASE);
 #else
-	munmap(Host_Mem_Base, 0x100000000ULL);
+	munmap(Host_Mem_Base, (size_t)s_window_size);
 #endif
 	Host_Mem_Base = NULL;
 	RAMBaseHost = NULL;

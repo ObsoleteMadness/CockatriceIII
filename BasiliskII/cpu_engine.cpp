@@ -39,10 +39,13 @@ extern "C" uint32 cpu_engine_last_pc = 0;
 
 // Which built-in engines this build actually links.  Musashi is the golden
 // path and is always present; Amiberry (interpreter + compemu JIT) and the
-// Rust m68k-rs core are optional because not every port builds them -- the
-// Windows/MinGW port ships Musashi only.  A port opts out by defining these
-// to 0 on the command line, and the registry below then simply holds fewer
-// entries; nothing else in the file needs to know.
+// Rust m68k-rs core are optional because not every port builds them -- e.g.
+// the Windows/MinGW i686 target has no m68k-rs (MSYS2 dropped its mingw32
+// Rust package entirely, msys2/MINGW-packages#23346, and Homebrew's i686
+// mingw-w64 GCC is SJLJ-exception-based while Rust's i686-pc-windows-gnu std
+// needs DWARF2) and keeps Musashi + Amiberry only.  A port opts out by
+// defining these to 0 on the command line, and the registry below then
+// simply holds fewer entries; nothing else in the file needs to know.
 #ifndef ENABLE_AMIBERRY_CPU
 #define ENABLE_AMIBERRY_CPU 1
 #endif
@@ -495,7 +498,15 @@ bool cpu_engine_map_rom_base(void)
 			ROMBaseMac = 0x00a00000;
 			return true;
 		case ROM_VERSION_32:
+#if defined(_WIN32) && !defined(_WIN64)
+			/* Must match SDL/main_sdl.cpp's dynamic layout: a 32-bit host
+			 * can't reserve a window covering the real hardware address
+			 * 0x40800000 (see memory.cpp's memory_compute_window_size()). */
+			ROMBaseMac = RAMSize;
+			MacFrameBaseMac = ROMBaseMac + 0x00800000;
+#else
 			ROMBaseMac = 0x40800000;
+#endif
 			return true;
 		default:
 			return false;

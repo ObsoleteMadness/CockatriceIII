@@ -8,7 +8,7 @@
 #if defined(CPU_arm) || defined(CPU_AARCH64) || defined(__arm__) || defined(_M_ARM) || \
 	defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC)
 #include "arm/comptbl_arm.h"
-#elif defined(__x86_64__) || defined(_M_AMD64)
+#elif defined(__x86_64__) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)
 #include "x86/comptbl_x86.h"
 #endif
 

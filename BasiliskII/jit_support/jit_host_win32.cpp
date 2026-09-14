@@ -1,10 +1,9 @@
 /*
  *  jit_host_win32.cpp - Windows implementation of the shared JIT-host support
  *
- *  Not currently wired into any Windows build in this tree (mingw/Makefile
- *  builds no JIT sources today) and unbuilt/untested in this environment.
- *  Provided so a future Windows JIT build has this half of the platform
- *  split ready to compile against, matching jit_host_darwin.cpp.
+ *  Wired into BasiliskII/mingw/Makefile for all three MinGW targets
+ *  (ENABLE_AMIBERRY_CPU=1 for x64, x86, and arm64), matching
+ *  jit_host_darwin.cpp.
  *
  *  CockatriceIII (C) 2026
  */

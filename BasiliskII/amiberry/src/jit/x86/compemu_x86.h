@@ -541,6 +541,23 @@ static inline int end_block(uae_u32 opcode)
 }
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+/* winnt.h's FLOATING_SAVE_AREA/CONTEXT structs declare a field named D,
+ * which collides with debug.h's D(x) logging macro already in scope by the
+ * time this header is reached via newcpu.h/compemu.h. Hide it for the
+ * duration of this include. */
+#ifdef D
+#pragma push_macro("D")
+#undef D
+#define COMPEMU_X86_RESTORE_D_MACRO 1
+#endif
+#include <windows.h>
+#ifdef COMPEMU_X86_RESTORE_D_MACRO
+#undef COMPEMU_X86_RESTORE_D_MACRO
+#pragma pop_macro("D")
+#endif
 LONG WINAPI EvalException(LPEXCEPTION_POINTERS info);
 #if defined(_MSC_VER) && !defined(NO_WIN32_EXCEPTION_HANDLER)
 #ifdef _WIN64

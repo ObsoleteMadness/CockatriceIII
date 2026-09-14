@@ -453,6 +453,7 @@ extern uint32_t RAMBaseMac;
 extern uint32_t RAMSize;
 extern uint32_t ROMBaseMac;
 extern uint32_t ROMSize;
+extern uint32_t MacFrameBaseMac;
 extern uint32_t MacFrameSize;
 
 addrbank dummy_bank;
@@ -613,9 +614,11 @@ static void amiberry_init_mac_banks(void)
 		put_mem_bank((uaecptr)i << 16, &dummy_bank, 0);
 	amiberry_map_bank_range(RAMBaseMac, RAMSize, &mac_direct_bank);
 	amiberry_map_bank_range(ROMBaseMac, ROMSize, &mac_rom_bank);
-	/* Quadra NuBus framebuffer (cpu_emulation.h MacFrameBaseMac). */
+	/* Quadra NuBus framebuffer (cpu_emulation.h MacFrameBaseMac -- fixed at
+	 * the real slot-$A address 0xa0000000 on 64-bit hosts, dynamically
+	 * relocated right after ROM on Win32/i686; see memory.cpp). */
 	if (MacFrameSize > 0)
-		amiberry_map_bank_range(0xa0000000u, MacFrameSize, &mac_direct_bank);
+		amiberry_map_bank_range(MacFrameBaseMac, MacFrameSize, &mac_direct_bank);
 	amiberry_map_bank_range(0x00900000u, 0x00100000u, &mac_bank);
 	amiberry_map_bank_range(0x00B00000u, 0x00100000u, &mac_bank);
 	amiberry_map_bank_range(0x50000000u, 0x01000000u, &mac_bank);
