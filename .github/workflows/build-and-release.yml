@@ -76,19 +76,21 @@ jobs:
 
           # Windows x86 (32-bit) -- also builds the Amiberry/UAE interpreter
           # and JIT (its x86 JIT backend already covers CPU_i386, not just
-          # CPU_x86_64; see BasiliskII/mingw/Makefile). MSYS2 dropped its own
-          # mingw32 Rust package (msys2/MINGW-packages#23346), but its i686
-          # GCC is DWARF2-exception-based -- matching what Rust's prebuilt
-          # i686-pc-windows-gnu std expects -- so a rustup-installed
-          # toolchain (see the "Install Rust" step below) should link fine
-          # here even though it can't locally on this project's Homebrew
-          # macOS cross toolchain, which is SJLJ-exception-based instead.
+          # CPU_x86_64; see BasiliskII/mingw/Makefile) and m68k-rs. MSYS2
+          # dropped its own mingw32 Rust package (msys2/MINGW-packages#23346),
+          # but windows-latest ships rustup/cargo preinstalled and this
+          # env's i686 GCC is DWARF2-exception-based -- matching what Rust's
+          # prebuilt i686-pc-windows-gnu std expects -- so cross-compiling to
+          # that target with the preinstalled toolchain should link fine here
+          # (see the "Build Windows" step below), even though it can't
+          # locally on this project's Homebrew macOS cross toolchain, which
+          # is SJLJ-exception-based instead.
           - target: win32-x86
             os: windows-latest
             platform: windows
             arch: x86
             msystem: MINGW32
-            pacman_packages: mingw-w64-i686-toolchain mingw-w64-i686-sdl12-compat curl make
+            pacman_packages: mingw-w64-i686-toolchain mingw-w64-i686-sdl12-compat make
             build_dir: BasiliskII/mingw
             artifact_name: CockatriceIII-win32-x86
             package_ext: zip
@@ -177,28 +179,25 @@ jobs:
           update: true
           install: ${{ matrix.pacman_packages }}
 
-      # win32-x86 has no MSYS2-packaged Rust (msys2/MINGW-packages#23346), so
-      # install one via rustup instead, defaulting its host to
-      # i686-pc-windows-gnu so it's native to this MINGW32 shell and links
-      # against its own (DWARF2-exception) gcc -- see the win32-x86 matrix
-      # comment above for why that should succeed here.
-      - name: Install Rust (win32-x86 only)
-        if: matrix.platform == 'windows' && matrix.arch == 'x86'
-        shell: msys2 {0}
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
-          sh /tmp/rustup-init.sh -y --default-host i686-pc-windows-gnu --profile minimal
-          # Use a native Windows path: $GITHUB_PATH is read by the runner
-          # itself, not by this msys2 shell, so a bare /home/... entry
-          # wouldn't resolve for the next step.
-          cygpath -w "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
       - name: Build Windows (${{ matrix.target }})
         if: matrix.platform == 'windows'
         shell: msys2 {0}
         run: |
           EXTRA_MAKE_VARS=""
           if [ "${{ matrix.arch }}" = "x86" ]; then
+            # win32-x86 has no MSYS2-packaged Rust (msys2/MINGW-packages#23346).
+            # windows-latest runners ship rustup/cargo preinstalled, but msys2's
+            # own shell PATH doesn't include it and $GITHUB_PATH additions from a
+            # prior step don't reliably carry into this one -- so add it here,
+            # in the same step, right before the Makefile's own
+            # `rustup target add i686-pc-windows-gnu` runs. This adds that
+            # target's std to whatever host toolchain is already installed
+            # (cross-compiling for i686-pc-windows-gnu works from any host);
+            # CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER=cc then links the result
+            # with this MINGW32 shell's own gcc, which is DWARF2-exception-based
+            # like that std expects -- see the win32-x86 matrix comment above.
+            export PATH="$HOME/.cargo/bin:$PATH"
+            command -v cargo >/dev/null 2>&1 || { echo "::error::cargo not found on PATH after adding \$HOME/.cargo/bin"; exit 1; }
             EXTRA_MAKE_VARS="ENABLE_M68K_RS_CPU=1"
           fi
           make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} CC=cc CXX=c++ ${EXTRA_MAKE_VARS} -j${NUMBER_OF_PROCESSORS}
