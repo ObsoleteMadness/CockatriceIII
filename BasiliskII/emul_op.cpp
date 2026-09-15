@@ -535,6 +535,10 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 
 		case M68K_EMUL_OP_BLOCK_MOVE:		// BlockMove() replacement
 			memmove(Mac2HostAddr(r->a[1]), Mac2HostAddr(r->a[0]), r->d[0]);
+			// The ROM's own BlockMove ends in a cache flush (patched out), and
+			// moved bytes may be code the JIT has already translated.
+			if (r->d[0])
+				FlushCodeCache(Mac2HostAddr(r->a[1]), r->d[0]);
 			break;
 
 		case M68K_EMUL_OP_IDLE_TIME:	// SynchIdleTime() patch

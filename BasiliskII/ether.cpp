@@ -86,6 +86,8 @@ int16 EtherOpen(uint32 pb, uint32 dce)
 	WriteMacInt16(ether_data + ed_ReadPacket + 18, M68K_EMUL_OP_ETHER_READ_PACKET);	//2
 	WriteMacInt16(ether_data + ed_ReadPacket + 20, 0x4a43);	//  tst.w	d3
 	WriteMacInt16(ether_data + ed_ReadPacket + 22, 0x4e75);	//  rts
+	// Fresh heap memory may once have held code the JIT translated.
+	FlushCodeCache(Mac2HostAddr(ether_data), ed_ReadPacket + 24);
 	return 0;
 }
 

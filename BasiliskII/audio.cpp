@@ -378,7 +378,8 @@ int32 AudioDispatch(uint32 params, uint32 globals)
 				WriteMacInt16(p, M68K_RTS); p += 2;	// rts
 				if (p - audio_data != adatData)
 					goto adat_error;
-
+				// Fresh heap memory may once have held code the JIT translated.
+				FlushCodeCache(Mac2HostAddr(audio_data + adatDelegateCall), adatData - adatDelegateCall);
 			}
 			AudioAvailable = true;
 			if (open_count == 0)

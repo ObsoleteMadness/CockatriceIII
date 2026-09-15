@@ -1781,6 +1781,19 @@ void flush_cpu_caches_040(uae_u16 opcode)
 	bool pushinv = (regs.cacr & 0x01000000) == 0; // 68060 DPI
 
 	flush_cpu_caches_040_2(cache, scope, addr, push, pushinv);
+#ifdef JIT
+	/* Mac OS flushes the 68040 instruction cache after writing code (Segment
+	 * Loader, Code Fragment Manager, _HWPriv). Translated blocks outlive that
+	 * cache, so treat it as a JIT invalidation with the same scope. */
+	if ((cache & 2) && currprefs.cachesize) {
+		if (scope == 3) {
+			flush_icache(3);
+		} else {
+			uae_u32 len = scope == 2 ? (mmu_pagesize_8k ? 8192 : 4096) : 16;
+			flush_icache_range(addr & ~(len - 1), len);
+		}
+	}
+#endif
 #ifdef WITH_PPC
 	if (cache & 2) {
 		uae_ppc_mark_code_cache_dirty();
@@ -1872,13 +1885,12 @@ uae_u32 REGPARAM2 op_emulop_1(uae_u32 opcode)
 	opcode = opcode_swap(opcode);
 	cockatrice_m68k_emulop(opcode);
 	m68k_incpc_normal(2);
-#ifdef JIT
-	/* Host trap may call Execute68k / mutate regs; drop cached blocks so the
-	 * next m68k_run_jit entry recompiles from live state (stale reg maps were
-	 * jumping to ROMBaseMac after EtherIRQ nested handlers). */
-	if (currprefs.cachesize)
-		flush_icache(3);
-#endif
+	/* No JIT flush here. EmulOps are uncompiled and end their block, so the
+	 * block writes every register back before the call and reloads PC from
+	 * regs afterwards; nothing compiled survives the host call. Nested
+	 * Execute68k runs on the interpreter, and host writes to guest code go
+	 * through cpu_engine_invalidate_code. A flush on every EmulOp made the
+	 * JIT re-verify or recompile constantly. */
 	return 4;
 }
 void REGPARAM2 op_emulop_1_noret(uae_u32 opcode)

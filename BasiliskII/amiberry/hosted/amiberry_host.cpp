@@ -844,8 +844,9 @@ int amiberry_cpu_init(int cpu_type, int fpu_type, int jit, uint32_t cache_kb, in
 
 /*
  * Discards stale JIT blocks after Basilisk writes guest code (CheckLoad,
- * BlockMove, ROM patches). Always hard-flushes the whole cache; addr/size are
- * for logging only on the ARM backend.
+ * BlockMove, ROM patches). A bounded range invalidates only the blocks that
+ * overlap it on ARM (they re-verify by checksum); x86 and huge ranges
+ * hard-flush the whole cache.
  *
  * Must raise SPCFLAG_MODE_CHANGE after flush: flush_icache_hard() ends with
  * set_special(0), which clears flags without leaving m68k_run_jit, so stale
@@ -983,6 +984,26 @@ void amiberry_cpu_nested_execute_end(void)
 extern "C" int amiberry_cpu_nested_execute_depth(void)
 {
 	return s_m68k_execute_depth;
+}
+
+/*
+ * Reports whether the JIT is running, as opposed to requested: the ARM64
+ * backend falls back to the interpreter when it cannot allocate its cache.
+ */
+#ifdef JIT
+extern int get_cache_state(void);	/* compemu backend; not in compemu.h */
+#endif
+
+extern "C" int amiberry_cpu_jit_enabled(void)
+{
+#ifdef JIT
+	/* get_cache_state() is the gate compile_block itself checks: the guest
+	 * enables it by setting the 68040 instruction cache bit in CACR, so a
+	 * configured cache is not yet a translating one. */
+	return currprefs.cachesize != 0 && get_cache_state();
+#else
+	return 0;
+#endif
 }
 
 void amiberry_cpu_nested_request_quit(void)

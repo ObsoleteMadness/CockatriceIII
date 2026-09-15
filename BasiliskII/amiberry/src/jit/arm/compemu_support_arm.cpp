@@ -3485,24 +3485,51 @@ void flush_icache_hard(int n)
 }
 
 /*
- * Invalidates JIT blocks overlapping guest [addr, addr+length).
- * Falls back to flush_icache_hard when no overlap (macemu-compatible).
+ * Invalidates JIT blocks whose source overlaps guest [addr, addr+length).
+ *
+ * Overlap is tested against every checksum range of a block, not just its
+ * start, so a write into the middle of a block is caught. Overlapping blocks
+ * are sent to check_checksum on their next entry (macemu's lazy range flush):
+ * unchanged code is reactivated, changed code is recompiled, and the rest of
+ * the cache is left alone. Safe from inside a host call made by compiled
+ * code, because no emitted code is discarded, only redirected.
  */
 void flush_icache_range(uaecptr addr, uae_u32 length)
 {
-    blockinfo* bi;
-
     if (!active || length == 0)
         return;
 
     uae_u8* start_p = get_real_address(addr);
-    bi = active;
+    blockinfo* bi = active;
     while (bi) {
-        if (((uintptr)bi->pc_p - (uintptr)start_p) < length) {
-            flush_icache_hard(3);
-            return;
-        }
+        bool overlaps = false;
+        for (checksum_info* csi = bi->csi; csi && !overlaps; csi = csi->next)
+            overlaps = ((uintptr)start_p - (uintptr)csi->start_p) < csi->length ||
+                       ((uintptr)csi->start_p - (uintptr)start_p) < length;
+        if (!bi->csi)
+            overlaps = ((uintptr)bi->pc_p - (uintptr)start_p) < length;
+
+        blockinfo* dbi = bi;
         bi = bi->next;
+        if (!overlaps)
+            continue;
+
+        uae_u32 cl = cacheline(dbi->pc_p);
+        if (dbi->status == BI_INVALID || dbi->status == BI_NEED_RECOMP) {
+            if (dbi == cache_tags[cl + 1].bi)
+                cache_tags[cl].handler = (cpuop_func*)popall_execute_normal;
+            dbi->handler_to_use = (cpuop_func*)popall_execute_normal;
+            set_dhtu(dbi, dbi->direct_pen);
+            dbi->status = BI_INVALID;
+        } else {
+            if (dbi == cache_tags[cl + 1].bi)
+                cache_tags[cl].handler = (cpuop_func*)popall_check_checksum;
+            dbi->handler_to_use = (cpuop_func*)popall_check_checksum;
+            set_dhtu(dbi, dbi->direct_pcc);
+            dbi->status = BI_NEED_CHECK;
+        }
+        remove_from_list(dbi);
+        add_to_dormant(dbi);
     }
 }
 

@@ -54,6 +54,8 @@ void amiberry_cpu_execute_interpreter_slice(void);
 void amiberry_cpu_nested_execute_begin(void);
 void amiberry_cpu_nested_execute_end(void);
 extern "C" int amiberry_cpu_nested_execute_depth(void);
+/* True when the JIT is actually running (not merely requested). */
+int amiberry_cpu_jit_enabled(void);
 void amiberry_cpu_nested_request_quit(void);
 int amiberry_cpu_nested_quit_requested(void);
 
