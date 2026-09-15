@@ -33,6 +33,13 @@ When debugging CPU engine opcode battery failures or `Execute68k` / `0x7100`
 handling, read [docs/cpu-engine-opcode-fixes.md](docs/cpu-engine-opcode-fixes.md)
 for the UAE and Emu68 fixes already landed (syn68k is still open).
 
+When porting a CPU core, replacing the Amiberry tree with
+`BasiliskII/vendor/uae-portable-cpu`, or adding a hook to any engine, read
+[docs/uae-portable-cpu-host-hooks.md](docs/uae-portable-cpu-host-hooks.md).
+It lists every host hook Cockatrice relies on (EmulOp traps, nested
+Execute68k, emulated clock, MMU-less Line-F, bus faults, JIT invalidation)
+with Amiberry and Musashi evidence and the status in uae-portable-cpu.
+
 When planning or implementing a **Classic in-window menu bar** (host-drawn
 menu strip + passthrough input, using toolbox trap hooks instead of native
 `NSMenu` sync), read
