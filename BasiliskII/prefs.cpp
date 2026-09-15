@@ -110,7 +110,7 @@ void PrefsInit(void)
 	PrefsAddString("cpu_emulator", "musashi"); // musashi | uae | m68k_rs
 	PrefsAddBool("jit", false);
 	PrefsAddBool("jitfpu", false);
-	PrefsAddInt32("jitcachesize", 2048);
+	PrefsAddInt32("jitcachesize", 16384);	// MAX_JIT_CACHE; smaller caches thrash on Mac OS 8
 	PrefsAddString("m68k_rs_fastmem", "off");
 	PrefsAddBool("fpu", false);		// 68040LC
 	PrefsAddBool("nocdrom", false);
