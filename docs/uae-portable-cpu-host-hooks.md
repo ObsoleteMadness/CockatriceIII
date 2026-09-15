@@ -528,14 +528,29 @@ x86-64 JIT in uae-portable-cpu. It also adds the JIT halves of hooks 1, 3, 5,
   - ROM writes still go through the handler, so ROM write suppression is kept.
   - Map the SCC windows with `uae_cpu_map_custom()`. Accesses profiling saw
     there stay on the handler.
-  - An inlined access that later lands in an uncommitted hole: on x86-64 the
-    library completes it through the region's handler; on arm64 it reaches
-    Cockatrice's own SIGSEGV/SIGBUS handler, as with the Amiberry engine today.
-    The x86-64 handler chains to the one installed before it.
+  - An inlined access that later lands in an uncommitted hole: on x86-64 and
+    Windows ARM64 the library completes it through the region's handler. On
+    arm64 macOS and Linux it reaches Cockatrice's own SIGSEGV/SIGBUS handler,
+    as with the Amiberry engine today. The library's handlers pass on anything
+    they don't handle.
   - The Amiberry engine forced `jit_n_addr_bank_unsafe = 1` after `MOVEM`
     bursts corrupted memory. Upstream exposes that as
     `UAE_MEM_JIT_UNSAFE_BURST`. Use it if that corruption reappears; on x86-64
     it also turns inline access off.
+- **JIT FPU.** `jit_fpu` translates FPU instructions, like the Amiberry
+  engine's `jitfpu`. It needs `jit_direct_memory` and the host-double FPU
+  backend (`fpu_softfloat = false`), so FPU results are double precision. Two
+  bugs make `jitfpu true` unsafe in the current Amiberry engine; both are
+  fixed upstream:
+  - The engine initialises SoftFloat, but translated FPU code works on host
+    doubles. Compiled and interpreted FPU instructions then see different
+    register values.
+  - Its arm64 JIT does not save the host's callee-saved `d8`–`d15`, which hold
+    FP0–FP7. Any C++ code holding a double across a call into the JIT gets it
+    corrupted.
+- **Windows.** The JIT builds and passes the test suite with MSVC (x64 and
+  ARM64) and MinGW-w64, in upstream CI. There is no 32-bit JIT, so the
+  win32-x86 build would run the interpreter.
 - **Hooks work under the JIT:**
   - EmulOps (reserved opcodes) end blocks and are never compiled natively.
   - Nested `Execute68k` runs on the interpreter.
@@ -551,9 +566,14 @@ x86-64 JIT in uae-portable-cpu. It also adds the JIT halves of hooks 1, 3, 5,
 
 Verified on macOS arm64 natively and on x86_64 under Rosetta:
 - **Tests:** 16/16 CTest, including JIT, direct-memory and benchmark smoke
-  variants. `host_hooks_jit_direct` checks inline access against a C reference,
-  that devices and regions outside the window keep their handlers, and the
-  x86-64 fault recovery path.
+  variants.
+  - `host_hooks_jit_direct` checks inline access against a C reference, that
+    devices and regions outside the window keep their handlers, and the x86-64
+    fault recovery path.
+  - `host_hooks` checks FPU backend selection and an FPU loop against C
+    doubles, with and without `jit_fpu`.
+  - `test_uae_cpu` previously checked nothing in Release builds (`NDEBUG`
+    removed its asserts). Its checks now stay enabled and pass.
 - **Fixtures:** m68k-rs per-fixture results are identical for the interpreter,
   the JIT and the JIT with direct access on the same flat memory map (104/127
   and 25/25). Most fixture code runs once and stays below the JIT's translation
@@ -561,14 +581,18 @@ Verified on macOS arm64 natively and on x86_64 under Rosetta:
 - **Benchmark:** `uae_cpu_bench` (upstream `bench/`) checks every run against a
   C reference. Best of 3, seconds:
 
-  | Workload | arm64 interp | arm64 jit | arm64 jit-direct | x86_64 interp | x86_64 jit | x86_64 jit-direct |
-  |---|---|---|---|---|---|---|
-  | arith | 0.762 | 0.076 | 0.075 | 1.827 | 0.166 | 0.164 |
-  | bytemix | 0.812 | 0.111 | 0.086 | 1.774 | 0.208 | 0.121 |
-  | memcopy | 1.056 | 0.215 | 0.140 | 2.197 | 0.537 | 0.344 |
-  | device | 0.231 | 0.040 | 0.048 | 0.545 | 0.127 | 0.115 |
+  | Workload | arm64 interp | arm64 jit | arm64 jit-direct | arm64 jit-fpu | x86_64 interp | x86_64 jit | x86_64 jit-direct | x86_64 jit-fpu |
+  |---|---|---|---|---|---|---|---|---|
+  | arith | 0.448 | 0.061 | 0.063 | – | 0.902 | 0.141 | 0.143 | – |
+  | bytemix | 0.437 | 0.041 | 0.054 | – | 0.908 | 0.094 | 0.057 | – |
+  | memcopy | 0.494 | 0.103 | 0.094 | – | 0.986 | 0.275 | 0.241 | – |
+  | device | 0.110 | 0.028 | 0.029 | – | 0.248 | 0.062 | 0.063 | – |
+  | fpu | 0.193 | 0.169 | 0.164 | 0.007 | 0.379 | 0.449 | 0.343 | 0.295 |
 
-  x86_64 ran under Rosetta, so only compare within a column family.
+  Runs vary by roughly 10–25% on this machine. x86_64 ran under Rosetta, so
+  compare within one architecture only. Rosetta emulates the x87 instructions
+  the x86 FPU JIT uses, so the x86 `jit-fpu` figure says little about native
+  x86.
 
 ---
 
@@ -583,9 +607,10 @@ These are Basilisk policy, not CPU behaviour. They belong in the new
   `cpu_engine_write_exec_return_frame`) and restoring the PC afterwards.
 - Warm reset via `setjmp`/`longjmp`, and `cpu_engine_reset_peripherals()`.
 - The boot SP/PC/SR (`CPU_ENGINE_BOOT_*`) set after `m68k_pulse_reset`.
-- JIT settings (`jit_enabled`, `jit_cache_size`, `jit_direct_memory`), as
-  config passed to `uae_cpu_create`. Upstream has no JIT FPU option yet
-  (`compfpu` stays off), so `jitfpu` has nothing to map to.
+- JIT settings, as config passed to `uae_cpu_create`: `jit` → `jit_enabled`,
+  `jitcachesize` → `jit_cache_size`, `jitfpu` → `jit_fpu`, plus
+  `jit_direct_memory`. `jit_fpu` only takes effect with `jit_direct_memory`
+  and `fpu_softfloat = false`.
 - Low-heap and ROM-header diagnostic dumps (`cockatrice_m68k_low_heap_fault`,
   `cockatrice_uae_fline_trap` body), built on hooks 7 and 8.
 
