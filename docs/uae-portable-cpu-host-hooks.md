@@ -22,27 +22,30 @@ a 680x0 and runs host code from inside the guest will need the same things:
 Basilisk II, SheepShaver-style trap tables, Atari native features, or
 test harnesses.
 
-Status is measured against uae-portable-cpu `bb2718a`.
+Status is measured against uae-portable-cpu `bb2718a`. The hooks are now implemented
+upstream on the `feat-host-hooks` branch. The contracts that shipped are in
+[HOST_HOOKS.md](../BasiliskII/vendor/uae-portable-cpu/HOST_HOOKS.md), and the
+*Upstream API* column below maps each hook to them.
 
 ---
 
 ## Summary
 
-| # | Hook | Why a host needs it | uae-portable-cpu today |
-|---|------|---------------------|------------------------|
-| 1 | Host-trap opcodes (illegal-instruction hook + reserved range) | EmulOps `0x7100–0x713F` call into C++ | **Missing.** `m68k_set_illg_instr_callback` stores the pointer but nothing calls it |
-| 2 | End the timeslice from inside a hook | `M68K_EXEC_RETURN` must leave `m68k_execute` | Present (`SPCFLAG_BRK`). Not yet checked under JIT |
-| 3 | Re-entrant nested execution | `Execute68k` / `Execute68kTrap` run from inside an EmulOp | **Partial.** Interpreter loop only; no depth tracking; no forced interpreter when nested under JIT |
-| 4 | Interrupt level: thread-safe push and/or pull | The 60 Hz tick thread raises IRQs asynchronously | **Partial.** Push only, not thread-safe |
-| 5 | 64-bit emulated clock that includes JIT countdown | Time Manager calibration (`CPUEngine::emulated_ns`) | **Partial.** `m68k_cycles_run()` returns an `int` and knows nothing about JIT |
-| 6 | Tight delay-loop (`DBF Dn,*-2`) hook | TimeDBRA calibration causes a Type 4 bomb on fast cores | **Missing** |
-| 7 | Line-F / MMU-less coprocessor policy | 68040 Mac code runs `PFLUSH`/`PLPA`/`F0xx` with the MMU disabled | **Partial.** PLPA is handled on 68060 only; unknown ops trap to vector 11 |
-| 8 | Exception observer | Engine-independent "did Mac OS just bomb" report | **Partial.** `g_trap_hook` fires but is misnamed, and the Musashi TRAP semantics are wrong |
-| 9 | Guest bus fault raised from a host memory access | Unmapped holes must become vector 2, not a host SIGSEGV | **Missing** for callbacks. `dummy_check` returns 0 silently |
-| 10 | Region-typed memory map (RAM / ROM / IO / hole, JIT direct flags) | Direct JIT memory, ROM write suppression, SCC MMIO | **Partial.** RAM/ROM/custom exist; no JIT flags; no ROM range for the JIT |
-| 11 | Code-cache invalidation that also exits compiled code | `CheckLoad`, `BlockMove`, ROM patches write into guest code | **Missing.** No public API; the JIT is not built |
-| 12 | Per-instruction hook | PC heartbeat / crash trace ring buffer | Present in the interpreter only |
-| 13 | Symbol isolation | Must link next to Musashi (golden) and Basilisk globals | **Missing.** Clashes on `intlev`, `memory_init`, `m68k_*`, `regs`, `write_log` |
+| # | Hook | Why a host needs it | `bb2718a` | Upstream API (`feat-host-hooks`) |
+|---|------|---------------------|-----------|----------------------------------|
+| 1 | Host-trap opcodes | EmulOps `0x7100–0x713F` call into C++ | Missing | `illegal` + `aline` hooks, `uae_cpu_reserve_opcodes()` |
+| 2 | End the timeslice from inside a hook | `M68K_EXEC_RETURN` must leave the execute call | Present | `uae_cpu_end_timeslice()` (innermost call only) |
+| 3 | Re-entrant nested execution | `Execute68k` / `Execute68kTrap` run inside an EmulOp | Partial | Re-entrant `uae_cpu_execute()`, `uae_cpu_execute_depth()` |
+| 4 | Interrupt level, thread-safe | 60 Hz tick thread raises IRQs | Partial | `get_irq` pull hook, `uae_cpu_signal_irq()`, thread-safe `uae_cpu_set_irq()` |
+| 5 | 64-bit emulated clock | Time Manager calibration | Partial | `uae_cpu_get_cycles()` (uint64). JIT countdown fold waits for the JIT |
+| 6 | Tight delay-loop (`DBF Dn,*-2`) hook | TimeDBRA Type 4 bomb | Missing | `dbf_spin` hook, emitted by `gencpu` into the fast tables |
+| 7 | Line-F / MMU-less coprocessor policy | 68040 Mac code runs `PFLUSH`/`PLPA`/`F0xx` | Partial | `fline` hook with `FPU_ABSENT` / `MMU_ABSENT` / `UNKNOWN` |
+| 8 | Exception observer | "Did Mac OS just bomb" report | Partial | `exception` observer; TRAP hook is now `TRAP #0–15` and consumable |
+| 9 | Guest bus fault from host memory access | Unmapped holes → vector 2 | Missing | `uae_cpu_raise_bus_error()`, `unmapped_bus_error` config |
+| 10 | Region-typed memory map | Direct JIT memory, ROM, SCC MMIO | Partial | `UAE_MEM_JIT_DIRECT`, `UAE_MEM_JIT_UNSAFE_BURST`, `uae_cpu_get_mem_flags()` |
+| 11 | Code-cache invalidation | `CheckLoad` / `BlockMove` / ROM patches | Missing | `uae_cpu_invalidate_code()` (no-op until a JIT is built) |
+| 12 | Per-instruction hook | PC heartbeat / crash trace | Present | Unchanged; interpreter only |
+| 13 | Symbol isolation | Link next to Musashi and Basilisk globals | Missing | `UAE_CPU_MUSASHI_API=OFF`, `UAE_CPU_ISOLATE_SYMBOLS=ON` → `uaecpu_isolated` |
 
 Hooks 1, 3, 5, 6 and 11 each have a JIT half. The current `CMakeLists.txt`
 does not compile anything under `src/cpu/jit/`. JIT parity with the Amiberry
@@ -81,8 +84,9 @@ dispatch to `EmulOp()` with the full register set.
 - [musashi_api.c](../BasiliskII/vendor/uae-portable-cpu/src/api/musashi_api.c)
   stores `s_illg_cb` and never calls it.
 - [newcpu.c `op_illg`](../BasiliskII/vendor/uae-portable-cpu/src/cpu/newcpu.c#L4041)
-  runs the Amiga checks first. One of them is `cloanto_rom && (opcode & 0xF100) == 0x7100`,
-  which would silently execute EmulOps as MOVEQ.
+  offers nothing to the host, so every EmulOp takes vector 4. (Amiberry's Amiga
+  checks, including the `cloanto_rom` MOVEQ shortcut, are compiled out here
+  because the build defines `WINUAE_FOR_HATARI`.)
 
 **Proposed contract.**
 - `int illegal_hook(void *ud, uint16_t opcode, uint32_t pc)` is called first in
@@ -466,47 +470,39 @@ Amiberry dodged these with `#define` renames in
   the host namespace.
 - Hooks that are currently global (`g_*_hook`) move onto `uae_cpu_t`. The
   "multi-instance" context API is really single-instance until this is done.
+  (Not done upstream yet.)
 
 ---
 
-## Proposed hook table (sketch)
+## What shipped upstream
 
-This is modelled on `M68kRsHostCallbacks`
-([cockatrice_m68k_rs.h](../BasiliskII/m68k_rs/include/cockatrice_m68k_rs.h)),
-so all three non-golden engines present the same shape to their glue.
+The full API is in `include/uae_cpu.h` and
+[HOST_HOOKS.md](../BasiliskII/vendor/uae-portable-cpu/HOST_HOOKS.md). It differs
+from the proposal above in these ways:
 
-```c
-typedef enum { UAE_FLINE_FPU_ABSENT, UAE_FLINE_MMU_ABSENT, UAE_FLINE_UNKNOWN } uae_fline_reason_t;
+- **Line-A has its own hook (`aline`).** Musashi's illegal callback and
+  m68k-rs's `handle_illegal`/`handle_aline` split them the same way.
+- **One resume rule for `illegal`, `aline` and `fline`.** When a hook handles
+  the word and leaves the PC where it was, execution resumes after the
+  opcode word; if the hook moved the PC, execution continues there.
+  Multi-word FPU/PMMU skips must set the PC.
+- **`dbf_spin` is offered on every iteration.** Returning 0 declines (runs that
+  iteration); a non-zero return completes the loop and credits that many
+  cycles.
+- **The TRAP hook receives `trap_nr` 0–15.** Returning non-zero services the
+  TRAP without an exception.
+- **Hooks are still process-global.** The core is single-instance; moving them
+  onto `uae_cpu_t` was not done.
+- **Symbol isolation is a relocatable link, not a prefix header.** It works
+  with Apple ld or GNU ld + objcopy, not MSVC. The core is compiled with
+  `-fno-common` so data symbols can be hidden too.
+- **JIT halves of hooks 1, 3, 5, 6, 10 and 11 wait for the JIT sources to join
+  the build.** The public entry points already exist so Cockatrice can call
+  them unconditionally.
 
-typedef struct {
-    int      vector;        /* 2..255 */
-    uint32_t fault_pc;      /* regs.instruction_pc */
-    uint32_t current_pc;    /* PC at dispatch (may be past the opcode) */
-    uint16_t opcode;
-    uint16_t sr;
-    bool     interrupt;
-} uae_cpu_exception_info_t;
-
-typedef struct {
-    void *userdata;
-    int      (*illegal)(void *ud, uint16_t opcode, uint32_t pc);                 /* 1 */
-    int      (*get_irq)(void *ud);                                               /* 4, optional */
-    uint32_t (*dbf_spin)(void *ud, int dreg, uint16_t count);                    /* 6, optional */
-    int      (*fline)(void *ud, uint16_t opcode, uint32_t pc, uae_fline_reason_t);/* 7 */
-    void     (*exception)(void *ud, const uae_cpu_exception_info_t *info);       /* 8 */
-    int      (*trap_instr)(void *ud, int trap_nr);                               /* 8 */
-    void     (*instruction)(void *ud, uint32_t pc);                              /* 12 */
-} uae_cpu_host_hooks_t;
-
-void     uae_cpu_set_host_hooks(uae_cpu_t *cpu, const uae_cpu_host_hooks_t *hooks);
-void     uae_cpu_reserve_opcodes(uae_cpu_t *cpu, uint16_t first, uint16_t last); /* 1 */
-void     uae_cpu_end_timeslice(uae_cpu_t *cpu);                                  /* 2 */
-int      uae_cpu_execute_depth(uae_cpu_t *cpu);                                  /* 3 */
-void     uae_cpu_set_irq(uae_cpu_t *cpu, int level);  /* 4: thread-safe */
-uint64_t uae_cpu_get_cycles(uae_cpu_t *cpu);                                     /* 5 */
-void     uae_cpu_raise_bus_error(uae_cpu_t *cpu, uint32_t addr, bool write, int size); /* 9 */
-void     uae_cpu_invalidate_code(uae_cpu_t *cpu, uint32_t addr, uint32_t size);  /* 11 */
-```
+Verified with `ctest` on macOS arm64 and Ubuntu 24.04: default build 7/7, and
+isolated with the Musashi API off 3/3. Musashi and m68k-rs suite pass counts
+are unchanged from `bb2718a`.
 
 ---
 
@@ -544,10 +540,12 @@ These are Basilisk policy, not CPU behaviour. They belong in the new
 These don't affect Cockatrice if it uses `uae_cpu.h`, but they matter to anyone
 using uae-portable-cpu as a drop-in Musashi:
 
-- `m68k_set_illg_instr_callback`, `_bkpt_ack_`, `_pc_changed_`, `_tas_instr_`
-  and `_fc_` store their callbacks and never call them.
-- `m68k_set_trap_instr_callback` fires for every exception and ignores the
-  return value (hook 8).
+- `m68k_set_bkpt_ack_callback`, `_pc_changed_`, `_tas_instr_` and `_fc_` store
+  their callbacks and never call them. (`m68k_set_illg_instr_callback` is now
+  wired to the `illegal` hook upstream.)
+- `m68k_set_trap_instr_callback` fired for every exception and ignored the
+  return value. It is now `TRAP #0–15` only and honours the return value
+  upstream.
 - `m68k_get_reg(context, M68K_REG_PC/SR)` reads the live CPU, not `context`.
 - `m68k_cycles_remaining()` always returns 0, and `m68k_modify_timeslice()`
   is a no-op.
