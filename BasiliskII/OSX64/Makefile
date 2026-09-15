@@ -59,6 +59,13 @@ endif
 CFLAGS += $(TARGET_ARCH)
 CXXFLAGS += $(TARGET_ARCH)
 LDFLAGS += $(TARGET_ARCH)
+
+# Rebuild on header changes, and on changes to sources pulled in by #include:
+# src/jit/compemu_support.cpp is a wrapper that includes the arm/x86 backend
+# .cpp files, so without this an edit to a JIT backend is silently ignored.
+CFLAGS += -MMD -MP
+CXXFLAGS += -MMD -MP
+.DEFAULT_GOAL := all
 # Committed Intel dylibs use @rpath; point the linker at this prefix.
 ifeq ($(SDL_PREFIX),$(CROSS_SDL_X86))
 LDFLAGS += -Wl,-rpath,$(SDL_PREFIX)/lib
@@ -340,3 +347,6 @@ $(OBJ_DIR)/amiberry_hosted_host.o: $(AMIBERRY_DIR)/hosted/amiberry_host.cpp
 $(OBJ_DIR)/amiberry_hosted_memory.o: $(AMIBERRY_DIR)/hosted/amiberry_memory.cpp
 	$(CXX) $(AMIBERRY_CPPFLAGS) $(DEFS) $(AMIBERRY_CXXFLAGS) -c $< -o $@
 
+# Kept last: an included .d file's first target would otherwise become
+# make's default goal (see .DEFAULT_GOAL above).
+-include $(wildcard obj/*.d)
