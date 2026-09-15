@@ -39,6 +39,11 @@ CFLAGS += $(TARGET_ARCH)
 CXXFLAGS += $(TARGET_ARCH)
 LDFLAGS += $(TARGET_ARCH)
 
+# Rebuild on header and included-source changes (see OSX64/Makefile).
+CFLAGS += -MMD -MP
+CXXFLAGS += -MMD -MP
+.DEFAULT_GOAL := all
+
 REPO_ROOT = $(abspath ../..)
 MUSASHI = ../Musashi
 OSX64 = ../OSX64
@@ -270,8 +275,11 @@ uae_cputest: $(OBJ_DIR)/uae_cputest
 
 BASILISK_TESTS = basilisk_memory_test basilisk_engine_test basilisk_emulop_test \
 	basilisk_patches_test basilisk_rsrcpatch_test basilisk_patchguard_test \
-	basilisk_stubabi_test basilisk_toolbox_test basilisk_scsi_test basilisk_scc_test basilisk_disk_test
+	basilisk_stubabi_test basilisk_toolbox_test basilisk_scsi_test basilisk_scc_test basilisk_disk_test \
+	basilisk_jit_emulop_test
 
+$(OBJ_DIR)/basilisk_jit_emulop_test.o: basilisk/basilisk_jit_emulop_test.cpp | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -I../amiberry/hosted -c $< -o $@
 $(OBJ_DIR)/basilisk_memory_test.o: basilisk/basilisk_memory_test.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/basilisk_engine_test.o: basilisk/basilisk_engine_test.cpp | $(OBJ_DIR)
@@ -329,6 +337,10 @@ basilisk_disk_test: $(OBJ_DIR)/basilisk_disk_test.o $(OBJ_DIR)/libcockatrice_tes
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
 
+basilisk_jit_emulop_test: $(OBJ_DIR)/basilisk_jit_emulop_test.o $(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
+	@if [ -f $(ENTITLEMENTS) ]; then codesign -s - --force --entitlements $(ENTITLEMENTS) $@; fi
+
 basilisk_tests: $(BASILISK_TESTS)
 
 test-basilisk: basilisk_tests
@@ -346,3 +358,7 @@ test-strict: basilisk_tests cpu_tests
 clean:
 	rm -rf $(OBJ_DIR) cpu_tests $(BASILISK_TESTS)
 	rm -f $(CPUTEST_VENDOR_STAMP)
+
+# Kept last: an included .d file's first target would otherwise become
+# make's default goal (see .DEFAULT_GOAL above).
+-include $(wildcard obj/*.d)

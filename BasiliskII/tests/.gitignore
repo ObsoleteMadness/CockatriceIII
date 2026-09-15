@@ -11,3 +11,4 @@ basilisk_scsi_test
 basilisk_scc_test
 basilisk_disk_test
 obj/
+basilisk_jit_emulop_test
