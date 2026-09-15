@@ -415,10 +415,15 @@ one of them, it must leave compiled code immediately.
   do not force constant recompiles
   ([amiberry_host.cpp:752](../BasiliskII/amiberry/hosted/amiberry_host.cpp#L752)).
 
-**uae-portable-cpu today.**
-- No public API.
-- The x86 `flush_icache_range` is `static` and `#if 0`'d
-  ([compemu_support_x86.cpp:5485](../BasiliskII/vendor/uae-portable-cpu/src/cpu/jit/x86/compemu_support_x86.cpp#L5485)).
+**uae-portable-cpu today (`caa5e73`).**
+- `uae_cpu_invalidate_code()` exists, but ignores the range: it flushes the
+  whole cache and sets `SPCFLAG_END_COMPILE`
+  ([host_hooks.c:606](../BasiliskII/vendor/uae-portable-cpu/src/cpu/host_hooks.c#L606)).
+- The ARM backend has no `flush_icache_range` at all; the x86 one is `static`
+  and unreachable
+  ([compemu_support_x86.cpp:5499](../BasiliskII/vendor/uae-portable-cpu/src/cpu/jit/x86/compemu_support_x86.cpp#L5499)).
+- See *JIT performance findings* below: a whole-cache flush per code write is
+  what made the Amiberry engine spend most of its time recompiling.
 
 **Proposed contract.**
 - `uae_cpu_invalidate_code(cpu, addr, size)`: `size == ~0` flushes everything.
@@ -655,3 +660,73 @@ These files reference the Amiberry engine and will change when the swap lands:
   [scripts/vendor-uae-cputest.sh](../BasiliskII/scripts/vendor-uae-cputest.sh)
 - **Memory layout assumption:** the `0x50000000` SCC hole in
   [SDL/main_sdl.cpp:225](../BasiliskII/SDL/main_sdl.cpp#L225)
+
+---
+
+## JIT performance findings (September 2026)
+
+Profiling the running emulator (`sample` on the CPU thread) found it spending
+**79% of its time in `compile_block` and almost none in compiled code**. Four
+defects, fixed in the Amiberry engine; the measurements are the Speedometer-style
+CPU benchmark against a PowerMac 6100/60, Quadra 800 config, macOS arm64:
+
+| Fix | CPU score |
+|---|---|
+| Before | ~200% |
+| Defer icache invalidation to the end of the JIT write window (`2fe1c2b`) | 371% |
+| `jitcachesize` 2048 → 16384 (`c6338a2`) | 1497% |
+| Precise invalidation instead of a flush after every EmulOp (`11c0444`) | 2053% |
+
+FPU scores 3191% of a 6100/60, so the JIT FPU path is healthy.
+
+**1. An instruction-cache flush per branch patch.** `write_jmp_target()` called
+`sys_icache_invalidate` for every 4-byte patch, most of them inside
+`compile_block()`'s own write window: 61% of emulation-thread samples. Apple
+Silicon denies the thread execute on MAP_JIT pages until the window closes, so
+the flushes can be queued and merged, then issued once at the close.
+
+**2. A full cache flush after every host trap.** `op_emulop_1` dropped the whole
+translation cache after every EmulOp. Basilisk makes those constantly, so blocks
+were re-verified or recompiled continuously. Nothing compiled survives an EmulOp
+anyway: the block writes every register back before the call, EmulOps end their
+block, and nested `Execute68k` runs on the interpreter.
+
+**3. Invalidation that only matched block starts.** `flush_icache_range()`
+compared the written range against each block's *start*, so a write into the
+middle of a compiled block was missed. It now matches every checksum range and
+redirects just those blocks through `check_checksum`.
+
+**4. 68040 cache instructions never reached the JIT.** Mac OS announces new code
+with `CPUSHA`/`CINVA`; those only flushed the emulated hardware cache, and only
+pre-68040 `CACR` writes reached the JIT. On a Quadra that signal was lost
+entirely, and the blanket per-EmulOp flush was covering for it.
+
+Covered by [basilisk_jit_emulop_test](../BasiliskII/tests/basilisk/basilisk_jit_emulop_test.cpp),
+which runs a guest loop through `m68k_run_jit` until it is translated, with a
+host call each iteration that nests `Execute68k` and patches an instruction in
+the middle of a compiled block.
+
+### What this means for uae-portable-cpu
+
+Checked against `caa5e73`. **No upstream changes have been made; these are
+proposals.** Each is host-neutral — no Basilisk, Mac or Cockatrice concept
+appears in them — so any embedder that writes guest code (HLE traps,
+paravirtual drivers, debuggers, loaders) gets the same benefit.
+
+| # | Finding | Upstream status | Proposal |
+|---|---------|-----------------|----------|
+| 1 | Per-patch icache flush | **Gap.** Same pattern in `write_jmp_target` ([compemu_midfunc_arm64.cpp:728](../BasiliskII/vendor/uae-portable-cpu/src/cpu/jit/arm/compemu_midfunc_arm64.cpp#L728)); a `jit_write_window_depth` counter already exists | Queue and merge flush ranges while the window is open; issue them in `jit_end_write_window()`. Internal, no API change |
+| 2 | Flush per host trap | **Not a gap.** `uae_host_dispatch_trap_opcode()` never flushes, and reserved opcodes end blocks via `uae_host_jit_must_interpret()` | None |
+| 3 | Range-scoped invalidation | **Gap.** `uae_host_invalidate_code()` ignores addr/size and flushes everything | Match the written range against each block's checksum ranges and lazily redirect only those blocks. `size == ~0` keeps the full flush. Behaviour only; the API is already right |
+| 4 | Guest cache instructions | **Gap.** `flush_cpu_caches_040()` has no JIT path | Treat an instruction-cache `CINVA`/`CPUSHA`/`CINVP` as invalidation of the same scope, behind a config flag (default on) so hosts that keep code and data separate can opt out |
+
+Two further things the library already answers, noted so the port does not
+re-invent them:
+
+- **"Is translation actually running?"** `compile_block()` does nothing until
+  the guest enables its instruction cache, which cost real debugging time here.
+  Upstream defaults `jit_follow_cacr = false` (translate immediately), and
+  `uae_cpu_get_jit_code_size()` reports whether anything has been translated.
+- **Nested execution.** `uae_host_run()` runs translated code only at
+  `g_execute_depth == 1`; nested calls from inside a hook stay on the
+  interpreter, which is the model the Amiberry engine arrived at by hand.
