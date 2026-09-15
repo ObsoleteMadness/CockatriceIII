@@ -504,6 +504,72 @@ Verified with `ctest` on macOS arm64 and Ubuntu 24.04: default build 7/7, and
 isolated with the Musashi API off 3/3. Musashi and m68k-rs suite pass counts
 are unchanged from `bb2718a`.
 
+## JIT build upstream (`feat-jit-build`)
+
+A second upstream branch, stacked on `feat-host-hooks`, builds the ARM64 and
+x86-64 JIT in uae-portable-cpu. It also adds the JIT halves of hooks 1, 3, 5,
+6 and 11. What it means for the Cockatrice engine:
+
+- **Declare the flat window.** Call `uae_cpu_set_jit_memory_base(cpu, Host_Mem_Base)`.
+  Translated code derives the 68k PC from host pointers through that base, the
+  same assumption Amiberry's `natmem_offset` made. Code outside the window is
+  interpreted inside the JIT dispatcher.
+- **Translation does not wait for `CACR`.** WinUAE only compiles once the guest
+  enables the CPU cache. `jit_follow_cacr = false`, the default, compiles
+  immediately. Set it to true to match the old Amiberry engine exactly.
+- **Turn on direct memory access.** Set `jit_direct_memory = true` and map RAM,
+  ROM and the frame buffer with `UAE_MEM_JIT_DIRECT` at `Host_Mem_Base + address`.
+  This is the upstream form of the Amiberry engine's `canbang = true` with
+  `comptrust* = 0`. Without it, translated code calls a handler for every
+  access. The window must cover the whole 4 GB guest space, which
+  `Host_Mem_Base` already does.
+  - A region is only accessed inline if its host pointer is
+    `Host_Mem_Base + start`; anything else keeps its handler.
+  - ROM writes still go through the handler, so ROM write suppression is kept.
+  - Map the SCC windows with `uae_cpu_map_custom()`. Accesses profiling saw
+    there stay on the handler.
+  - An inlined access that later lands in an uncommitted hole: on x86-64 the
+    library completes it through the region's handler; on arm64 it reaches
+    Cockatrice's own SIGSEGV/SIGBUS handler, as with the Amiberry engine today.
+    The x86-64 handler chains to the one installed before it.
+  - The Amiberry engine forced `jit_n_addr_bank_unsafe = 1` after `MOVEM`
+    bursts corrupted memory. Upstream exposes that as
+    `UAE_MEM_JIT_UNSAFE_BURST`. Use it if that corruption reappears; on x86-64
+    it also turns inline access off.
+- **Hooks work under the JIT:**
+  - EmulOps (reserved opcodes) end blocks and are never compiled natively.
+  - Nested `Execute68k` runs on the interpreter.
+  - `dbf_spin` routes `DBF Dn` to its C handler while installed, which replaces
+    `compile_dbf_tight_delay`.
+  - `uae_cpu_invalidate_code()` flushes translated blocks.
+- **Bugs found while wiring it up**, each now covered by a test:
+  - uae-portable-cpu's `addrbank` put `name` before the accessors, so the JIT's
+    fixed-offset helper calls hit the wrong function.
+  - `m68k_run_jit`'s `STOPTRY` popped the caller's exception frame in C.
+  - `memory_map_ptr()` computed host offsets with `addr & mask`, which breaks
+    regions that don't start on a multiple of their size.
+
+Verified on macOS arm64 natively and on x86_64 under Rosetta:
+- **Tests:** 16/16 CTest, including JIT, direct-memory and benchmark smoke
+  variants. `host_hooks_jit_direct` checks inline access against a C reference,
+  that devices and regions outside the window keep their handlers, and the
+  x86-64 fault recovery path.
+- **Fixtures:** m68k-rs per-fixture results are identical for the interpreter,
+  the JIT and the JIT with direct access on the same flat memory map (104/127
+  and 25/25). Most fixture code runs once and stays below the JIT's translation
+  threshold, so the fixtures mainly check correctness around translated code.
+- **Benchmark:** `uae_cpu_bench` (upstream `bench/`) checks every run against a
+  C reference. Best of 3, seconds:
+
+  | Workload | arm64 interp | arm64 jit | arm64 jit-direct | x86_64 interp | x86_64 jit | x86_64 jit-direct |
+  |---|---|---|---|---|---|---|
+  | arith | 0.762 | 0.076 | 0.075 | 1.827 | 0.166 | 0.164 |
+  | bytemix | 0.812 | 0.111 | 0.086 | 1.774 | 0.208 | 0.121 |
+  | memcopy | 1.056 | 0.215 | 0.140 | 2.197 | 0.537 | 0.344 |
+  | device | 0.231 | 0.040 | 0.048 | 0.545 | 0.127 | 0.115 |
+
+  x86_64 ran under Rosetta, so only compare within a column family.
+
 ---
 
 ## What stays in Cockatrice glue (not core hooks)
@@ -517,8 +583,9 @@ These are Basilisk policy, not CPU behaviour. They belong in the new
   `cpu_engine_write_exec_return_frame`) and restoring the PC afterwards.
 - Warm reset via `setjmp`/`longjmp`, and `cpu_engine_reset_peripherals()`.
 - The boot SP/PC/SR (`CPU_ENGINE_BOOT_*`) set after `m68k_pulse_reset`.
-- JIT trust choices (`comptrust*`, cache size, `jitfpu`), as config passed to
-  `uae_cpu_create`.
+- JIT settings (`jit_enabled`, `jit_cache_size`, `jit_direct_memory`), as
+  config passed to `uae_cpu_create`. Upstream has no JIT FPU option yet
+  (`compfpu` stays off), so `jitfpu` has nothing to map to.
 - Low-heap and ROM-header diagnostic dumps (`cockatrice_m68k_low_heap_fault`,
   `cockatrice_uae_fline_trap` body), built on hooks 7 and 8.
 
