@@ -169,6 +169,23 @@ static uae_fpu_type_t uaecpu_map_fpu_type(void)
  */
 static void uaecpu_map_memory(void)
 {
+	/*
+	 * Back the whole 32-bit window first, the way Amiberry's dummy bank did:
+	 * Mac2HostAddr() is Host_Mem_Base + addr for every address, and host code
+	 * (ROM patches, test harnesses, drivers) writes through it directly, so a
+	 * hole the guest touches has to resolve to the same host memory instead of
+	 * dropping the write. Deliberately not UAE_MEM_JIT_DIRECT: as in Amiberry,
+	 * translated code calls the handlers for a hole rather than inlining an
+	 * access that might land in I/O space, and the handlers still resolve to
+	 * base + address. The real regions below overwrite these bank entries.
+	 *
+	 * Two halves because uae_cpu_map_memory() takes a uint32_t size.
+	 */
+	uae_cpu_map_memory(s_cpu, 0x00000000u, 0x80000000u,
+	                   Host_Mem_Base, UAE_MEM_RAM);
+	uae_cpu_map_memory(s_cpu, 0x80000000u, 0x80000000u,
+	                   Host_Mem_Base + 0x80000000u, UAE_MEM_RAM);
+
 	uae_cpu_map_memory(s_cpu, RAMBaseMac, RAMSize, Host_Mem_Base + RAMBaseMac,
 	                   UAE_MEM_RAM | UAE_MEM_CACHEABLE | UAE_MEM_JIT_DIRECT);
 	uae_cpu_map_memory(s_cpu, ROMBaseMac, ROMSize, Host_Mem_Base + ROMBaseMac,
@@ -354,6 +371,9 @@ static void uaecpu_execute_68k(uint32 addr, struct M68kRegisters *r)
 	sp = cpu_engine_write_exec_return_frame(sp, &ret_addr);
 	uae_cpu_set_reg(s_cpu, UAE_REG_A7, sp);
 	uae_cpu_set_reg(s_cpu, UAE_REG_PC, addr);
+
+	/* The EXEC_RETURN word is code this host just wrote into guest memory. */
+	uae_cpu_invalidate_code(s_cpu, ret_addr, 2);
 
 	PushReturnStack(&return_seen);
 	while (!return_seen && !s_quit_requested)

@@ -32,6 +32,13 @@ const TestEngineConfig kTestEngineConfigs[] = {
 	{ "uae",     false, false, "uae" },
 	{ "uae",     true,  false, "uae+jit" },
 	{ "uae",     true,  true,  "uae+jit+jitfpu" },
+#if defined(ENABLE_UAE_PORTABLE_CPU) && ENABLE_UAE_PORTABLE_CPU
+	/* The vendored uae-portable-cpu core, in the same three configurations as
+	 * Amiberry above so the two can be compared check for check. */
+	{ "uaecpu",  false, false, "uaecpu" },
+	{ "uaecpu",  true,  false, "uaecpu+jit" },
+	{ "uaecpu",  true,  true,  "uaecpu+jit+jitfpu" },
+#endif
 };
 const int kTestEngineConfigCount = (int)(sizeof(kTestEngineConfigs) / sizeof(kTestEngineConfigs[0]));
 
