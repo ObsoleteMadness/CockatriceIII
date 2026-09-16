@@ -26,6 +26,16 @@ int main(void)
 	CHECK(m68k_rs != NULL && strcmp(m68k_rs->id, "m68k_rs") == 0, "m68k-rs CPU engine found");
 	const CPUEngine *uae = GetCPUEngine("uae");
 	CHECK(uae != NULL && strcmp(uae->id, "uae") == 0, "Amiberry/UAE CPU engine found");
+#if defined(ENABLE_UAE_PORTABLE_CPU) && ENABLE_UAE_PORTABLE_CPU
+	/* The vendored uae-portable-cpu core, registered beside Amiberry. Both are
+	 * WinUAE forks, so this also proves the two link into one binary: the core
+	 * is linked symbol-isolated (see tests/Makefile). */
+	const CPUEngine *uaecpu = GetCPUEngine("uaecpu");
+	CHECK(uaecpu != NULL && strcmp(uaecpu->id, "uaecpu") == 0, "uae-portable-cpu engine found");
+	CHECK(uaecpu != uae, "uae-portable-cpu and Amiberry are distinct engines");
+	if (uaecpu)
+		CHECK(uaecpu->invalidate_code != NULL, "uae-portable-cpu exposes code invalidation");
+#endif
 
 	if (musashi)
 		CHECK(musashi->is_jit == false, "Musashi correctly flagged as non-JIT interpreter");
@@ -38,6 +48,10 @@ int main(void)
 	CHECK(GetActiveCPUEngine() == m68k_rs, "Active engine is m68k-rs");
 	CHECK(SetActiveCPUEngine("uae") == true, "SetActiveCPUEngine('uae') succeeded");
 	CHECK(GetActiveCPUEngine() == uae, "Active engine is Amiberry/UAE");
+#if defined(ENABLE_UAE_PORTABLE_CPU) && ENABLE_UAE_PORTABLE_CPU
+	CHECK(SetActiveCPUEngine("uaecpu") == true, "SetActiveCPUEngine('uaecpu') succeeded");
+	CHECK(GetActiveCPUEngine() == uaecpu, "Active engine is uae-portable-cpu");
+#endif
 	SetActiveCPUEngine("musashi");
 	CHECK(GetActiveCPUEngine() == musashi, "Switched back to Musashi engine");
 

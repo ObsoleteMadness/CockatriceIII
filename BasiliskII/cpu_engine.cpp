@@ -52,6 +52,15 @@ extern "C" uint32 cpu_engine_last_pc = 0;
 #ifndef ENABLE_M68K_RS_CPU
 #define ENABLE_M68K_RS_CPU 1
 #endif
+// The vendored uae-portable-cpu core (BasiliskII/vendor/uae-portable-cpu),
+// the GPL-2 replacement for the GPL-3 Amiberry engine, registered alongside
+// it while the two are compared.  Unlike the switches above this one is
+// opt-in: a port has to build the core's CMake project and link the
+// symbol-isolated archive (see OSX64/Makefile), so defaulting it on would
+// break every port that has not been taught to do that yet.
+#ifndef ENABLE_UAE_PORTABLE_CPU
+#define ENABLE_UAE_PORTABLE_CPU 0
+#endif
 
 // Forward declarations for built-in CPU engines
 extern const CPUEngine musashi_cpu_engine;
@@ -60,6 +69,9 @@ extern const CPUEngine amiberry_cpu_engine;
 #endif
 #if ENABLE_M68K_RS_CPU
 extern const CPUEngine m68k_rs_cpu_engine;
+#endif
+#if ENABLE_UAE_PORTABLE_CPU
+extern const CPUEngine uae_portable_cpu_engine;
 #endif
 
 // Engine registry state.  The initialiser and s_engine_count must agree, so
@@ -70,10 +82,13 @@ static const CPUEngine *s_engines[MAX_CPU_ENGINES] = {
 	&amiberry_cpu_engine,
 #endif
 #if ENABLE_M68K_RS_CPU
-	&m68k_rs_cpu_engine
+	&m68k_rs_cpu_engine,
+#endif
+#if ENABLE_UAE_PORTABLE_CPU
+	&uae_portable_cpu_engine
 #endif
 };
-static int s_engine_count = 1 + ENABLE_AMIBERRY_CPU + ENABLE_M68K_RS_CPU;
+static int s_engine_count = 1 + ENABLE_AMIBERRY_CPU + ENABLE_M68K_RS_CPU + ENABLE_UAE_PORTABLE_CPU;
 static const CPUEngine *s_active_engine = &musashi_cpu_engine;
 
 // Global JIT preference flags
@@ -785,6 +800,9 @@ static void EnsureEnginesRegistered(void)
 #endif
 #if ENABLE_M68K_RS_CPU
 		RegisterCPUEngine(&m68k_rs_cpu_engine);
+#endif
+#if ENABLE_UAE_PORTABLE_CPU
+		RegisterCPUEngine(&uae_portable_cpu_engine);
 #endif
 	}
 }

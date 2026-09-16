@@ -52,13 +52,20 @@ M68K_RS_DIR = ../m68k_rs
 M68K_RS_TARGET = $(OBJ_DIR)/m68k_rs_target
 M68K_RS_LIB = $(M68K_RS_TARGET)/$(CARGO_TRIPLE)/release/libcockatrice_m68k_rs.a
 
-DEFS = -DHAVE_CONFIG_H -D_REENTRANT \
+# Vendored uae-portable-cpu, symbol-isolated so its WinUAE-derived internals
+# do not collide with ../amiberry's (see OSX64/Makefile for the long version).
+UAECPU_DIR = ../vendor/uae-portable-cpu
+UAECPU_BUILD = $(OBJ_DIR)/uaecpu_build
+UAECPU_LIB = $(UAECPU_BUILD)/libuaecpu_isolated.a
+
+DEFS = -DHAVE_CONFIG_H -D_REENTRANT -DENABLE_UAE_PORTABLE_CPU=1 \
 	-DTEST_REPO_ROOT=\"$(REPO_ROOT)\" \
 	-DMUSASHI_TEST_DIR=\"$(abspath $(MUSASHI)/test)\" \
 	-DUAE_CPUTEST_BIN_PATH=\"$(abspath $(OBJ_DIR)/uae_cputest)\"
 
 INCLUDES = -Iinclude -I$(OSX64) -I../include -I$(MUSASHI) -I$(MUSASHI)/softfloat \
-	-I../Unix -I../dummy -I../amiberry -I../SDL -I../m68k_rs/include -I../jit_support
+	-I../Unix -I../dummy -I../amiberry -I../SDL -I../m68k_rs/include -I../jit_support \
+	-I../vendor/uae-portable-cpu/include
 
 CPPFLAGS = $(DEFS) $(INCLUDES)
 
@@ -175,6 +182,8 @@ $(OBJ_DIR)/amiberry_glue.o: ../amiberry/amiberry_glue.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/m68k_rs_glue.o: ../m68k_rs/m68k_rs_glue.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+$(OBJ_DIR)/uae_cpu_glue.o: ../uae_cpu/uae_cpu_glue.cpp | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 $(OBJ_DIR)/jit_host_darwin.o: ../jit_support/jit_host_darwin.cpp | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
 
@@ -194,24 +203,31 @@ CORE_OBJS = \
 	$(OBJ_DIR)/disk.o $(OBJ_DIR)/macos_util.o $(OBJ_DIR)/rom_patches.o \
 	$(OBJ_DIR)/rsrc_patches.o \
 	$(OBJ_DIR)/musashi_glue.o $(OBJ_DIR)/memory_musashi.o \
-	$(OBJ_DIR)/amiberry_glue.o $(OBJ_DIR)/m68k_rs_glue.o $(OBJ_DIR)/jit_host_darwin.o \
+	$(OBJ_DIR)/amiberry_glue.o $(OBJ_DIR)/m68k_rs_glue.o $(OBJ_DIR)/uae_cpu_glue.o $(OBJ_DIR)/jit_host_darwin.o \
 	$(OBJ_DIR)/m68kcpu.o $(OBJ_DIR)/m68kops.o $(OBJ_DIR)/m68kdasm.o $(OBJ_DIR)/softfloat.o
 
 LIB_OBJS = $(CORE_OBJS)
 
-$(OBJ_DIR)/libcockatrice_test.a: $(LIB_OBJS) $(AMIBERRY_OBJS) | $(OBJ_DIR)
+$(OBJ_DIR)/libcockatrice_test.a: $(LIB_OBJS) $(AMIBERRY_OBJS) $(UAECPU_LIB) | $(OBJ_DIR)
 	rm -f $@
 	ar rcs $@ $(LIB_OBJS) $(AMIBERRY_OBJS)
 
 $(AMIBERRY_OBJS):
 	$(MAKE) -C $(OSX64) amiberry-objs
 
-LIBS = -Wl,-force_load,$(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB) -lm -lpthread -ldl
+LIBS = -Wl,-force_load,$(OBJ_DIR)/libcockatrice_test.a $(M68K_RS_LIB) $(UAECPU_LIB) -lm -lpthread -ldl
 
 # Same cargo --target as OSX64 so ARCH=amd64 tests link an x86_64 staticlib.
 $(M68K_RS_LIB): $(M68K_RS_DIR)/Cargo.toml $(M68K_RS_DIR)/src/lib.rs ../vendor/m68k-rs/Cargo.toml | $(OBJ_DIR)
 	rustup target add $(CARGO_TRIPLE)
 	cargo build --release --target $(CARGO_TRIPLE) --manifest-path $(M68K_RS_DIR)/Cargo.toml --target-dir $(M68K_RS_TARGET)
+
+$(UAECPU_LIB): $(wildcard $(UAECPU_DIR)/src/cpu/*.c) $(wildcard $(UAECPU_DIR)/src/api/*.c) \
+		$(wildcard $(UAECPU_DIR)/src/cpu/jit/*/*.cpp) $(UAECPU_DIR)/CMakeLists.txt | $(OBJ_DIR)
+	cmake -S $(UAECPU_DIR) -B $(UAECPU_BUILD) -DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_OSX_ARCHITECTURES=$(lastword $(TARGET_ARCH)) \
+		-DUAE_CPU_ISOLATE_SYMBOLS=ON -DUAE_CPU_MUSASHI_API=OFF -DENABLE_TESTS=OFF
+	cmake --build $(UAECPU_BUILD) --target uaecpu_isolated -j8
 
 CPU_SRCS = cpu/cpu_test_main.cpp cpu/cpu_emulop.cpp cpu/cpu_instructions.cpp \
 	cpu/cpu_jsr.cpp cpu/cpu_exceptions.cpp cpu/cpu_fpu.cpp \

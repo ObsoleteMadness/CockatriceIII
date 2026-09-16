@@ -82,13 +82,13 @@ SDL_CFLAGS := $(shell $(SDL_PREFIX)/bin/sdl-config --cflags 2>/dev/null || echo 
 SDL_LIBS := $(shell $(SDL_PREFIX)/bin/sdl-config --libs 2>/dev/null || echo "-L$(SDL_PREFIX)/lib -lSDL -Wl,-framework,Cocoa")
 
 CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I../bridge/darwin \
-	-I../m68k_rs/include -I../jit_support \
+	-I../m68k_rs/include -I../jit_support -I../vendor/uae-portable-cpu/include \
 	-I$(SDL_PREFIX)/include -I/opt/homebrew/include -I/usr/local/include $(SDL_CFLAGS)
 
 HOST_CPPFLAGS = -I../include -I. -I../Musashi -I../Musashi/softfloat -I../Unix -I../SDL -I../bridge/darwin
 HOST_CFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-deprecated-non-prototype
 HOST_CXXFLAGS = $(OPT_LEVEL) -Wall -Wno-unused -Wno-writable-strings -Wno-multichar -Wno-deprecated-declarations -Wno-format -Wno-c++11-narrowing
-DEFS = -DHAVE_CONFIG_H -D_REENTRANT
+DEFS = -DHAVE_CONFIG_H -D_REENTRANT -DENABLE_UAE_PORTABLE_CPU=1
 ifeq ($(COCKATRICE_DEBUG),1)
   DEFS += -DCOCKATRICE_DEBUG=1 -DSCC_DEBUG=1 -DEMULOP_DEBUG=1 -DHEARTBEAT_DEBUG=1
 endif
@@ -99,9 +99,14 @@ M68K_RS_DIR = ../m68k_rs
 M68K_RS_TARGET = $(OBJ_DIR)/m68k_rs_target
 M68K_RS_LIB = $(M68K_RS_TARGET)/$(CARGO_TRIPLE)/release/libcockatrice_m68k_rs.a
 
+# Vendored uae-portable-cpu core, built by its own CMake project.
+UAECPU_DIR = ../vendor/uae-portable-cpu
+UAECPU_BUILD = $(OBJ_DIR)/uaecpu_build
+UAECPU_LIB = $(UAECPU_BUILD)/libuaecpu_isolated.a
+
 SYSSRCS = sdlmain.m ../bridge/darwin/macos_menu_bridge.mm ../bridge/darwin/macos_window_bridge.mm ../SDL/sdl_pcap.cpp ../SDL/audio_sdl.cpp ../dummy/scsi_dummy.cpp ../dummy/prefs_editor_dummy.cpp
 
-CPUSRCS = ../cpu_engine.cpp ../cpu_glue.cpp ../memory.cpp ../Musashi/musashi_glue.cpp ../Musashi/memory_musashi.cpp ../amiberry/amiberry_glue.cpp ../m68k_rs/m68k_rs_glue.cpp ../jit_support/jit_host_darwin.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c
+CPUSRCS = ../cpu_engine.cpp ../cpu_glue.cpp ../memory.cpp ../Musashi/musashi_glue.cpp ../Musashi/memory_musashi.cpp ../amiberry/amiberry_glue.cpp ../m68k_rs/m68k_rs_glue.cpp ../uae_cpu/uae_cpu_glue.cpp ../jit_support/jit_host_darwin.cpp ../Musashi/m68kcpu.c ../Musashi/m68kops.c ../Musashi/m68kdasm.c ../Musashi/softfloat/softfloat.c
 
 # Amiberry 680x0 CPU + JIT (ARM64 and x86-64 backends selected by the compiler).
 AMIBERRY_DIR = ../amiberry
@@ -257,8 +262,8 @@ $(CROSS_SDL_X86)/bin/sdl-config:
 	@echo "then git add dist/dependencies/osx/intel"
 	@exit 1
 
-$(APP): $(OBJ_DIR) slirp_lib $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB)
-	$(CXX) -o $(APP) $(LDFLAGS) $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB) $(LIBS)
+$(APP): $(OBJ_DIR) slirp_lib $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB) $(UAECPU_LIB)
+	$(CXX) -o $(APP) $(LDFLAGS) $(OBJS) $(AMIBERRY_OBJS) $(M68K_RS_LIB) $(UAECPU_LIB) $(LIBS)
 	@if [ -f entitlements.plist ]; then \
 		echo "Codesigning $(APP) with entitlements.plist..."; \
 		codesign -s - --force --entitlements entitlements.plist $(APP); \
@@ -294,6 +299,23 @@ clean-objects:
 $(M68K_RS_LIB): $(M68K_RS_DIR)/Cargo.toml $(M68K_RS_DIR)/src/lib.rs ../vendor/m68k-rs/Cargo.toml ../vendor/m68k-rs/src/core/op_cache.rs
 	rustup target add $(CARGO_TRIPLE)
 	cargo build --release --target $(CARGO_TRIPLE) --manifest-path $(M68K_RS_DIR)/Cargo.toml --target-dir $(M68K_RS_TARGET)
+
+# Both this core and ../amiberry are WinUAE forks, so they share ~300 internal
+# symbol names (cpufunctbl, compiled_code, fpp_*, ...) and cannot be linked
+# into one binary as plain archives. UAE_CPU_ISOLATE_SYMBOLS re-links the core
+# into a relocatable object exporting only its public API, and
+# UAE_CPU_MUSASHI_API=OFF drops the m68k_* surface that would otherwise clash
+# with ../Musashi: together they leave exactly the 53 uae_cpu_* symbols, which
+# collide with nothing. CMAKE_OSX_ARCHITECTURES pins the slice (isolation
+# allows only one architecture per build) so `make universal` links a matching
+# archive.
+$(UAECPU_LIB): $(wildcard $(UAECPU_DIR)/src/cpu/*.c) $(wildcard $(UAECPU_DIR)/src/cpu/*.h) \
+		$(wildcard $(UAECPU_DIR)/src/api/*.c) $(wildcard $(UAECPU_DIR)/src/cpu/jit/*/*.cpp) \
+		$(UAECPU_DIR)/CMakeLists.txt
+	cmake -S $(UAECPU_DIR) -B $(UAECPU_BUILD) -DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_OSX_ARCHITECTURES=$(lastword $(TARGET_ARCH)) \
+		-DUAE_CPU_ISOLATE_SYMBOLS=ON -DUAE_CPU_MUSASHI_API=OFF -DENABLE_TESTS=OFF
+	cmake --build $(UAECPU_BUILD) --target uaecpu_isolated -j8
 
 mostlyclean: clean-objects
 	rm -f $(APP)-arm64 $(APP)-x86_64
