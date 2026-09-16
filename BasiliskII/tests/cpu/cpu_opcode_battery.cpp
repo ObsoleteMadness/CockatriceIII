@@ -80,7 +80,20 @@ static void run_one_opcode_image(const char *engine, const char *path)
 	char msg[300];
 	snprintf(msg, sizeof(msg), "opcode battery: %s (pass_reg=%08X fail_reg=%08X)",
 	         path, pass_reg, fail_reg);
-	CHECK_ENG(pass_reg == 1 && fail_reg == 0xFFFFFFFF, engine, msg);
+	bool ok = (pass_reg == 1 && fail_reg == 0xFFFFFFFF);
+	if (!ok) {
+		/*
+		 * The pass/fail cells say only that some check failed. The images
+		 * themselves compare cumulative results in D3/D4/D5 (abcd, sbcd) or a
+		 * trap sentinel in D6 (chk2, 0xEEEE0006 when the handler ran), and
+		 * Execute68k has filled those in on return -- so print them, or there
+		 * is no way to tell which of an image's checks diverged.
+		 */
+		printf("  [CPU-TEST] %s failed: D0=%08X D1=%08X D2=%08X D3=%08X D4=%08X D5=%08X D6=%08X D7=%08X\n",
+		       path, r.d[0], r.d[1], r.d[2], r.d[3], r.d[4], r.d[5], r.d[6], r.d[7]);
+		fflush(stdout);
+	}
+	CHECK_ENG(ok, engine, msg);
 }
 
 void test_opcode_battery(const char *engine)
