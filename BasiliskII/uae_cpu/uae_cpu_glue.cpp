@@ -34,11 +34,21 @@ static uae_cpu_t *s_cpu = NULL;
 /*
  * Cycle budget per uae_cpu_execute() call. The top-level loop re-checks the
  * quit flag and publishes the guest PC between slices; a nested Execute68k
- * uses a shorter budget so a runaway subroutine still returns to C++.
+ * keeps a budget too, so a runaway subroutine still returns to C++.
+ *
+ * These are deliberately large. An installed get_irq hook makes the core arm
+ * an interrupt check at the start of every execute call, so the budget sets
+ * the re-arm rate: with a 10000-cycle nested budget the CPU suite's
+ * interrupt-stress test took 2.87M interrupts against Amiberry's 624 for the
+ * same workload, because Amiberry runs a nested Execute68k as one unbounded
+ * slice (m68k_run_interpreter_slice) rather than a stream of short ones. A
+ * call still returns as soon as uae_cpu_end_timeslice() fires, which is how
+ * the EXEC_RETURN opcode ends a nested run, so a large budget costs nothing
+ * in the normal case and only bounds a subroutine that never returns.
  */
 enum {
-	UAE_SLICE_CYCLES = 100000,
-	UAE_NESTED_CYCLES = 10000
+	UAE_SLICE_CYCLES = 1000000,
+	UAE_NESTED_CYCLES = 1000000
 };
 
 /*
