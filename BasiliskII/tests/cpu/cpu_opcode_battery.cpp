@@ -31,7 +31,7 @@ static const char *musashi_test_dir(void)
 #ifdef MUSASHI_TEST_DIR
 	return MUSASHI_TEST_DIR;
 #else
-	return "../Musashi/test";
+	return "../vendor/musashi/test";
 #endif
 }
 
