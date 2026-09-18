@@ -31,86 +31,66 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS ARM64 (Apple Silicon) — native on macos-latest (arm64).
-          # Intel hosted runners are deprecated; all three macOS artifacts
-          # are produced from this Apple Silicon runner.
+          # --- macOS -------------------------------------------------------
+          # Intel hosted runners are deprecated, so all three macOS artifacts
+          # come off the Apple Silicon runner: the x86_64 slice is cross-built
+          # against the committed Intel SDL prefix.
           - target: osx-arm
             os: macos-latest
             platform: osx
             arch: arm64
-            build_dir: BasiliskII/OSX64
-            artifact_name: CockatriceIII-osx-arm.dmg
             package_ext: dmg
 
-          # macOS AMD64 (Intel x86_64) — clang -arch x86_64 + a native-built
-          # x86_64 SDL prefix + cargo --target x86_64-apple-darwin.
           - target: osx-amd64
             os: macos-latest
             platform: osx
             arch: amd64
-            build_dir: BasiliskII/OSX64
-            artifact_name: CockatriceIII-osx-amd64.dmg
             package_ext: dmg
 
-          # macOS universal (arm64 + x86_64 fat binary via lipo), same runner.
           - target: osx-universal
             os: macos-latest
             platform: osx
             arch: universal
-            build_dir: BasiliskII/OSX64
-            artifact_name: CockatriceIII-osx-universal.dmg
             package_ext: dmg
 
-          # Windows x64 -- also builds the Amiberry/UAE JIT engine and the
-          # m68k-rs Rust engine (mingw-w64-x86_64-rust provides cargo/rustc
-          # already targeting x86_64-pc-windows-gnu, this env's host triple).
-          - target: win32-x64
+          # --- Windows -----------------------------------------------------
+          # 32-bit x86 was dropped with the move to a 64-bit-only guest window.
+          - target: win-x64
             os: windows-latest
             platform: windows
-            arch: x64
+            arch: AMD64
             msystem: MINGW64
-            pacman_packages: mingw-w64-x86_64-toolchain mingw-w64-x86_64-sdl12-compat mingw-w64-x86_64-rust make
-            build_dir: BasiliskII/mingw
-            artifact_name: CockatriceIII-win32-x64
-            package_ext: zip
+            pacman_packages: >-
+              mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake
+              mingw-w64-x86_64-ninja mingw-w64-x86_64-sdl12-compat
+              mingw-w64-x86_64-rust
 
-          # Windows x86 (32-bit) -- also builds the Amiberry/UAE interpreter
-          # and JIT (its x86 JIT backend already covers CPU_i386, not just
-          # CPU_x86_64; see BasiliskII/mingw/Makefile) and m68k-rs. MSYS2
-          # dropped its own mingw32 Rust package (msys2/MINGW-packages#23346),
-          # but windows-latest ships rustup/cargo preinstalled and this
-          # env's i686 GCC is DWARF2-exception-based -- matching what Rust's
-          # prebuilt i686-pc-windows-gnu std expects -- so cross-compiling to
-          # that target with the preinstalled toolchain should link fine here
-          # (see the "Build Windows" step below), even though it can't
-          # locally on this project's Homebrew macOS cross toolchain, which
-          # is SJLJ-exception-based instead.
-          - target: win32-x86
-            os: windows-latest
-            platform: windows
-            arch: x86
-            msystem: MINGW32
-            pacman_packages: mingw-w64-i686-toolchain mingw-w64-i686-sdl12-compat make
-            build_dir: BasiliskII/mingw
-            artifact_name: CockatriceIII-win32-x86
-            package_ext: zip
-
-          # Windows ARM (ARM64) -- also builds the Amiberry/UAE JIT engine
-          # and the m68k-rs Rust engine (mingw-w64-clang-aarch64-rust
-          # targets aarch64-pc-windows-gnullvm, this env's host triple).
-          - target: win32-arm
+          - target: win-arm64
             os: windows-11-arm
             platform: windows
-            arch: arm64
+            arch: ARM64
             msystem: CLANGARM64
-            pacman_packages: mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-sdl12-compat mingw-w64-clang-aarch64-rust make
-            build_dir: BasiliskII/mingw
-            artifact_name: CockatriceIII-win32-arm
-            package_ext: zip
+            pacman_packages: >-
+              mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-cmake
+              mingw-w64-clang-aarch64-ninja mingw-w64-clang-aarch64-sdl12-compat
+              mingw-w64-clang-aarch64-rust
+
+          # --- Linux -------------------------------------------------------
+          - target: linux-x64
+            os: ubuntu-latest
+            platform: linux
+            arch: AMD64
+
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            platform: linux
+            arch: ARM64
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Determine version
         id: version
@@ -124,15 +104,23 @@ jobs:
             VER="dev-${GITHUB_SHA::7}"
           fi
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
-          echo "Building Cockatrice III version: ${VER} for ${{ matrix.target }}"
+          echo "Building Cockatrice III ${VER} for ${{ matrix.target }}"
 
-      # --- macOS Setup & Build ---
+      # --- macOS ----------------------------------------------------------
       # Same script locally: scripts/ci-osx-build.sh arm64|amd64|universal
       - name: Build macOS (${{ matrix.target }})
         if: matrix.platform == 'osx'
         run: scripts/ci-osx-build.sh "${{ matrix.arch }}" "${{ steps.version.outputs.version }}"
 
-      - name: Package macOS Distribution (.dmg)
+      - name: Test macOS
+        if: matrix.platform == 'osx' && matrix.arch == 'arm64'
+        run: |
+          cmake --build build -j"$(sysctl -n hw.ncpu)"
+          ctest --test-dir build -L gate --output-on-failure
+          # Engine accuracy is reported, not gated: see BasiliskII/tests/README.md
+          ctest --test-dir build -L cpu --output-on-failure || true
+
+      - name: Package macOS (.dmg)
         if: matrix.platform == 'osx'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -141,21 +129,16 @@ jobs:
           rm -rf "${STAGING_DIR}" "${PKG_NAME}.dmg"
           mkdir -p "${STAGING_DIR}"
 
-          # Copy built binary
-          cp "${{ matrix.build_dir }}/CockatriceIII" "${STAGING_DIR}/"
+          cp build/CockatriceIII "${STAGING_DIR}/"
           chmod +x "${STAGING_DIR}/CockatriceIII"
+          cp -R build/CockatriceIII.app "${STAGING_DIR}/"
 
-          # Copy built .app bundle (double-clickable distribution)
-          cp -R "${{ matrix.build_dir }}/CockatriceIII.app" "${STAGING_DIR}/"
-
-          # Copy root of ./dist (prefs, rom, xpram, archive) next to the
-          # flat binary AND inside the .app bundle: CockatriceIII resolves
-          # them relative to its own working directory, which on a
-          # Finder/no-arg launch is chdir'd to the bundle root (see
-          # setupWorkingDirectory() in sdlmain.m), not the binary's folder.
-          # The ROM is the exception: `make bundle` already placed it in
-          # Contents/Resources, which main_sdl.cpp falls back to, so don't
-          # duplicate it at the bundle root too.
+          # CockatriceIII resolves prefs/xpram/archive relative to its own
+          # working directory, which on a Finder launch is the bundle root (see
+          # setupWorkingDirectory in platform/darwin/sdlmain.m) -- so they go
+          # both next to the flat binary and inside the bundle. The ROM is the
+          # exception: the bundle target already placed it logic-side in
+          # Contents/Resources, which main_sdl.cpp falls back to.
           for DEST in "${STAGING_DIR}" "${STAGING_DIR}/CockatriceIII.app"; do
             cp dist/CockatriceIII_Prefs "${DEST}/"
             [ -f dist/CockatriceIII_XPRAM ] && cp dist/CockatriceIII_XPRAM "${DEST}/"
@@ -163,14 +146,13 @@ jobs:
           done
           [ -f dist/Quadra800.rom ] && cp dist/Quadra800.rom "${STAGING_DIR}/"
 
-          # Copy root documentation
           cp ChangeLog COPYING INSTALL README roms.txt TECH TODO "${STAGING_DIR}/"
 
-          # Create DMG
-          hdiutil create -volname "CockatriceIII" -srcfolder "${STAGING_DIR}" -ov -format UDZO "${PKG_NAME}.dmg"
+          hdiutil create -volname "CockatriceIII" -srcfolder "${STAGING_DIR}" \
+            -ov -format UDZO "${PKG_NAME}.dmg"
           echo "PACKAGE_FILE=${PKG_NAME}.dmg" >> "$GITHUB_ENV"
 
-      # --- Windows Setup & Build (MSYS2) ---
+      # --- Windows (MSYS2) -------------------------------------------------
       - name: Set up MSYS2 (${{ matrix.msystem }})
         if: matrix.platform == 'windows'
         uses: msys2/setup-msys2@v2
@@ -183,30 +165,17 @@ jobs:
         if: matrix.platform == 'windows'
         shell: msys2 {0}
         run: |
-          EXTRA_MAKE_VARS=""
-          if [ "${{ matrix.arch }}" = "x86" ]; then
-            # win32-x86 has no MSYS2-packaged Rust (msys2/MINGW-packages#23346).
-            # windows-latest runners ship rustup/cargo preinstalled, but msys2's
-            # own shell PATH doesn't include it and $GITHUB_PATH additions from a
-            # prior step don't reliably carry into this one -- so add it here,
-            # in the same step, right before the Makefile's own
-            # `rustup target add i686-pc-windows-gnu` runs. This adds that
-            # target's std to whatever host toolchain is already installed
-            # (cross-compiling for i686-pc-windows-gnu works from any host);
-            # CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER=cc then links the result
-            # with this MINGW32 shell's own gcc, which is DWARF2-exception-based
-            # like that std expects -- see the win32-x86 matrix comment above.
-            # $HOME here is msys2's own home (/home/runneradmin), not the
-            # Windows profile rustup installed into -- use $USERPROFILE
-            # (inherited from the Windows environment) instead.
-            CARGO_BIN="$(cygpath -u "$USERPROFILE")/.cargo/bin"
-            export PATH="$CARGO_BIN:$PATH"
-            command -v cargo >/dev/null 2>&1 || { echo "::error::cargo not found on PATH ($CARGO_BIN)"; exit 1; }
-            EXTRA_MAKE_VARS="ENABLE_M68K_RS_CPU=1"
-          fi
-          make -C ${{ matrix.build_dir }} ARCH=${{ matrix.arch }} CC=cc CXX=c++ ${EXTRA_MAKE_VARS} -j${NUMBER_OF_PROCESSORS}
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"${NUMBER_OF_PROCESSORS}"
           echo "Imported DLLs:"
-          objdump -p "${{ matrix.build_dir }}/CockatriceIII.exe" | awk '/DLL Name:/ {print $3}'
+          objdump -p build/BasiliskII/CockatriceIII.exe | awk '/DLL Name:/ {print $3}'
+
+      - name: Test Windows
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: |
+          ctest --test-dir build -L gate --output-on-failure
+          ctest --test-dir build -L cpu --output-on-failure || true
 
       - name: Stage Windows distribution
         if: matrix.platform == 'windows'
@@ -216,31 +185,20 @@ jobs:
           rm -rf "${STAGING_DIR}"
           mkdir -p "${STAGING_DIR}"
 
-          # Copy built executable
-          cp "${{ matrix.build_dir }}/CockatriceIII.exe" "${STAGING_DIR}/"
-
-          # Copy root of ./dist
+          cp build/BasiliskII/CockatriceIII.exe "${STAGING_DIR}/"
           cp dist/CockatriceIII_Prefs "${STAGING_DIR}/"
           [ -f dist/CockatriceIII_XPRAM ] && cp dist/CockatriceIII_XPRAM "${STAGING_DIR}/"
           [ -f dist/Quadra800.rom ] && cp dist/Quadra800.rom "${STAGING_DIR}/"
           [ -d dist/archive ] && cp -r dist/archive "${STAGING_DIR}/"
+          if [ -d dist/win32 ]; then cp -r dist/win32/* "${STAGING_DIR}/"; fi
 
-          # Copy win32 support content (SDL.dll, dbghelp.dll, ethlist.exe, etc.) to root
-          if [ -d dist/win32 ]; then
-            cp -r dist/win32/* "${STAGING_DIR}/"
-          elif [ -d dist/windows ]; then
-            cp -r dist/windows/* "${STAGING_DIR}/"
-          fi
-
-          # Ship toolchain DLLs from the same MSYSTEM as the compiler so the
-          # zip is self-contained and ARM64 cannot pick up an x64
-          # libwinpthread/SDL from PATH (0xc000007b). sdl12-compat's SDL.dll
-          # still needs SDL2.dll even when the exe only imports SDL.dll.
+          # Ship toolchain DLLs from the same MSYSTEM as the compiler so the zip
+          # is self-contained and ARM64 cannot pick up an x64 libwinpthread or
+          # SDL from PATH (0xc000007b). sdl12-compat's SDL.dll needs SDL2.dll
+          # even though the exe only imports SDL.dll.
           BINDIR="$(dirname "$(command -v c++)")"
           for dll in SDL.dll SDL2.dll; do
-            if [ -f "${BINDIR}/${dll}" ]; then
-              cp "${BINDIR}/${dll}" "${STAGING_DIR}/"
-            fi
+            [ -f "${BINDIR}/${dll}" ] && cp "${BINDIR}/${dll}" "${STAGING_DIR}/"
           done
           for pass in 1 2 3; do
             for f in "${STAGING_DIR}"/*.exe "${STAGING_DIR}"/*.dll; do
@@ -253,13 +211,46 @@ jobs:
             done
           done
 
-          # Copy root documentation
           cp ChangeLog COPYING INSTALL README roms.txt TECH TODO "${STAGING_DIR}/"
 
-          # Do not pre-zip: upload-artifact already wraps the folder in a zip.
-          # Zipping here produced a zip-in-zip download (and .zip.zip from the
-          # artifact name). GitHub Releases zip this folder in the release job.
+      # --- Linux -----------------------------------------------------------
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          # sdl12-compat provides the SDL 1.2 API on top of SDL2; libpcap-dev is
+          # needed for its headers only -- the library itself is dlopen'd at
+          # runtime (see SDL/sdl_pcap.cpp).
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build build-essential \
+            libsdl1.2-compat-dev libpcap-dev
 
+      - name: Build Linux (${{ matrix.target }})
+        if: matrix.platform == 'linux'
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Test Linux
+        if: matrix.platform == 'linux'
+        run: |
+          ctest --test-dir build -L gate --output-on-failure
+          ctest --test-dir build -L cpu --output-on-failure || true
+
+      - name: Stage Linux distribution
+        if: matrix.platform == 'linux'
+        run: |
+          STAGING_DIR="dist_staging"
+          rm -rf "${STAGING_DIR}"
+          mkdir -p "${STAGING_DIR}"
+          cp build/BasiliskII/CockatriceIII "${STAGING_DIR}/"
+          cp dist/CockatriceIII_Prefs "${STAGING_DIR}/"
+          [ -f dist/CockatriceIII_XPRAM ] && cp dist/CockatriceIII_XPRAM "${STAGING_DIR}/"
+          [ -f dist/Quadra800.rom ] && cp dist/Quadra800.rom "${STAGING_DIR}/"
+          [ -d dist/archive ] && cp -r dist/archive "${STAGING_DIR}/"
+          cp ChangeLog COPYING INSTALL README roms.txt TECH TODO "${STAGING_DIR}/"
+
+      # --- Artifacts -------------------------------------------------------
       - name: Upload macOS artifact
         if: matrix.platform == 'osx'
         uses: actions/upload-artifact@v4
@@ -268,8 +259,8 @@ jobs:
           path: ${{ env.PACKAGE_FILE }}
           if-no-files-found: error
 
-      - name: Upload Windows artifact
-        if: matrix.platform == 'windows'
+      - name: Upload artifact (Windows/Linux)
+        if: matrix.platform != 'osx'
         uses: actions/upload-artifact@v4
         with:
           name: CockatriceIII-${{ steps.version.outputs.version }}-${{ matrix.target }}
@@ -310,7 +301,7 @@ jobs:
             [ -d "$d" ] || continue
             base="$(basename "$d")"
             case "$base" in
-              *win32-*)
+              *win-*|*linux-*)
                 (cd "$d" && zip -r "$GITHUB_WORKSPACE/release_files/${base}.zip" .)
                 ;;
             esac
