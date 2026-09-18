@@ -38,6 +38,7 @@
 #include "sys.h"
 #include "prefs.h"
 #include "sony.h"
+#include "cpu_engine.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -463,6 +464,10 @@ int16 SonyPrime(uint32 pb, uint32 dce)
 		actual = Sys_read(info->fh, buffer, position, length);
 		if (actual != length)
 			return readErr;
+
+		// The block just read may be guest code; tell the CPU engine so a JIT
+		// cannot execute a stale translation of the previous contents.
+		cpu_engine_invalidate_code(ReadMacInt32(pb + ioBuffer), (uint32)actual);
 
 		// Clear TagBuf
 		WriteMacInt32(0x2fc, 0);
