@@ -102,27 +102,13 @@ static void memory_register_builtin_mmio(void);
 /*
  * Size of the host VA window to reserve behind Host_Mem_Base.
  *
- * 64-bit hosts reserve the whole 4GB Mac address space, matching UAE's
- * natmem-free direct addressing. A 32-bit host (Win32/i686) cannot: SIZE_T
- * is 32-bit there (a literal 4GB silently truncates to 0), and a 32-bit
- * process doesn't have 4GB of free contiguous VA to begin with. There,
- * RAM/ROM/framebuffer are instead laid out contiguously starting at Mac
- * address 0 (see SDL/main_sdl.cpp, which sets ROMBaseMac/MacFrameBaseMac
- * before calling memory_init()), so the window only needs to cover that
- * span plus headroom for the largest framebuffer Video_BuildPresets() could
- * later pick -- the actual resolution isn't known yet at this point.
+ * Every supported host is 64-bit, so the whole 4GB Mac address space is
+ * reserved outright, matching UAE's natmem-free direct addressing. RAM, ROM
+ * and the framebuffer therefore sit at their real hardware addresses.
  */
 static uint64 memory_compute_window_size(void)
 {
-#if defined(_WIN32) && !defined(_WIN64)
-	const uint64 fb_headroom = 256ULL * 1024 * 1024;
-	uint64 size = (uint64)MacFrameBaseMac + fb_headroom;
-	size_t page = memory_page_size();
-	size = (size + page - 1) & ~((uint64)page - 1);
-	return size;
-#else
 	return 0x100000000ULL;
-#endif
 }
 
 /*

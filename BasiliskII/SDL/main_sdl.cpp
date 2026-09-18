@@ -5,9 +5,6 @@
 #include <SDL/SDL_thread.h>
 #include <io.h>
 #include <direct.h>		//for _chdir
-#if defined(USE_EXCHNDL) || (defined(__i386__) && !defined(__x86_64__))
-#include "../drmingw-0.7.7-win32/include/exchndl.h"
-#endif
 #else
 #include <SDL/SDL.h>
 #include <SDL/SDL_main.h>
@@ -89,8 +86,10 @@ extern void slirp_tic(void);	//to keep slirp happy
 
 // The POSIX crash reporter below needs <execinfo.h> backtrace(), sigaction()
 // with SA_SIGINFO, and sys_siglist -- none of which the MinGW/Windows CRT
-// provides.  Windows builds get their crash dumps from DrMinGW (exchndl)
-// instead, wired up in main() further down, so compile the handler out there.
+// provides, so the handler compiles out there.  Windows used to get crash
+// dumps from DrMinGW instead, but that was only ever linked for the 32-bit
+// x86 target and was removed along with it, so Windows currently has no
+// crash reporter at all.
 #ifndef WIN32
 #include <execinfo.h>
 
@@ -162,10 +161,6 @@ int main(int argc, char *argv[])
 
 	//	_chdir("c:\\test\\");
 	// Initialize variables
-#if defined(WIN32) && (defined(USE_EXCHNDL) || (defined(__i386__) && !defined(__x86_64__)))
-	//Setup DrMinGW
-	ExcHndlInit();
-#endif
 	RAMBaseHost = NULL;
 	ROMBaseHost = NULL;
 	srand(time(NULL));
@@ -215,23 +210,7 @@ int main(int argc, char *argv[])
 
 	// Initialize unified flat memory window
 	RAMBaseMac = 0;
-#if defined(_WIN32) && !defined(_WIN64)
-	/* A 32-bit process can't reserve a 4GB flat window (see memory.cpp's
-	 * memory_compute_window_size()), so lay RAM/ROM/framebuffer out
-	 * contiguously and dynamically instead of at their real hardware
-	 * addresses, matching upstream BasiliskII's DIRECT_ADDRESSING scheme.
-	 * Cap RAMSize well under what the window can hold -- classic Mac OS
-	 * itself never addresses anywhere near this much RAM anyway. */
-	/* Amiberry's UAE JIT bank table has a fixed SCC hole at 0x50000000 (see
-	 * amiberry_host.cpp); keep RAM+ROM+framebuffer safely below it. */
-	static const uint32 WIN32_MAX_RAMSIZE = 512 * 1024 * 1024; // 512MB
-	if (RAMSize > WIN32_MAX_RAMSIZE)
-		RAMSize = WIN32_MAX_RAMSIZE;
-	ROMBaseMac = RAMSize;
-	MacFrameBaseMac = ROMBaseMac + 0x00800000; // matches memory.cpp's 8MB ROM window
-#else
 	ROMBaseMac = 0x40800000;
-#endif
 	memory_init();
 	memset(ROMBaseHost, 0xAA, 0x100000);
 
