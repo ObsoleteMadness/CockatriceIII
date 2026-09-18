@@ -1,17 +1,18 @@
 /*
  *  uae_cpu_glue.cpp - uae-portable-cpu 680x0 engine adapter for Cockatrice III
  *
- *  Prefs `cpu_emulator uaecpu` selects the vendored uae-portable-cpu core
+ *  Prefs `cpu_emulator uae` selects the vendored uae-portable-cpu core
  *  (BasiliskII/vendor/uae-portable-cpu), driven entirely through its public
  *  uae_cpu_* API. This is the GPL-2 replacement for the GPL-3 Amiberry
- *  engine in ../amiberry; both are registered while the two are compared.
+ *  engine, whose "uae" engine id it took over when that was removed.
  *
  *  The core is linked with UAE_CPU_MUSASHI_API=OFF: its Musashi-compatible
  *  m68k_* API would otherwise collide with the 27 same-named symbols this
- *  binary already gets from ../Musashi.
+ *  binary already gets from ../vendor/musashi.
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <setjmp.h>
 
@@ -135,9 +136,9 @@ static void uaecpu_on_exception(void *ud, const uae_cpu_exception_info_t *info)
 		d[i] = uae_cpu_get_reg(s_cpu, (uae_reg_t)(UAE_REG_D0 + i));
 		a[i] = uae_cpu_get_reg(s_cpu, (uae_reg_t)(UAE_REG_A0 + i));
 	}
-	cockatrice_set_cpu_exception_context("uaecpu", info->opcode, info->fault_pc,
+	cockatrice_set_cpu_exception_context("uae", info->opcode, info->fault_pc,
 	                                     info->current_pc, info->sr, d, a);
-	cockatrice_report_cpu_exception("uaecpu", info->vector, info->fault_pc);
+	cockatrice_report_cpu_exception("uae", info->vector, info->fault_pc);
 }
 
 static int uaecpu_on_get_irq(void *ud)
@@ -243,7 +244,28 @@ static bool uaecpu_init(void)
 	/* Mac OS leaves the 68040 caches enabled; translate from the first block
 	 * instead of waiting for a CACR write that a warm boot never repeats. */
 	cfg.jit_follow_cacr = false;
-	cfg.jit_direct_memory = true;
+	/*
+	 * Handler mode, not direct memory. With jit_direct_memory the core's JIT
+	 * cannot boot Mac OS: it reads ~20 blocks through the boot driver and then
+	 * takes an illegal instruction at guest 0x2146, having executed a
+	 * (count, offset) table as though it were code.
+	 *
+	 * What is established: the fault needs a translation cache of 1 MB or
+	 * more (it never appears at 512 KB or below, where the cache wraps so
+	 * often that every block is discarded rather than reused), and it
+	 * disappears entirely if ROM-resident blocks are refused revalidation
+	 * after an invalidation. That places it in the core's block-reactivation
+	 * path rather than in anything this adapter does, and it reproduces at the
+	 * core's own merge base. What is not established is the precise corruption
+	 * inside that path. The CPU suite passes in both modes, so no test sees it.
+	 *
+	 * Handler mode still translates -- 460 KB of host code over a boot against
+	 * 400 KB for direct -- and reaches the same boot state; it just calls the
+	 * memory handlers instead of inlining the accesses. Direct memory is
+	 * parked as a future performance improvement, since inlining is where the
+	 * remaining speed is.
+	 */
+	cfg.jit_direct_memory = false;
 	cfg.jit_fpu = UseJITFPU;
 	/* Cockatrice reports its own code writes through FlushCodeCache, but the
 	 * guest also patches code and announces it with CPUSHA/CINVA only. */
@@ -252,7 +274,7 @@ static bool uaecpu_init(void)
 
 	uaecpu_map_memory();
 	if (uae_cpu_set_jit_memory_base(s_cpu, Host_Mem_Base) != 0 && UseJIT) {
-		printf("[uaecpu] JIT memory base rejected; translation disabled\n");
+		printf("[uae] JIT memory base rejected; translation disabled\n");
 		fflush(stdout);
 	}
 
@@ -266,12 +288,12 @@ static bool uaecpu_init(void)
 	 * core never builds an exception frame for them. */
 	if (uae_cpu_reserve_opcodes(s_cpu, (uint16_t)M68K_EXEC_RETURN,
 	                            (uint16_t)(M68K_EMUL_OP_MAX - 1)) != 0) {
-		printf("[uaecpu] could not reserve the EmulOp opcode range\n");
+		printf("[uae] could not reserve the EmulOp opcode range\n");
 		return false;
 	}
 
 	uae_cpu_reset(s_cpu);
-	printf("[uaecpu] uae-portable-cpu 680%d0, fpu %s, jit %s\n",
+	printf("[uae] uae-portable-cpu 680%d0, fpu %s, jit %s\n",
 	       CPUType, FPUType ? "on" : "off",
 	       UseJIT ? (UseJITFPU ? "on+fpu" : "on") : "off");
 	fflush(stdout);
@@ -303,7 +325,7 @@ static void uaecpu_start(void)
 			}
 			break;
 		} else {
-			printf("Reset680x0 (uaecpu): Resetting machine subsystems...\n");
+			printf("Reset680x0 (uae): Resetting machine subsystems...\n");
 			fflush(stdout);
 			cpu_engine_reset_peripherals();
 			s_quit_requested = false;
@@ -436,7 +458,9 @@ static void uaecpu_execute_68k_trap(uint16 trap, struct M68kRegisters *r)
 }
 
 extern const CPUEngine uae_portable_cpu_engine = {
-	"uaecpu",
+	/* Takes over the "uae" id from the removed Amiberry engine, so existing
+	 * prefs files keep selecting a UAE-family core without an edit. */
+	"uae",
 	"UAE Portable 680x0 Core (interpreter + ARM64/x86-64 JIT)",
 	false,
 	CPU_MEM_STRATEGY_DIRECT_POINTER,

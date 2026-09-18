@@ -16,4 +16,4 @@ default = ["jit"]
 jit = ["m68k/jit"]
 
 [dependencies]
-m68k = { path = "../vendor/m68k-rs" }
+m68k = { path = "../../vendor/m68k-rs" }
