@@ -6,7 +6,7 @@
  *
  *  This file provides the central engine registry and global dispatchers
  *  routing Basilisk II CPU lifecycle calls, interrupts, and nested subroutine
- *  execution to the currently active CPU engine (Musashi, Amiberry/UAE, or m68k-rs).
+ *  execution to the currently active CPU engine (Musashi, UAE, or m68k-rs).
  */
 
 #include <stdio.h>
@@ -38,35 +38,24 @@ extern "C" uint32 cpu_engine_last_pc = 0;
 #define MAX_CPU_ENGINES 8
 
 // Which built-in engines this build actually links.  Musashi is the golden
-// path and is always present; Amiberry (interpreter + compemu JIT) and the
-// Rust m68k-rs core are optional because not every port builds them -- e.g.
-// the Windows/MinGW i686 target has no m68k-rs (MSYS2 dropped its mingw32
-// Rust package entirely, msys2/MINGW-packages#23346, and Homebrew's i686
-// mingw-w64 GCC is SJLJ-exception-based while Rust's i686-pc-windows-gnu std
-// needs DWARF2) and keeps Musashi + Amiberry only.  A port opts out by
-// defining these to 0 on the command line, and the registry below then
-// simply holds fewer entries; nothing else in the file needs to know.
-#ifndef ENABLE_AMIBERRY_CPU
-#define ENABLE_AMIBERRY_CPU 1
-#endif
+// path and is always present; the Rust m68k-rs core is optional so a port
+// without a usable Rust toolchain can still be built.  A port opts out by
+// defining this to 0, and the registry below then simply holds fewer
+// entries; nothing else in the file needs to know.
 #ifndef ENABLE_M68K_RS_CPU
 #define ENABLE_M68K_RS_CPU 1
 #endif
 // The vendored uae-portable-cpu core (BasiliskII/vendor/uae-portable-cpu),
-// the GPL-2 replacement for the GPL-3 Amiberry engine, registered alongside
-// it while the two are compared.  Unlike the switches above this one is
-// opt-in: a port has to build the core's CMake project and link the
-// symbol-isolated archive (see OSX64/Makefile), so defaulting it on would
-// break every port that has not been taught to do that yet.
+// the GPL-2 replacement for the GPL-3 Amiberry engine whose "uae" id it took
+// over.  Unlike the switch above this one is opt-in: a port has to build the
+// core's own CMake project and link the symbol-isolated archive, so
+// defaulting it on would break any port not yet taught to do that.
 #ifndef ENABLE_UAE_PORTABLE_CPU
 #define ENABLE_UAE_PORTABLE_CPU 0
 #endif
 
 // Forward declarations for built-in CPU engines
 extern const CPUEngine musashi_cpu_engine;
-#if ENABLE_AMIBERRY_CPU
-extern const CPUEngine amiberry_cpu_engine;
-#endif
 #if ENABLE_M68K_RS_CPU
 extern const CPUEngine m68k_rs_cpu_engine;
 #endif
@@ -78,9 +67,6 @@ extern const CPUEngine uae_portable_cpu_engine;
 // both are driven by the same ENABLE_* switches.
 static const CPUEngine *s_engines[MAX_CPU_ENGINES] = {
 	&musashi_cpu_engine,
-#if ENABLE_AMIBERRY_CPU
-	&amiberry_cpu_engine,
-#endif
 #if ENABLE_M68K_RS_CPU
 	&m68k_rs_cpu_engine,
 #endif
@@ -88,7 +74,7 @@ static const CPUEngine *s_engines[MAX_CPU_ENGINES] = {
 	&uae_portable_cpu_engine
 #endif
 };
-static int s_engine_count = 1 + ENABLE_AMIBERRY_CPU + ENABLE_M68K_RS_CPU + ENABLE_UAE_PORTABLE_CPU;
+static int s_engine_count = 1 + ENABLE_M68K_RS_CPU + ENABLE_UAE_PORTABLE_CPU;
 static const CPUEngine *s_active_engine = &musashi_cpu_engine;
 
 // Global JIT preference flags
@@ -513,15 +499,7 @@ bool cpu_engine_map_rom_base(void)
 			ROMBaseMac = 0x00a00000;
 			return true;
 		case ROM_VERSION_32:
-#if defined(_WIN32) && !defined(_WIN64)
-			/* Must match SDL/main_sdl.cpp's dynamic layout: a 32-bit host
-			 * can't reserve a window covering the real hardware address
-			 * 0x40800000 (see memory.cpp's memory_compute_window_size()). */
-			ROMBaseMac = RAMSize;
-			MacFrameBaseMac = ROMBaseMac + 0x00800000;
-#else
 			ROMBaseMac = 0x40800000;
-#endif
 			return true;
 		default:
 			return false;
@@ -795,9 +773,6 @@ static void EnsureEnginesRegistered(void)
 	// Re-register defaults if table is empty
 	if (s_engine_count == 0) {
 		RegisterCPUEngine(&musashi_cpu_engine);
-#if ENABLE_AMIBERRY_CPU
-		RegisterCPUEngine(&amiberry_cpu_engine);
-#endif
 #if ENABLE_M68K_RS_CPU
 		RegisterCPUEngine(&m68k_rs_cpu_engine);
 #endif

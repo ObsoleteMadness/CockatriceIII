@@ -103,11 +103,6 @@ int main(int argc, char **argv)
 			run_isolated(label, [cfg]() { test_fpu_execution(cfg->label); });
 		}
 
-		if (strcmp(cfg->id, "uae") == 0) {
-			snprintf(label, sizeof(label), "[%s] uae-cputest", cfg->label);
-			run_isolated(label, [cfg]() { test_uae_cputest_smoke(cfg->label); }, 120);
-		}
-
 		test_rom_snippets(cfg->label);
 		test_rom_patch_apply(cfg->label);
 		test_rom_patch_execute(cfg->label);

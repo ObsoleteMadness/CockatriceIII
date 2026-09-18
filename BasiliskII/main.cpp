@@ -84,11 +84,9 @@ printf("Offsetting the year by %d billion ticks\n",yearoffset);
 	const char *engine_name = "Musashi";
 	const char *req_engine = PrefsFindString("cpu_emulator");
 	if (req_engine && strcmp(req_engine, "uae") == 0) {
-		engine_name = "Amiberry";
+		engine_name = "UAE Portable";
 	} else if (req_engine && strcmp(req_engine, "m68k_rs") == 0) {
 		engine_name = "m68k_rs";
-	} else if (req_engine && strcmp(req_engine, "uaecpu") == 0) {
-		engine_name = "uaecpu";
 	} else {
 		engine_name = "Musashi";
 	}
@@ -98,12 +96,12 @@ printf("Offsetting the year by %d billion ticks\n",yearoffset);
 	       TwentyFourBitAddressing ? "24" : "32", engine_name);
 
 	bool jit_enabled = false;
-	if ((strcmp(engine_name, "Amiberry") == 0 || strcmp(engine_name, "uaecpu") == 0) && PrefsFindBool("jit")) {
+	if (strcmp(engine_name, "UAE Portable") == 0 && PrefsFindBool("jit")) {
 		jit_enabled = true;
 	}
 
 	if (jit_enabled) {
-		if ((strcmp(engine_name, "Amiberry") == 0 || strcmp(engine_name, "uaecpu") == 0) && PrefsFindBool("jitfpu")) {
+		if (strcmp(engine_name, "UAE Portable") == 0 && PrefsFindBool("jitfpu")) {
 			printf("JIT enabled (with JIT FPU)\n");
 		} else {
 			printf("JIT enabled\n");

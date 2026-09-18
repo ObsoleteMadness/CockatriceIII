@@ -28,16 +28,15 @@ int g_fail = 0;
 
 const TestEngineConfig kTestEngineConfigs[] = {
 	{ "musashi", false, false, "musashi" },
+#if defined(ENABLE_M68K_RS_CPU) && ENABLE_M68K_RS_CPU
 	{ "m68k_rs", false, false, "m68k_rs" },
+#endif
+#if defined(ENABLE_UAE_PORTABLE_CPU) && ENABLE_UAE_PORTABLE_CPU
+	/* The vendored uae-portable-cpu core, which owns the "uae" id since the
+	 * Amiberry engine was removed: interpreter, JIT, and JIT with FPU. */
 	{ "uae",     false, false, "uae" },
 	{ "uae",     true,  false, "uae+jit" },
 	{ "uae",     true,  true,  "uae+jit+jitfpu" },
-#if defined(ENABLE_UAE_PORTABLE_CPU) && ENABLE_UAE_PORTABLE_CPU
-	/* The vendored uae-portable-cpu core, in the same three configurations as
-	 * Amiberry above so the two can be compared check for check. */
-	{ "uaecpu",  false, false, "uaecpu" },
-	{ "uaecpu",  true,  false, "uaecpu+jit" },
-	{ "uaecpu",  true,  true,  "uaecpu+jit+jitfpu" },
 #endif
 };
 const int kTestEngineConfigCount = (int)(sizeof(kTestEngineConfigs) / sizeof(kTestEngineConfigs[0]));
