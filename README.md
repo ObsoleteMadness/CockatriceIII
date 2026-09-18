@@ -1,8 +1,11 @@
 # Cockatrice III — 64-bit Port
 
-This branch ports Cockatrice III (a BasiliskII derivative) from 32-bit-only
-builds to native 64-bit builds on macOS (Apple Silicon and Intel) and Windows
-(x64 and ARM64), while keeping the existing 32-bit Windows build working.
+Cockatrice III (a BasiliskII derivative) builds 64-bit only, from a single
+CMake project, on macOS, Windows and Linux — AMD64 and ARM64 on each, all on
+SDL. The 32-bit and PowerPC ports have been removed: the emulator reserves a
+flat 4 GB window for the guest's 32-bit address space, which a 32-bit host
+cannot provide, and supporting the fallback layout was the largest single
+source of per-platform divergence.
 
 The historical release notes live in [README](README) / [README.old](README.old).
 This file only covers what changed to make 64-bit builds possible.
@@ -75,35 +78,64 @@ it always does).
     `SIZEOF_CHAR_P` are now computed correctly (8 on `_WIN64`/`__x86_64__`/
     `__aarch64__`, 4 otherwise) instead of being hardcoded for 32-bit.
 
-## Directory / build layout changes
+## Building
 
-- `BasiliskII/OSXarm` (the initial Apple Silicon-only port) was renamed to
-  `BasiliskII/OSX64` and its Makefile now builds either Apple Silicon or Intel
-  Macs from one tree via an `ARCH` variable (`arm64` by default, or `x86_64`/
-  `amd64`), selecting the right SDL prefix and `-arch` flag automatically.
-  ARM uses native Homebrew (`/opt/homebrew`). An Intel slice on Apple Silicon
-  is `clang -arch x86_64` plus the committed prefix in
-  [`dist/dependencies/osx/intel`](dist/dependencies/osx) (rebuild with
-  `dist/dependencies/osx/rebuild-intel-sdl.sh` when bumping SDL). The bundled
-  `m68k-rs` staticlib is built with `cargo --target` for the same slice
-  (`aarch64-apple-darwin` or `x86_64-apple-darwin`; the Makefile runs
-  `rustup target add`). `make universal` in that directory builds both
-  slices and `lipo`s them
-  into a fat `CockatriceIII` (ARM Homebrew SDL plus the committed Intel
-  prefix). `make app` (or
-  `make app-universal`) wraps that binary into a `CockatriceIII.app` bundle
-  with a generated `Info.plist` (`APP_VERSION=x.y.z` sets
-  `CFBundleVersion`/`CFBundleShortVersionString`), copies `dist/Quadra800.rom`
-  and the `CockatriceIII.icns` app icon into `Contents/Resources`, and, if
-  `entitlements.plist` is present, codesigns the whole bundle the same way
-  the plain binary is signed. `main_sdl.cpp`'s ROM lookup falls back to
-  `Contents/Resources` (via `_NSGetExecutablePath`) when the configured ROM
-  path isn't found relative to the working directory, so the bundle's ROM
-  is found regardless of how it was launched.
-- `BasiliskII/mingw/Makefile` was rewritten to build Windows x86, x64, or
-  ARM64 from the same tree using whatever MSYS2 toolchain/MSYSTEM
-  (`MINGW32`/`MINGW64`/`CLANGARM64`) invokes it, using `sdl-config` when
-  available instead of hardcoded library paths.
+One CMake project covers every host. The per-port build trees
+(`BasiliskII/OSX64`, `BasiliskII/mingw`, the autotools tree in
+`BasiliskII/Unix`, and the MSVC project in `BasiliskII/windows`) are gone.
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j8
+
+ctest --test-dir build -L gate --output-on-failure   # must pass
+ctest --test-dir build -L cpu  --output-on-failure   # engine accuracy, reported
+```
+
+On macOS, [scripts/build-macos.sh](scripts/build-macos.sh) wraps that up for
+day-to-day work (`--debug`, `--asan`, `--bundle`, `--run`, `--clean`,
+`--arch x86_64`); `--help` lists them all. Release and CI artifacts come from
+[scripts/ci-osx-build.sh](scripts/ci-osx-build.sh) instead, which also handles
+the universal `lipo` and packaging.
+
+Dependencies: SDL 1.2 (`sdl12-compat` is fine — Homebrew, MSYS2 or
+`libsdl1.2-compat-dev`), a C/C++17 toolchain, and `cargo` for the m68k-rs
+engine (`-DCOCKATRICE_ENABLE_M68K_RS=OFF` to skip it). libpcap is needed for
+its headers only; the library itself is `dlopen`'d at runtime. Windows uses
+the vendored pcap headers in `BasiliskII/platform/windows/pcap`.
+
+### Layout
+
+- `BasiliskII/platform/<darwin|windows|linux>/` — the per-host `config.h`, and
+  the three symbols each host must supply (`MenuBar_Init`, `MenuBar_UpdateAll`,
+  `MenuBar_ShowOpenFileDialog`). Everything else is shared.
+- `BasiliskII/platform/sysdeps.h` — one shared header for all six
+  configurations, replacing the three near-identical per-port copies.
+- `BasiliskII/SDL/` — the shared SDL layer, including a single
+  `user_strings_sdl.*` (the old per-port copies were byte-identical).
+- `BasiliskII/vendor/` — `musashi`, `m68k-rs` and `uae-portable-cpu`.
+
+### macOS bundles and the universal binary
+
+`cmake --build build --target bundle` wraps the binary into
+`CockatriceIII.app` with a generated `Info.plist`
+(`-DCOCKATRICE_BUNDLE_VERSION=x.y.z` sets `CFBundleVersion` and
+`CFBundleShortVersionString`), copies in the app icon, and ad-hoc codesigns it.
+The JIT entitlement is not optional: without `com.apple.security.cs.allow-jit`
+the translated-code mapping cannot be made executable under Hardened Runtime.
+`main_sdl.cpp` falls back to `Contents/Resources` for the ROM (via
+`_NSGetExecutablePath`) when it isn't found relative to the working directory,
+so a bundled ROM is found however the app was launched.
+
+Universal binaries are built as two separate configurations joined with `lipo`,
+not via `CMAKE_OSX_ARCHITECTURES="arm64;x86_64"` — the vendored CPU core links
+a symbol-isolated object, which admits only one architecture per build, so the
+top-level `CMakeLists.txt` refuses a multi-arch configuration outright.
+[scripts/ci-osx-build.sh](scripts/ci-osx-build.sh) (`arm64`, `amd64` or
+`universal`) does this and is exactly what CI runs. The Intel slice links the
+committed prefix in [`dist/dependencies/osx/intel`](dist/dependencies/osx)
+(rebuild with `dist/dependencies/osx/rebuild-intel-sdl.sh`); CI never compiles
+SDL from source.
 
 ## CI: GitHub Actions
 
@@ -111,14 +143,18 @@ it always does).
 builds all six targets on every push, on pull requests into `main`, and on
 `v*` tags (which also cuts a GitHub Release):
 
-| Target         | Runner          | Build dir             |
-|----------------|-----------------|------------------------|
-| osx-arm        | macos-latest (Apple Silicon, native arm64) | `BasiliskII/OSX64` |
-| osx-amd64      | macos-latest (Apple Silicon, cross x86_64) | `BasiliskII/OSX64` |
-| osx-universal  | macos-latest (Apple Silicon, lipo fat)     | `BasiliskII/OSX64` |
-| win32-x64    | windows-latest (MINGW64)    | `BasiliskII/mingw` |
-| win32-x86    | windows-latest (MINGW32)    | `BasiliskII/mingw` |
-| win32-arm    | windows-latest (CLANGARM64) | `BasiliskII/mingw` |
+| Target        | Runner                                     |
+|---------------|--------------------------------------------|
+| osx-arm       | macos-latest (Apple Silicon, native arm64) |
+| osx-amd64     | macos-latest (Apple Silicon, cross x86_64) |
+| osx-universal | macos-latest (Apple Silicon, lipo fat)     |
+| win-x64       | windows-latest (MINGW64)                   |
+| win-arm64     | windows-11-arm (CLANGARM64)                |
+| linux-x64     | ubuntu-latest                              |
+| linux-arm64   | ubuntu-24.04-arm                           |
+
+Every target builds with the same two CMake commands; there are no per-target
+build directories any more. `win32-x86` was dropped with 32-bit support.
 
 Reproduce a macOS CI job on an Apple Silicon machine with
 [scripts/ci-osx-build.sh](scripts/ci-osx-build.sh) (`arm64`, `amd64`, or
@@ -140,7 +176,7 @@ needing to merge first.
 
 ## Multi-Engine 680x0 CPU Architecture
 
-Cockatrice III features a modular CPU engine abstraction layer (`CPUEngine`), allowing seamless switching between different 680x0 execution engines. `musashi` is always built in; `uae` (Amiberry) and `m68k_rs` are optional per-port (a build opts out with `ENABLE_AMIBERRY_CPU=0` / `ENABLE_M68K_RS_CPU=0`, e.g. the Windows/MinGW port ships Musashi only). Requesting `uae` or `m68k_rs` on a build that doesn't have it is a hard failure at startup rather than a silent fallback to Musashi; any other unrecognized value falls back to Musashi with a warning.
+Cockatrice III features a modular CPU engine abstraction layer (`CPUEngine`), allowing seamless switching between different 680x0 execution engines. `musashi` is always built in; `uae` and `m68k_rs` are optional (`-DCOCKATRICE_ENABLE_UAE=OFF` / `-DCOCKATRICE_ENABLE_M68K_RS=OFF`). Requesting `uae` or `m68k_rs` on a build that doesn't have it is a hard failure at startup rather than a silent fallback to Musashi; any other unrecognized value falls back to Musashi with a warning.
 
 > The earlier `syn68k` and `emu68` backends (and the classic Mac-only build path) were retired; `m68k_rs` is their replacement as the third engine.
 
@@ -148,7 +184,7 @@ Cockatrice III features a modular CPU engine abstraction layer (`CPUEngine`), al
 graph TD
     A[Prefs / Configuration: cpu_emulator] --> B[CPUEngine Dispatcher: cpu_engine.cpp]
     B -->|cpu_emulator musashi| C[Musashi 680x0 C interpreter]
-    B -->|cpu_emulator uae| E[Amiberry 680x0 interpreter + ARM64/x86-64 JIT]
+    B -->|cpu_emulator uae| E[uae-portable-cpu interpreter + ARM64/x86-64 JIT]
     B -->|cpu_emulator m68k_rs| F[m68k-rs Rust interpreter / batch executor]
 
     C --> G[Mac OS Memory Banking: RAMBaseHost / ROMBaseHost]
@@ -162,8 +198,8 @@ graph TD
 ### Available CPU Engines
 
 1. **`musashi`** (Default): Portable, cycle-accurate C interpreter (Musashi 4.5+), hardcoded to 68040 in this port. No translator — the `jit`/`jitfpu` prefs are ignored on this engine.
-2. **`uae`**: Amiberry 680x0 core — cycle-accurate interpreter, or with `jit true` its ARM64/x86-64 compemu JIT — with SoftFloat 68881/68882/68040 FPU. Follows Apple's W^X rule on Apple Silicon (one `MAP_JIT` region toggled with `pthread_jit_write_protect_np`).
-3. **`m68k_rs`**: [m68k-rs](https://github.com/benletchford/m68k-rs), a Rust 680x0 core vendored as a static library (`BasiliskII/vendor/m68k-rs`, glued in via `BasiliskII/m68k_rs/m68k_rs_glue.cpp`). Runs as a cycle-accurate interpreter by default; `jit true` switches it to a decoded-op batch executor with an optional direct-RAM "fastmem" window (`m68k_rs_fastmem`). Requires Rust 1.93+ to build (`cargo`, see [docs/cpu-engine-m68k-rs.md](docs/cpu-engine-m68k-rs.md)); passes the same 68k opcode-battery test suite as Musashi (118/122 checks — four Musashi BCD/CHK2/CMP2 fixtures are intentionally skipped due to modeling differences).
+2. **`uae`**: [uae-portable-cpu](https://github.com/ObsoleteMadness/uae-portable-cpu), a GPL-2 WinUAE-derived 680x0 core vendored at `BasiliskII/vendor/uae-portable-cpu` and driven through its public `uae_cpu_*` API — cycle-accurate interpreter, or with `jit true` its ARM64/x86-64 compemu JIT — with SoftFloat 68881/68882/68040 FPU. Follows Apple's W^X rule on Apple Silicon (one `MAP_JIT` region toggled with `pthread_jit_write_protect_np`). It replaced the GPL-3 Amiberry engine and took over the `uae` engine id, so existing prefs files keep working. Its JIT currently runs in handler mode rather than direct memory; see the comment in `BasiliskII/cpu/uae_cpu_glue.cpp` for what is and isn't understood about that.
+3. **`m68k_rs`**: [m68k-rs](https://github.com/benletchford/m68k-rs), a Rust 680x0 core vendored as a static library (`BasiliskII/vendor/m68k-rs`, glued in via `BasiliskII/cpu/m68k_rs_glue.cpp`). Runs as a cycle-accurate interpreter by default; `jit true` switches it to a decoded-op batch executor with an optional direct-RAM "fastmem" window (`m68k_rs_fastmem`). Requires Rust 1.93+ to build (`cargo`, see [docs/cpu-engine-m68k-rs.md](docs/cpu-engine-m68k-rs.md)); passes the same 68k opcode-battery test suite as Musashi (118/122 checks — four Musashi BCD/CHK2/CMP2 fixtures are intentionally skipped due to modeling differences).
 
 ### Configuration
 

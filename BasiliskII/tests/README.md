@@ -1,23 +1,43 @@
 # Cockatrice III tests
 
-Build and run from this directory:
+Configure once from the repository root, then drive everything through CTest:
 
 ```
-make test          # Basilisk must pass; CPU is reported (may fail)
-make test-strict   # Fail on CPU failures too
-make test-basilisk
-make test-cpu
-./cpu_tests --engine musashi
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j8
+
+ctest --test-dir build -L gate --output-on-failure   # must pass
+ctest --test-dir build -L cpu  --output-on-failure   # engine accuracy, reported
+ctest --test-dir build --output-on-failure           # everything
+
+./build/BasiliskII/tests/cpu_tests --engine musashi  # fast iteration path
 ```
+
+## What gates and what does not
+
+`-L gate` is the eleven `basilisk_*` suites. They are required to pass.
+
+`-L cpu` is `cpu_tests`, which is **reported rather than gated**. It currently
+has 12 known failures: four opcode fixtures (`abcd`, `sbcd`, `chk2`, `cmp2`)
+across each of the three UAE engine configurations. Those are genuine accuracy
+gaps in the UAE core, not harness problems — Musashi passes all 136 of its
+checks and m68k-rs all 132 of its own against the same fixtures. See
+[EMU68_BOOT_PROGRESS.md](../../EMU68_BOOT_PROGRESS.md).
 
 ## Layout
 
-- `cpu/` — Musashi opcode battery plus instruction/FPU/exception/ROM-snippet tests, run on musashi, UAE, and m68k-rs. UAE also runs vendored [WinUAE cputest](../amiberry/cputest/README.md) smoke.
-- `basilisk/` — memory, engine registry, EmulOp, ROM patches, resource patches, SCSI, SCC, disk images.
+- `cpu/` — Musashi opcode battery plus instruction, FPU, exception and
+  ROM-snippet tests, run across musashi, uae (interpreter, JIT, JIT+FPU) and
+  m68k-rs.
+- `basilisk/` — memory, engine registry, EmulOp, ROM patches, resource patches,
+  SCSI, SCC, disk images.
 
-Hang-prone work is isolated with a **30 second** timeout (`run_isolated()` and `run_with_timeout.sh`). Override with `TEST_TIMEOUT`.
+Opcode images live in [`../vendor/musashi/test/`](../vendor/musashi/test). Hang-prone
+work is isolated by `run_isolated()` at 30 seconds, and CTest caps each suite at
+120 seconds so a wedged engine fails rather than hanging CI.
 
-ROM snippets load `dist/Quadra800.rom` (or `QUADRA_ROM`). Missing ROM skips those tests.
+ROM snippets load `dist/Quadra800.rom` (or `QUADRA_ROM`). A missing ROM skips
+those tests.
 
 ## ROM and resource patches
 
@@ -27,7 +47,7 @@ matching the ROM, or lands somewhere new, fails as a one-line diff instead of a
 boot bomb. After an intentional change, regenerate and **read the diff**:
 
 ```
-REGEN_PATCH_MANIFEST=1 ./basilisk_patches_test
+REGEN_PATCH_MANIFEST=1 ./build/BasiliskII/tests/basilisk_patches_test
 ```
 
 `basilisk_rsrcpatch_test` drives `CheckLoad()` with synthetic resources built
@@ -35,7 +55,7 @@ from the Apple ROM source sequences (see
 [docs/rom-patches-vs-supermario.md](../../docs/rom-patches-vs-supermario.md)),
 plus boundary cases: resources shorter than a signature, signatures with too
 little run-up, empty and all-`0xFF` buffers. Every fixture is bracketed with
-guard bytes, so an out-of-bounds write is caught without ASAN too.
+guard bytes, so an out-of-bounds write is caught without ASan too.
 
 `basilisk_patchguard_test` proves the patch pass fails *loudly*. Each case
 corrupts a copy of the ROM so one locator misses, then asserts `PatchROM()`
@@ -53,19 +73,19 @@ are read from `GetPatchLog()`, so the two cannot drift apart.
 `basilisk_toolbox_test` covers the Toolbox/OS trap trampolines in
 [toolbox_traps.cpp](../toolbox_traps.cpp) — the RAM-trampoline mechanism
 (`_SetToolTrap` / `_SetOSTrapAddress`) that replaces ROM byte patches for
-post-boot traps. It runs every case on all five engine configurations, because
-the one thing the dispatcher must get right — *which* hooked trap it was
-entered for — is derived from the guest PC, and the engines do not agree on
-what the PC is at EmulOp time. `--engine <id>` narrows it.
+post-boot traps. It runs every case on all engine configurations, because the
+one thing the dispatcher must get right — *which* hooked trap it was entered
+for — is derived from the guest PC, and the engines do not agree on what the PC
+is at EmulOp time. `--engine <id>` narrows it.
+
+## Sanitizers
 
 ```
-ASAN=1 make test-basilisk      # AddressSanitizer + UBSan
+cmake -S . -B build-asan -DCOCKATRICE_TEST_ASAN=ON
+cmake --build build-asan -j8
+ctest --test-dir build-asan -L gate --output-on-failure
 ```
 
-Run the patch tests under ASAN after touching either patch file: the failure
+Run the patch tests under ASan after touching either patch file: the failure
 mode there is out-of-bounds writes and unsigned-underflow scans, which a plain
 build can miss entirely.
-
-A full `make test` CPU pass can take a while: each hung engine is isolated at 30s per test/image rather than wedging the suite. `./cpu_tests --engine musashi` is the fast iteration path.
-
-Opcode images stay in `BasiliskII/Musashi/test/`. Native Musashi `make test` in that tree still runs `test_driver` / `test_fpu`.

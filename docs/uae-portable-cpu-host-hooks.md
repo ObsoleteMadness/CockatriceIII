@@ -1,9 +1,13 @@
 # uae-portable-cpu: host hooks needed to replace the Amiberry core
 
-Cockatrice III is replacing its hand-edited Amiberry tree
-([BasiliskII/amiberry/](../BasiliskII/amiberry/)) with
+Cockatrice III replaced its hand-edited Amiberry tree with
 [uae-portable-cpu](https://github.com/ObsoleteMadness/uae-portable-cpu), which is
 vendored as a submodule at [BasiliskII/vendor/uae-portable-cpu](../BasiliskII/vendor/uae-portable-cpu).
+
+> **Status: done.** `BasiliskII/amiberry/` has been deleted and the GPL-2 core
+> took over the `uae` engine id. References to `BasiliskII/amiberry/...` below
+> are historical — they record where each hook requirement was found, and those
+> paths no longer exist in the tree.
 
 uae-portable-cpu has no Amiga or Atari hardware in it. The price is that every
 place where Cockatrice used to edit the UAE core directly now needs a
@@ -15,7 +19,7 @@ places:
 2. The host layer in `BasiliskII/amiberry/hosted/` and `amiberry_glue.cpp`,
    which re-implements Amiga symbols so the core will link.
 3. The Musashi changes: `m68kconf.h` callbacks, the `m68kcpu.h` and `m68kmmu.h`
-   diffs since `bebd8f4`, and [MUSASHI_FIXES.md](../MUSASHI_FIXES.md).
+   diffs since `bebd8f4`, and [MUSASHI_FIXES.md](MUSASHI_FIXES.md).
 
 Each hook below is written as a host-neutral contract. Any emulator that embeds
 a 680x0 and runs host code from inside the guest will need the same things:
@@ -64,7 +68,7 @@ dispatch to `EmulOp()` with the full register set.
 
 **Evidence.**
 - Musashi: `M68K_ILLG_HAS_CALLBACK = M68K_OPT_SPECIFY_HANDLER` →
-  `musashi_illg_callback()` in [musashi_glue.cpp](../BasiliskII/Musashi/musashi_glue.cpp).
+  `musashi_illg_callback()` in [musashi_glue.cpp](../BasiliskII/cpu/musashi_glue.cpp).
 - Amiberry:
   - `op_illg` calls `cockatrice_uae_illg()` first
     ([newcpu.cpp:4001](../BasiliskII/amiberry/src/newcpu.cpp#L4001)).
@@ -140,7 +144,7 @@ stack frame; the engine just has to run it.
 
 **Evidence.**
 - Musashi: calls `m68k_execute(5000)` in a loop from inside the illegal callback
-  ([musashi_glue.cpp](../BasiliskII/Musashi/musashi_glue.cpp)).
+  ([musashi_glue.cpp](../BasiliskII/cpu/musashi_glue.cpp)).
 - Amiberry:
   - Added `m68k_run_interpreter_slice()` so nested calls never re-enter the JIT
     push-all trampoline
@@ -460,7 +464,7 @@ the golden reference. Basilisk's own globals live in the same binary.
 | `intlev()` (`uae_glue.c`) | [cpu_engine.cpp:932](../BasiliskII/cpu_engine.cpp#L932) |
 | `memory_init()` (`memory.c`) | [memory.cpp:675](../BasiliskII/memory.cpp#L675) |
 | `m68k_init`, `m68k_execute`, `m68k_set_reg`, … (`musashi_api.c`) | Musashi |
-| `m68k_read_memory_*` (weak/alternatename defaults) | [memory_musashi.cpp](../BasiliskII/Musashi/memory_musashi.cpp) |
+| `m68k_read_memory_*` (weak/alternatename defaults) | [memory_musashi.cpp](../BasiliskII/cpu/memory_musashi.cpp) |
 | `regs`, `currprefs`, `mem_banks`, `dummy_bank`, `write_log`, `currcycle` | Amiberry, while both trees coexist during migration |
 
 Amiberry dodged these with `#define` renames in
