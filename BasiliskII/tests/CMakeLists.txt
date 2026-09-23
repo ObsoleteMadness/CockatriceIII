@@ -159,3 +159,8 @@ cockatrice_add_test(cpu_tests
 #   ctest -L gate   # must stay green
 #   ctest -L cpu    # engine accuracy, informational
 set_tests_properties(cpu_tests PROPERTIES LABELS cpu)
+if(WIN32)
+    # Without fork(), every isolated test is a fresh process that repeats the
+    # suite's setup (see test_harness.h), so the whole suite takes longer.
+    set_tests_properties(cpu_tests PROPERTIES TIMEOUT 600)
+endif()

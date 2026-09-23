@@ -24,6 +24,16 @@
 extern "C" {
 int g_pass = 0;
 int g_fail = 0;
+
+#ifdef _WIN32
+/*
+ * Isolated-test bookkeeping for run_isolated() on Windows (see
+ * test_harness.h). A child started for one test finds its number in
+ * COCKATRICE_TEST_CASE; the parent has none and runs every test in a child.
+ */
+int g_isolated_case_next = 0;
+int g_isolated_case_target = getenv("COCKATRICE_TEST_CASE") ? atoi(getenv("COCKATRICE_TEST_CASE")) : -1;
+#endif
 }
 
 const TestEngineConfig kTestEngineConfigs[] = {

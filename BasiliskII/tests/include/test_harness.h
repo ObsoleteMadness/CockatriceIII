@@ -9,9 +9,13 @@
  * run_isolated(): a child that exceeds TEST_DEFAULT_TIMEOUT seconds is killed
  * and reported as a failure so the parent can continue.
  *
- * Windows has no fork(), so there run_isolated() runs the test in-process
- * under a watchdog thread: a hang ends the whole suite with a failure message
- * instead of one case, and a test's memory writes are not rolled back.
+ * Windows has no fork(), so there run_isolated() starts the test binary again
+ * with COCKATRICE_TEST_CASE=<n>. The child runs main() as usual, so all setup
+ * is repeated, but skips every isolated test except the n-th, runs that one
+ * between two marker lines and exits. The parent forwards the output between
+ * the markers and adds the counts printed on the closing one, so reporting is
+ * the same as with fork(), and a hang or crash fails only that test. Isolated
+ * tests must therefore be reached in the same order on every run.
  */
 
 #ifndef TEST_HARNESS_H
@@ -160,67 +164,154 @@ static void test_install_crash_handler(void)
  *   timeout_sec: Wall time before SIGALRM; 0 uses TEST_DEFAULT_TIMEOUT.
  */
 #if defined(__cplusplus) && defined(_WIN32)
-/* Label and limit of the test the watchdog is guarding. */
-struct test_watchdog_args {
-	const char *name;
-	int timeout_sec;
-	HANDLE done;	// Signalled when the test returns
-};
+/* Isolated-test bookkeeping, defined in test_env.cpp. */
+extern "C" int g_isolated_case_next;	// Index the next run_isolated() call gets
+extern "C" int g_isolated_case_target;	// In a child: the one index to run; -1 in the parent
+
+/* Lines that bracket a child's isolated test in its output. */
+#define TEST_CASE_BEGIN_MARK "@@cockatrice-test-case-begin"
+#define TEST_CASE_END_MARK "@@cockatrice-test-case-end"
 
 /*
- * Watchdog thread: if the test has not signalled done within its timeout,
- * reports the hang as a failure and ends the process, since the stuck thread
- * cannot be stopped safely.
+ * Runs isolated test number index in a child copy of this process and merges
+ * its result, reporting a timeout, crash or missing result as one failure.
  *
  * Arguments:
- *   param: A test_watchdog_args.
- *
- * Returns:
- *   0 when the test finished in time.
+ *   name: Label printed on failure.
+ *   index: The test's run_isolated() call number, passed to the child.
+ *   timeout_sec: Wall time before the child is killed.
  */
-static DWORD WINAPI test_watchdog(LPVOID param)
+static void test_run_case_in_child(const char *name, int index, int timeout_sec)
 {
-	test_watchdog_args *args = (test_watchdog_args *)param;
-	if (WaitForSingleObject(args->done, (DWORD)args->timeout_sec * 1000) == WAIT_OBJECT_0)
-		return 0;
-	printf("  [FAIL] %s: timed out after %ds -- possible infinite loop; stopping the suite\n",
-	       args->name, args->timeout_sec);
-	printf("\nResults: %d passed, %d failed\n", g_pass, g_fail + 1);
+	char msg[320];
+
+	// The child's stdout and stderr go to a temporary file the parent parses
+	char dir[MAX_PATH + 1], out_path[MAX_PATH + 1];
+	if (!GetTempPathA(sizeof(dir), dir) || !GetTempFileNameA(dir, "ctc", 0, out_path)) {
+		snprintf(msg, sizeof(msg), "%s: no temporary file for the child's output", name);
+		CHECK(false, msg);
+		return;
+	}
+	SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };	// Inheritable handle
+	HANDLE out = CreateFileA(out_path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+	                         CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
+	if (out == INVALID_HANDLE_VALUE) {
+		snprintf(msg, sizeof(msg), "%s: cannot open %s", name, out_path);
+		CHECK(false, msg);
+		return;
+	}
+
+	// Same executable and arguments; the environment selects the test
+	char exe[MAX_PATH + 1];
+	GetModuleFileNameA(NULL, exe, sizeof(exe));
+	char *cmdline = _strdup(GetCommandLineA());
+	char index_str[16];
+	snprintf(index_str, sizeof(index_str), "%d", index);
+	SetEnvironmentVariableA("COCKATRICE_TEST_CASE", index_str);
+
+	STARTUPINFOA si;
+	memset(&si, 0, sizeof(si));
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESTDHANDLES;
+	si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+	si.hStdOutput = out;
+	si.hStdError = out;
+	PROCESS_INFORMATION pi;
 	fflush(stdout);
-	_exit(1);
-	return 1;
+	BOOL started = CreateProcessA(exe, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+	SetEnvironmentVariableA("COCKATRICE_TEST_CASE", NULL);
+	free(cmdline);
+	CloseHandle(out);
+	if (!started) {
+		snprintf(msg, sizeof(msg), "%s: cannot start the child (error %lu)", name,
+		         (unsigned long)GetLastError());
+		CHECK(false, msg);
+		DeleteFileA(out_path);
+		return;
+	}
+
+	// Wait for the test, killing it if it overruns
+	bool timed_out = WaitForSingleObject(pi.hProcess, (DWORD)timeout_sec * 1000) != WAIT_OBJECT_0;
+	if (timed_out) {
+		TerminateProcess(pi.hProcess, 99);
+		WaitForSingleObject(pi.hProcess, INFINITE);
+	}
+	DWORD exit_code = 0;
+	GetExitCodeProcess(pi.hProcess, &exit_code);
+	CloseHandle(pi.hThread);
+	CloseHandle(pi.hProcess);
+
+	// Forward the test's own output, and take its counts from the closing marker
+	bool have_counts = false;
+	int passed = 0, failed = 0;
+	FILE *fp = fopen(out_path, "rb");
+	if (fp) {
+		char line[1024];
+		bool inside = false;
+		while (fgets(line, sizeof(line), fp)) {
+			line[strcspn(line, "\r\n")] = 0;
+			if (strcmp(line, TEST_CASE_BEGIN_MARK) == 0) {
+				inside = true;
+			} else if (strncmp(line, TEST_CASE_END_MARK, strlen(TEST_CASE_END_MARK)) == 0) {
+				have_counts = sscanf(line + strlen(TEST_CASE_END_MARK), "%d %d", &passed, &failed) == 2;
+				inside = false;
+			} else if (inside) {
+				printf("%s\n", line);
+			}
+		}
+		fclose(fp);
+	}
+	DeleteFileA(out_path);
+	fflush(stdout);
+
+	if (have_counts && !timed_out) {
+		g_pass += passed;
+		g_fail += failed;
+		return;
+	}
+	if (timed_out)
+		snprintf(msg, sizeof(msg), "%s: timed out after %ds (child killed) -- possible infinite loop",
+		         name, timeout_sec);
+	else
+		snprintf(msg, sizeof(msg), "%s: child exited without a result (exit code 0x%lx)", name,
+		         (unsigned long)exit_code);
+	CHECK(false, msg);
 }
 
 /*
- * Runs fn in-process under a watchdog (Windows has no fork()).
+ * Runs fn in its own process (see the file comment for the Windows scheme).
+ *
+ * In the parent, starts a child for this test and merges its result. In a
+ * child, returns at once for every test but the selected one; for that one,
+ * runs fn between the marker lines and exits.
  *
  * Arguments:
- *   name: Label printed on timeout.
+ *   name: Label printed on timeout/crash.
  *   fn: Test body. May call CHECK/CHECK_ENG.
- *   timeout_sec: Wall time before the watchdog fires; 0 uses TEST_DEFAULT_TIMEOUT.
+ *   timeout_sec: Wall time before the child is killed; 0 uses TEST_DEFAULT_TIMEOUT.
  */
 template<typename Fn>
 static void run_isolated(const char *name, Fn fn, int timeout_sec = TEST_DEFAULT_TIMEOUT)
 {
 	if (timeout_sec <= 0)
 		timeout_sec = TEST_DEFAULT_TIMEOUT;
+	int index = g_isolated_case_next++;
 
-	test_watchdog_args args = { name, timeout_sec, CreateEventA(NULL, TRUE, FALSE, NULL) };
-	HANDLE thread = args.done ? CreateThread(NULL, 0, test_watchdog, &args, 0, NULL) : NULL;
-
-	// Match the POSIX child, which starts from an empty translation cache
-	cpu_engine_invalidate_code(0, ~0u);
-	fn();
-	fflush(stdout);
-
-	// Stop the watchdog before args goes out of scope
-	if (thread) {
-		SetEvent(args.done);
-		WaitForSingleObject(thread, INFINITE);
-		CloseHandle(thread);
+	if (g_isolated_case_target < 0) {
+		test_run_case_in_child(name, index, timeout_sec);
+		return;
 	}
-	if (args.done)
-		CloseHandle(args.done);
+	if (index != g_isolated_case_target)
+		return;
+
+	// This process exists to run this one test; match the POSIX child's empty cache
+	printf("%s\n", TEST_CASE_BEGIN_MARK);
+	cpu_engine_invalidate_code(0, ~0u);
+	int before_pass = g_pass, before_fail = g_fail;
+	fn();
+	printf("%s %d %d\n", TEST_CASE_END_MARK, g_pass - before_pass, g_fail - before_fail);
+	fflush(stdout);
+	_exit(0);
 }
 #elif defined(__cplusplus)
 template<typename Fn>

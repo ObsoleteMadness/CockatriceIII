@@ -37,6 +37,15 @@ Opcode images live in [`../vendor/musashi/test/`](../vendor/musashi/test). Hang-
 work is isolated by `run_isolated()` at 30 seconds, and CTest caps each suite at
 120 seconds so a wedged engine fails rather than hanging CI.
 
+`run_isolated()` runs each test in a `fork()`ed child, so a hang or crash fails
+only that test and its memory writes do not leak into the next. Windows has no
+`fork()`, so there the test binary starts itself again with
+`COCKATRICE_TEST_CASE=<n>`: the child repeats `main()`'s setup, runs only the
+n-th isolated test between two marker lines, and exits, and the parent forwards
+that output and adds the counts. Isolated tests must therefore be reached in the
+same order on every run. The repeated setup makes `cpu_tests` slower on Windows,
+where its CTest limit is 600 seconds.
+
 ROM snippets load `dist/Quadra800.rom` (or `QUADRA_ROM`). A missing ROM skips
 those tests.
 
