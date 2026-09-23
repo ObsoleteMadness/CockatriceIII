@@ -38,6 +38,7 @@
 #include "version.h"
 #include "main.h"
 #include "scc.h"
+#include "host_paths.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -217,40 +218,21 @@ int main(int argc, char *argv[])
 	// Get rom file path from preferences
 	const char *rom_path = PrefsFindString("rom");
 
-	// Load Mac ROM
-	int rom_fd = _open(rom_path ? rom_path : ROM_FILE_NAME, _O_RDONLY|_O_BINARY);
-	//int rom_fd = _open("c:\\test\\ROM",_O_RDONLY|_O_BINARY );
-#ifdef __APPLE__
-	// Not found relative to cwd: when running from an app bundle the ROM
-	// ships in Contents/Resources rather than beside the executable (see
-	// the OSX64 Makefile's `bundle` target), so fall back to looking it up
-	// there by filename before giving up. Walk up from the executable's own
-	// real path (.../CockatriceIII.app/Contents/MacOS/CockatriceIII) rather
-	// than going through CFBundle, which drags in MacTypes.h and collides
-	// with this codebase's own classic-Mac OSErr/noErr definitions.
-	if (rom_fd < 0) {
-		const char *rom_name = rom_path ? rom_path : ROM_FILE_NAME;
-		const char *rom_base = strrchr(rom_name, '/');
-		rom_base = rom_base ? rom_base + 1 : rom_name;
-
-		char exe_path[MAXPATHLEN];
-		uint32_t exe_path_size = sizeof(exe_path);
-		char real_path[MAXPATHLEN];
-		if (_NSGetExecutablePath(exe_path, &exe_path_size) == 0 && realpath(exe_path, real_path)) {
-			char *macos_slash = strrchr(real_path, '/');		// .../Contents/MacOS/CockatriceIII -> .../Contents/MacOS
-			if (macos_slash) {
-				*macos_slash = '\0';
-				char *contents_slash = strrchr(real_path, '/');	// .../Contents/MacOS -> .../Contents
-				if (contents_slash) {
-					*contents_slash = '\0';
-					char full_path[MAXPATHLEN];
-					snprintf(full_path, sizeof(full_path), "%s/Resources/%s", real_path, rom_base);
-					rom_fd = _open(full_path, _O_RDONLY|_O_BINARY);
-				}
-			}
-		}
+	// Load Mac ROM. A relative "rom" path is searched for beside the
+	// executable, then (macOS) in the bundle's Contents/Resources, then in the
+	// per-user location; an absolute path is used as given. See host_paths.h.
+	const char *rom_name = (rom_path && rom_path[0]) ? rom_path : ROM_FILE_NAME;
+	std::string rom_found;
+	int rom_fd = -1;
+	if (HostPaths_FindExisting(HOST_PATH_ROM, rom_name, rom_found)) {
+		printf("ROM: %s\n", rom_found.c_str());
+		rom_fd = _open(rom_found.c_str(), _O_RDONLY|_O_BINARY);
+	} else {
+		// List every place that was tried so a missing ROM is easy to place.
+		std::vector<std::string> tried = HostPaths_SearchList(HOST_PATH_ROM, rom_name);
+		for (size_t i = 0; i < tried.size(); i++)
+			printf("ROM: not found at %s\n", tried[i].c_str());
 	}
-#endif
 	if (rom_fd < 0) {
 		ErrorAlert(GetString(STR_NO_ROM_FILE_ERR));
 		QuitEmulator();

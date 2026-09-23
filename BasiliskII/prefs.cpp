@@ -357,7 +357,13 @@ void LoadPrefsFromStream(FILE *f)
 		int len = strlen(line);
 		if (len == 0)
 			continue;
-		line[len-1] = 0;
+
+		// Strip the line ending and any trailing whitespace. Trimming only the
+		// final '\n' left a '\r' on every value from a CRLF (Windows-edited)
+		// file, so "rom Quadra800.rom" named "Quadra800.rom\r" and booleans
+		// compared unequal to "true".
+		while (len > 0 && isspace((unsigned char)line[len-1]))
+			line[--len] = 0;
 
 		// Comments begin with "#" or ";"
 		if (line[0] == '#' || line[0] == ';')
@@ -369,7 +375,10 @@ void LoadPrefsFromStream(FILE *f)
 
 		// Terminate string after keyword
 		char *p = line;
-		while (!isspace(*p)) p++;
+		while (*p && !isspace((unsigned char)*p)) p++;
+		// A keyword with no value ends at the terminator; skip the line.
+		if (*p == 0)
+			continue;
 		*p++ = 0;
 
 		// Skip whitespace until value

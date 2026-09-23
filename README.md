@@ -167,8 +167,7 @@ macOS `.dmg` carries both the flat `CockatriceIII` binary and a double-
 clickable `CockatriceIII.app` bundle (built via `make app` /
 `make app-universal` in `BasiliskII/OSX64`, ROM baked into
 `Contents/Resources` at build time), each with its own copy of
-prefs/xpram/archive from `dist/` since the app resolves those relative to
-its own working directory.
+prefs/xpram/archive from `dist/`.
 
 The workflow triggers on push to **any** branch (not just `main`), so pushing
 a feature/port branch like `osx-arm` runs the full build matrix without
@@ -203,7 +202,13 @@ graph TD
 
 ### Configuration
 
-Set the active CPU core in your `.basilisk_ii_prefs` / `BasiliskII_prefs` configuration file:
+Set the active CPU core in your `CockatriceIII_Prefs` file. The first one found wins, searched in this order (the current directory is not searched):
+
+1. The directory holding the executable (all platforms).
+2. macOS only: `CockatriceIII.app/Contents/Resources/`.
+3. The per-user location: `%APPDATA%\CockatriceIII\CockatriceIII_Prefs` (Windows), `~/Library/CockatriceIII/CockatriceIII_Prefs` (macOS), `~/.CockatriceIII_Prefs` (Linux).
+
+If none exists, defaults are written to the per-user location. A relative `rom` path is searched for in the same three places (step 3 is `~/<rom>` on Linux); an absolute path is used as given. The chosen prefs file and ROM are printed at startup. See `BasiliskII/include/host_paths.h`.
 
 ```text
 cpu_emulator uae      # Options: musashi (default), uae, m68k_rs

@@ -359,7 +359,10 @@ bool MenuBar_ShowOpenFileDialog(const char *title, const char *filter_desc, cons
         CFURLRef url = CFBundleCopyBundleURL(CFBundleGetMainBundle());
         if (url) {
             if (CFURLGetFileSystemRepresentation(url, true, (UInt8 *)appdir, MAXPATHLEN)) {
-                assert(chdir(appdir) == 0);
+                // chdir() must not sit inside assert(): Release builds
+                // define NDEBUG and would compile the call away entirely.
+                if (chdir(appdir) != 0)
+                    perror("[CockatriceIII] chdir to bundle directory");
             }
             CFRelease(url);
         }
@@ -448,8 +451,10 @@ int main (int argc, char **argv)
     /* Finder hasn't passed "-psn_..." since ~OS X 10.9, so a double-clicked
        (or otherwise no-arg) launch looks just like `argc == 1` now. Treat
        that the same as the old -psn case: chdir into the bundle directory
-       so PREFS_FILE_NAME / the ROM resolve relative to it instead of
-       whatever cwd Finder/launchd happened to set. Explicit CLI args (argc
+       so relative paths in the prefs (disks, shared folders) resolve
+       relative to it instead of whatever cwd Finder/launchd happened to
+       set. The prefs file and ROM themselves no longer depend on cwd; see
+       host_paths.h for their search order. Explicit CLI args (argc
        >= 2, not -psn) keep respecting the caller's cwd. */
     if ( argc < 2 || strncmp (argv[1], "-psn", 4) == 0 ) {
         gArgv = (char **) malloc(sizeof (char *) * 2);

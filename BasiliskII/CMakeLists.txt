@@ -153,6 +153,7 @@ set(COCKATRICE_SDL_SOURCES
     SDL/sdl_pcap.cpp
     SDL/menu_bar.cpp
     SDL/menu_model.cpp
+    SDL/host_paths.cpp
     SDL/timer_common.cpp
     SDL/user_strings_sdl.cpp
 )
