@@ -103,10 +103,10 @@ if [ "$RUN_TESTS" -eq 1 ]; then
 fi
 
 if [ "$RUN_CPU_TESTS" -eq 1 ]; then
-	# Engine accuracy is reported, never gated: there are 20 known failures
-	# (abcd/sbcd/chk2/cmp2 across the five UAE configurations), so a non-zero
+	# Engine accuracy is reported, never gated: there are 5 known failures
+	# (cmp2 in each of the five UAE configurations), so a non-zero
 	# exit here is expected and must not fail the script.
-	echo "==> cpu tests (informational; 20 known failures)"
+	echo "==> cpu tests (informational; 5 known failures)"
 	ctest --test-dir "$BUILD_DIR" -L cpu --output-on-failure || true
 fi
 

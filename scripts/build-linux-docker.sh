@@ -88,8 +88,8 @@ git ls-files -z --recurse-submodules |
 				ctest --test-dir build -L gate --output-on-failure
 			fi
 			if [ "$RUN_CPU_TESTS" = 1 ]; then
-				# Reported, never gated: 20 known failures (see BasiliskII/tests/README.md)
-				echo "==> cpu tests (informational; 20 known failures)"
+				# Reported, never gated: 5 known failures (see BasiliskII/tests/README.md)
+				echo "==> cpu tests (informational; 5 known failures)"
 				ctest --test-dir build -L cpu --output-on-failure || true
 			fi
 		'

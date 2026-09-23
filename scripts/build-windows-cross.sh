@@ -206,8 +206,8 @@ if [ "$RUN_TESTS" -eq 1 ]; then
 fi
 
 if [ "$RUN_CPU_TESTS" -eq 1 ]; then
-	# Reported, never gated: 20 known failures (see BasiliskII/tests/README.md)
-	echo "==> cpu tests (Wine; informational, 20 known failures)"
+	# Reported, never gated: 5 known failures (see BasiliskII/tests/README.md)
+	echo "==> cpu tests (Wine; informational, 5 known failures)"
 	cd "$BUILD_DIR/BasiliskII/tests"
 	run_wine cpu_tests.exe 900 2>&1 | tr -d '\r' | grep -E '\[FAIL\]|^Results' || true
 fi
