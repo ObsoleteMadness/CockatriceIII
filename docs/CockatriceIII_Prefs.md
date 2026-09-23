@@ -132,7 +132,8 @@ time from the **Disk** menu.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `screen` | text | `win/1152/870` | Initial window size, as `win/<width>/<height>`. Clamped to the host display and to the supported range. It can be changed at run time from the **Video** menu. |
-| `frameskip` | number | `2` | Screen refresh divider: redraw every *n*th frame. `0` is treated as `1`. |
+| `frameskip` | number | `2` | Screen refresh divider: redraw every *n*th 60 Hz tick, so `1` is 60 Hz, `2` is 30 Hz, `3` is 20 Hz. `0` is treated as `1`. |
+| `hide_cursor` | boolean | `true` | Hide the host mouse cursor while it is over the emulator window, leaving only the Mac's own cursor. |
 | `nosound` | boolean | `false` | Disable sound output. |
 | `idlewait` | boolean | `false` | Patch Mac OS's idle routine so the emulator sleeps while the guest has no events to process, which saves host CPU. |
 | `nogui` | boolean | `false` | Skip the startup preferences editor and report warnings on the console. This build has no preferences editor, so it makes little difference. |
