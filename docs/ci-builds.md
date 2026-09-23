@@ -43,6 +43,29 @@ job on an Apple Silicon machine. For day-to-day work,
 (`--debug`, `--asan`, `--bundle`, `--run`, `--clean`, `--arch x86_64`);
 `--help` lists them all.
 
+## Reproducing the Linux and Windows jobs locally
+
+Two scripts build the other platforms from a Mac (or any Docker/MinGW host)
+and run the same gate tests as CI:
+
+- [scripts/build-linux-docker.sh](../scripts/build-linux-docker.sh) builds in an
+  Ubuntu 24.04 container set up like the CI runner
+  ([scripts/docker/linux.Dockerfile](../scripts/docker/linux.Dockerfile)).
+  `--arch arm64|amd64` picks the target; amd64 runs under emulation on Apple
+  Silicon. The working tree is streamed into the container, so uncommitted
+  edits are included and nothing is written back unless `--out DIR` asks for
+  the binary.
+- [scripts/build-windows-cross.sh](../scripts/build-windows-cross.sh)
+  cross-builds Windows x64 with MinGW-w64 into `build-win-x64/`, using SDL from
+  the same MSYS2 packages CI installs, and runs the gate suites under Wine.
+  The core and Musashi code generators cannot run in a cross build, so their
+  output (plain C, host independent) is copied from the native `build/`.
+  Windows ARM64 needs llvm-mingw and is left to CI.
+
+Under emulation (the amd64 container, or Wine under Rosetta) the x86 JIT also
+fails `mc68000/rox.bin`. Real x86-64 hardware in CI does not, so treat that
+as an emulator artefact rather than a regression.
+
 ## macOS bundles and the universal binary
 
 `cmake --build build --target bundle` wraps the binary into
