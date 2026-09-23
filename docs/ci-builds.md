@@ -56,11 +56,15 @@ and run the same gate tests as CI:
   edits are included and nothing is written back unless `--out DIR` asks for
   the binary.
 - [scripts/build-windows-cross.sh](../scripts/build-windows-cross.sh)
-  cross-builds Windows x64 with MinGW-w64 into `build-win-x64/`, using SDL from
-  the same MSYS2 packages CI installs, and runs the gate suites under Wine.
-  The core and Musashi code generators cannot run in a cross build, so their
-  output (plain C, host independent) is copied from the native `build/`.
-  Windows ARM64 needs llvm-mingw and is left to CI.
+  cross-builds Windows into `build-win-<arch>/`, using SDL from the same MSYS2
+  packages CI installs. `--arch x64` (the default) uses MinGW-w64 GCC and runs
+  the gate suites under Wine. `--arch arm64` uses llvm-mingw, fetched into
+  `.cross-win/` on first use; its binaries cannot run on the build host, so it
+  skips the tests and stages `build-win-arm64/package/` (the exe, every DLL it
+  imports, and `dist/`'s prefs, XPRAM and ROM) to copy to an ARM64 Windows
+  machine or VM. `--package` does the same for x64. The core and Musashi code
+  generators cannot run in a cross build, so their output (plain C, host
+  independent) is copied from the native `build/`.
 
 Under emulation (the amd64 container, or Wine under Rosetta) the x86 JIT also
 fails `mc68000/rox.bin`. Real x86-64 hardware in CI does not, so treat that

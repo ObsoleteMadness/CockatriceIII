@@ -267,6 +267,9 @@ if(APPLE)
 elseif(WIN32)
     target_link_libraries(CockatriceIII PRIVATE
         ws2_32 iphlpapi comdlg32 user32 ntdll userenv bcrypt
+        # winpthreads: the m68k-rs Rust std calls clock_gettime64, which
+        # MSYS2's toolchains link by default but llvm-mingw does not
+        pthread
         -static-libgcc -static-libstdc++)
 else()
     target_link_libraries(CockatriceIII PRIVATE pthread m ${CMAKE_DL_LIBS})
