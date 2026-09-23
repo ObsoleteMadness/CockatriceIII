@@ -542,6 +542,30 @@ void EmulOp(uint16 opcode, M68kRegisters *r)
 			break;
 
 		case M68K_EMUL_OP_IDLE_TIME:	// SynchIdleTime() patch
+#ifdef _RESTART_TEST
+		/* Guest restart repro: with COCKATRICE_TEST_RESTART=N set, after N idle
+		   calls the guest runs _ShutDown(sdRestart) through a stub allocated in
+		   the system heap (COCKATRICE_TEST_RESTARTS=M repeats it M times). Lets
+		   the Restart path be exercised without clicking through the Finder. */
+		{
+			static int idle_calls = 0, restarts = 0;
+			const char *n = getenv("COCKATRICE_TEST_RESTART");
+			if (n && ++idle_calls >= atoi(n) && restarts < (getenv("COCKATRICE_TEST_RESTARTS") ? atoi(getenv("COCKATRICE_TEST_RESTARTS")) : 1)) {
+				restarts++; idle_calls = 0;
+				printf("[TEST] guest restart #%d via _ShutDown(sdRestart)\n", restarts); fflush(stdout);
+				M68kRegisters t; memset(&t, 0, sizeof(t));
+				t.d[0] = 16;
+				Execute68kTrap(0xa51e, &t);		// NewPtrSys
+				uint32 stub = t.a[0];
+				WriteMacInt16(stub + 0, 0x3f3c); WriteMacInt16(stub + 2, 0x0002);	// MOVE.W #2,-(SP)
+				WriteMacInt16(stub + 4, 0xa895);	// _ShutDown
+				WriteMacInt16(stub + 6, M68K_RTS);
+				FlushCodeCache(Mac2HostAddr(stub), 8);
+				M68kRegisters u; memset(&u, 0, sizeof(u));
+				Execute68k(stub, &u);
+			}
+		}
+#endif
 			// Sleep if no events pending
 			if (ReadMacInt32(0x14c) == 0)
 				idle_wait();
