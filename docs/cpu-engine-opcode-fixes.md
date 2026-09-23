@@ -8,7 +8,7 @@ and **Emu68**, as tracked in `BasiliskII/docs/TODO`.
 
 | Command | What it runs |
 |---------|--------------|
-| `./build/BasiliskII/tests/cpu_tests --engine uae` | UAE interpreter + `uae+jit` + `uae+jit+direct` + `uae+jit+jitfpu` |
+| `./build/BasiliskII/tests/cpu_tests --engine uae` | UAE interpreter + `uae+jit` + `uae+jit+jitfpu` + `uae+jit+direct` + `uae+jit+direct+jitfpu` |
 | `./build/BasiliskII/tests/cpu_tests --engine musashi` | Reference baseline (136 checks) |
 
 (The `emu68` engine referenced by the rest of this document has since been

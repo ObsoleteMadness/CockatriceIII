@@ -18,9 +18,9 @@ ctest --test-dir build --output-on-failure           # everything
 `-L gate` is the twelve `basilisk_*` suites. They are required to pass.
 
 `-L cpu` is `cpu_tests`, which is **reported rather than gated**. It currently
-has 16 known failures: four opcode fixtures (`abcd`, `sbcd`, `chk2`, `cmp2`)
-across each of the four UAE engine configurations (`uae`, `uae+jit`,
-`uae+jit+direct`, `uae+jit+jitfpu`). Those are genuine accuracy
+has 20 known failures: four opcode fixtures (`abcd`, `sbcd`, `chk2`, `cmp2`)
+across each of the five UAE engine configurations (`uae`, `uae+jit`,
+`uae+jit+jitfpu`, `uae+jit+direct`, `uae+jit+direct+jitfpu`). Those are genuine accuracy
 gaps in the UAE core, not harness problems — Musashi passes all 136 of its
 checks and m68k-rs all 132 of its own against the same fixtures. See
 [EMU68_BOOT_PROGRESS.md](../../EMU68_BOOT_PROGRESS.md).

@@ -555,8 +555,10 @@ x86-64 JIT in uae-portable-cpu. It also adds the JIT halves of hooks 1, 3, 5,
     `UAE_MEM_JIT_UNSAFE_BURST`. Use it if that corruption reappears; on x86-64
     it also turns inline access off.
 - **JIT FPU.** `jit_fpu` translates FPU instructions, like the Amiberry
-  engine's `jitfpu`. It needs `jit_direct_memory` and the host-double FPU
-  backend (`fpu_softfloat = false`), so FPU results are double precision. Two
+  engine's `jitfpu`. It needs the host-double FPU backend
+  (`fpu_softfloat = false`), so FPU results are double precision. It
+  originally also needed `jit_direct_memory`; it no longer does (memory
+  operands use the handlers when direct access is off, as in WinUAE). Two
   bugs make `jitfpu true` unsafe in the current Amiberry engine; both are
   fixed upstream:
   - The engine initialises SoftFloat, but translated FPU code works on host
@@ -626,8 +628,7 @@ These are Basilisk policy, not CPU behaviour. They belong in the new
 - The boot SP/PC/SR (`CPU_ENGINE_BOOT_*`) set after `m68k_pulse_reset`.
 - JIT settings, as config passed to `uae_cpu_create`: `jit` → `jit_enabled`,
   `jitcachesize` → `jit_cache_size`, `jitfpu` → `jit_fpu`, `jitdirect` →
-  `jit_direct_memory`. `jit_fpu` only takes effect with `jit_direct_memory`
-  and `fpu_softfloat = false`.
+  `jit_direct_memory`. `jit_fpu` needs `fpu_softfloat = false`.
 - Low-heap and ROM-header diagnostic dumps (`cockatrice_m68k_low_heap_fault`,
   `cockatrice_uae_fline_trap` body), built on hooks 7 and 8.
 

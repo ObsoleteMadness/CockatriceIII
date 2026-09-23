@@ -33,13 +33,14 @@ const TestEngineConfig kTestEngineConfigs[] = {
 #endif
 #if defined(ENABLE_UAE_PORTABLE_CPU) && ENABLE_UAE_PORTABLE_CPU
 	/* The vendored uae-portable-cpu core, which owns the "uae" id since the
-	 * Amiberry engine was removed: interpreter, JIT through the memory
-	 * handlers, JIT with direct memory access, and JIT with FPU translation
-	 * (which the core only does with direct memory access). */
+	 * Amiberry engine was removed: interpreter, then the JIT through the
+	 * memory handlers and with direct memory access, each without and with
+	 * FPU translation. */
 	{ "uae",     false, false, false, "uae" },
 	{ "uae",     true,  false, false, "uae+jit" },
+	{ "uae",     true,  true,  false, "uae+jit+jitfpu" },
 	{ "uae",     true,  false, true,  "uae+jit+direct" },
-	{ "uae",     true,  true,  true,  "uae+jit+jitfpu" },
+	{ "uae",     true,  true,  true,  "uae+jit+direct+jitfpu" },
 #endif
 };
 const int kTestEngineConfigCount = (int)(sizeof(kTestEngineConfigs) / sizeof(kTestEngineConfigs[0]));
