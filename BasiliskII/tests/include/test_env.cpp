@@ -27,16 +27,19 @@ int g_fail = 0;
 }
 
 const TestEngineConfig kTestEngineConfigs[] = {
-	{ "musashi", false, false, "musashi" },
+	{ "musashi", false, false, false, "musashi" },
 #if defined(ENABLE_M68K_RS_CPU) && ENABLE_M68K_RS_CPU
-	{ "m68k_rs", false, false, "m68k_rs" },
+	{ "m68k_rs", false, false, false, "m68k_rs" },
 #endif
 #if defined(ENABLE_UAE_PORTABLE_CPU) && ENABLE_UAE_PORTABLE_CPU
 	/* The vendored uae-portable-cpu core, which owns the "uae" id since the
-	 * Amiberry engine was removed: interpreter, JIT, and JIT with FPU. */
-	{ "uae",     false, false, "uae" },
-	{ "uae",     true,  false, "uae+jit" },
-	{ "uae",     true,  true,  "uae+jit+jitfpu" },
+	 * Amiberry engine was removed: interpreter, JIT through the memory
+	 * handlers, JIT with direct memory access, and JIT with FPU translation
+	 * (which the core only does with direct memory access). */
+	{ "uae",     false, false, false, "uae" },
+	{ "uae",     true,  false, false, "uae+jit" },
+	{ "uae",     true,  false, true,  "uae+jit+direct" },
+	{ "uae",     true,  true,  true,  "uae+jit+jitfpu" },
 #endif
 };
 const int kTestEngineConfigCount = (int)(sizeof(kTestEngineConfigs) / sizeof(kTestEngineConfigs[0]));
@@ -188,7 +191,7 @@ void PrefsReplaceInt32(const char *name, int32 val)
 	test_prefs_set_int32(name, val);
 }
 
-bool activate_cpu_engine(const char *id, bool jit, bool jitfpu)
+bool activate_cpu_engine(const char *id, bool jit, bool jitfpu, bool jitdirect)
 {
 	const CPUEngine *cur = GetActiveCPUEngine();
 	if (cur && cur->exit)
@@ -203,6 +206,7 @@ bool activate_cpu_engine(const char *id, bool jit, bool jitfpu)
 
 	UseJIT = jit;
 	UseJITFPU = (jit && jitfpu);
+	UseJITDirect = (jit && jitdirect);
 	JITCacheSize = 8192;
 	CPUType = 4;
 	FPUType = 1;

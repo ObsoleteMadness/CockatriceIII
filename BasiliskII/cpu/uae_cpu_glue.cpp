@@ -31,6 +31,8 @@ static jmp_buf s_reset_jmp;
 static volatile bool s_reset_valid = false;
 static bool s_quit_requested = false;
 static uae_cpu_t *s_cpu = NULL;
+/* jit_direct_memory is on: ROM must be host read-only while the guest runs. */
+static bool s_direct_memory = false;
 
 /*
  * Cycle budget per uae_cpu_execute() call. The top-level loop re-checks the
@@ -94,7 +96,10 @@ static int uaecpu_on_illegal(void *ud, uint16_t opcode, uint32_t pc)
 		}
 		r.sr = (uint16)uae_cpu_get_reg(s_cpu, UAE_REG_SR);
 
+		/* Host code may patch ROM here; see memory_set_rom_write_guard(). */
+		memory_host_call_enter();
 		EmulOp(opcode, &r);
+		memory_host_call_leave();
 
 		/* Unconditional A7 writeback, as the Musashi and Amiberry paths do:
 		 * the RESET EmulOp relies on being able to move A7 itself. */
@@ -172,11 +177,13 @@ static uae_fpu_type_t uaecpu_map_fpu_type(void)
  *
  * RAM, ROM and the framebuffer are host-committed inside the flat
  * Host_Mem_Base window, so they map as direct regions: with
- * jit_direct_memory the JIT then reads and writes them inline, and ROM stays
- * executable-but-not-writable (the core drops writes to an ABFLAG_ROM bank on
- * both the handler and the JIT path). Every registered MMIO window becomes a
- * custom region, so a device added later through RegisterMMIORegion() is
- * picked up here without another edit.
+ * jit_direct_memory the JIT then reads and writes them inline. ROM stays
+ * executable-but-not-writable: the core drops writes to an ABFLAG_ROM bank on
+ * the handler path, and an inline store that profiling compiled against RAM
+ * but that later reaches ROM faults on the host-read-only ROM pages (see
+ * uaecpu_start()) and is dropped by the core's JIT fault handler. Every
+ * registered MMIO window becomes a custom region, so a device added later
+ * through RegisterMMIORegion() is picked up here without another edit.
  */
 static void uaecpu_map_memory(void)
 {
@@ -245,27 +252,18 @@ static bool uaecpu_init(void)
 	 * instead of waiting for a CACR write that a warm boot never repeats. */
 	cfg.jit_follow_cacr = false;
 	/*
-	 * Handler mode, not direct memory. With jit_direct_memory the core's JIT
-	 * cannot boot Mac OS: it reads ~20 blocks through the boot driver and then
-	 * takes an illegal instruction at guest 0x2146, having executed a
-	 * (count, offset) table as though it were code.
-	 *
-	 * What is established: the fault needs a translation cache of 1 MB or
-	 * more (it never appears at 512 KB or below, where the cache wraps so
-	 * often that every block is discarded rather than reused), and it
-	 * disappears entirely if ROM-resident blocks are refused revalidation
-	 * after an invalidation. That places it in the core's block-reactivation
-	 * path rather than in anything this adapter does, and it reproduces at the
-	 * core's own merge base. What is not established is the precise corruption
-	 * inside that path. The CPU suite passes in both modes, so no test sees it.
-	 *
-	 * Handler mode still translates -- 460 KB of host code over a boot against
-	 * 400 KB for direct -- and reaches the same boot state; it just calls the
-	 * memory handlers instead of inlining the accesses. Direct memory is
-	 * parked as a future performance improvement, since inlining is where the
-	 * remaining speed is.
+	 * Direct memory (prefs `jitdirect`) lets translated code read and write
+	 * RAM, ROM and the framebuffer inline instead of calling the memory
+	 * handlers. Inlining is decided per instruction from the one execution
+	 * the JIT profiles, so the same store can later reach ROM - the Device
+	 * Manager writes driver headers that live in ROM - and it would then
+	 * patch ROM in place. That is what used to break the boot (an illegal
+	 * instruction at 0x2146, after a ROM BEQ.S became BEQ.W). ROM is
+	 * therefore write-protected on the host while the guest runs, and the
+	 * core's fault handler drops the store as the handler path would.
 	 */
-	cfg.jit_direct_memory = false;
+	s_direct_memory = UseJIT && UseJITDirect;
+	cfg.jit_direct_memory = s_direct_memory;
 	cfg.jit_fpu = UseJITFPU;
 	/* Cockatrice reports its own code writes through FlushCodeCache, but the
 	 * guest also patches code and announces it with CPUSHA/CINVA only. */
@@ -293,9 +291,11 @@ static bool uaecpu_init(void)
 	}
 
 	uae_cpu_reset(s_cpu);
-	printf("[uae] uae-portable-cpu 680%d0, fpu %s, jit %s\n",
+	printf("[uae] uae-portable-cpu 680%d0, fpu %s, jit %s%s%s\n",
 	       CPUType, FPUType ? "on" : "off",
-	       UseJIT ? (UseJITFPU ? "on+fpu" : "on") : "off");
+	       UseJIT ? "on" : "off",
+	       s_direct_memory ? "+direct" : "",
+	       UseJITFPU ? "+fpu" : "");
 	fflush(stdout);
 	return true;
 }
@@ -307,12 +307,23 @@ static void uaecpu_exit(void)
 		uae_cpu_end_timeslice(s_cpu);
 }
 
+/*
+ * Runs the guest until the engine is asked to quit, restarting it after each
+ * Reset680x0().
+ *
+ * With direct memory the ROM write guard is armed for as long as the guest
+ * runs: PatchROM() has finished by the time start() is called, and later
+ * host writes to ROM go through memory_host_call_enter/leave(). The reset
+ * path disarms it while the peripherals are reset, since the longjmp skipped
+ * whatever host call was in progress.
+ */
 static void uaecpu_start(void)
 {
 	s_quit_requested = false;
 	for (;;) {
 		if (setjmp(s_reset_jmp) == 0) {
 			s_reset_valid = true;
+			memory_set_rom_write_guard(s_direct_memory);
 
 			uae_cpu_reset(s_cpu);
 			uae_cpu_set_reg(s_cpu, UAE_REG_A7, CPU_ENGINE_BOOT_SP);
@@ -327,12 +338,14 @@ static void uaecpu_start(void)
 		} else {
 			printf("Reset680x0 (uae): Resetting machine subsystems...\n");
 			fflush(stdout);
+			memory_set_rom_write_guard(false);
 			cpu_engine_reset_peripherals();
 			s_quit_requested = false;
 			MenuBar_UpdateAll();
 		}
 	}
 	s_reset_valid = false;
+	memory_set_rom_write_guard(false);
 }
 
 static void uaecpu_reset(void)
@@ -407,10 +420,13 @@ static void uaecpu_execute_68k(uint32 addr, struct M68kRegisters *r)
 	/* The EXEC_RETURN word is code this host just wrote into guest memory. */
 	uae_cpu_invalidate_code(s_cpu, ret_addr, 2);
 
+	/* Guest code again, even when a host call asked for it. */
+	int host_calls = memory_host_call_suspend();
 	PushReturnStack(&return_seen);
 	while (!return_seen && !s_quit_requested)
 		uae_cpu_execute(s_cpu, UAE_NESTED_CYCLES);
 	PopReturnStack();
+	memory_host_call_resume(host_calls);
 
 	uae_cpu_set_reg(s_cpu, UAE_REG_A7, uae_cpu_get_reg(s_cpu, UAE_REG_A7) + 2);
 	uae_cpu_set_reg(s_cpu, UAE_REG_PC, oldpc);
@@ -443,10 +459,13 @@ static void uaecpu_execute_68k_trap(uint16 trap, struct M68kRegisters *r)
 	/* The stub is code this host just wrote into guest memory. */
 	uae_cpu_invalidate_code(s_cpu, stub, 4);
 
+	/* Guest code again, even when a host call asked for it. */
+	int host_calls = memory_host_call_suspend();
 	PushReturnStack(&return_seen);
 	while (!return_seen && !s_quit_requested)
 		uae_cpu_execute(s_cpu, UAE_NESTED_CYCLES);
 	PopReturnStack();
+	memory_host_call_resume(host_calls);
 
 	uae_cpu_set_reg(s_cpu, UAE_REG_A7, uae_cpu_get_reg(s_cpu, UAE_REG_A7) + 4);
 	uae_cpu_set_reg(s_cpu, UAE_REG_PC, oldpc);

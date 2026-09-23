@@ -534,14 +534,22 @@ x86-64 JIT in uae-portable-cpu. It also adds the JIT halves of hooks 1, 3, 5,
   `Host_Mem_Base` already does.
   - A region is only accessed inline if its host pointer is
     `Host_Mem_Base + start`; anything else keeps its handler.
-  - ROM writes still go through the handler, so ROM write suppression is kept.
+  - A store profiling saw hit ROM keeps its handler call, which drops it. A
+    store inlined because it first hit RAM does not: when it later reaches ROM
+    it writes `Host_Mem_Base + address` directly. Mac OS does this to driver
+    headers that live in ROM, and it broke the boot (a ROM `BEQ.S` became
+    `BEQ.W`, ending in an illegal instruction at `0x2146`). Cockatrice
+    therefore write-protects the ROM pages on the host while the guest runs
+    (`memory_set_rom_write_guard()`), and the library's fault handler drops
+    the store.
   - Map the SCC windows with `uae_cpu_map_custom()`. Accesses profiling saw
     there stay on the handler.
-  - An inlined access that later lands in an uncommitted hole: on x86-64 and
-    Windows ARM64 the library completes it through the region's handler. On
-    arm64 macOS and Linux it reaches Cockatrice's own SIGSEGV/SIGBUS handler,
-    as with the Amiberry engine today. The library's handlers pass on anything
-    they don't handle.
+  - An inlined access that later lands in an uncommitted hole, a device or
+    read-only ROM: on x86-64 and ARM64 (macOS, Linux and Windows) the library
+    completes it through the region's handler. The ARM64 macOS/Linux handler
+    arrived later than the rest of this branch; before it, such a fault reached
+    Cockatrice's own SIGSEGV/SIGBUS handler. The library's handlers pass on
+    anything they don't handle.
   - The Amiberry engine forced `jit_n_addr_bank_unsafe = 1` after `MOVEM`
     bursts corrupted memory. Upstream exposes that as
     `UAE_MEM_JIT_UNSAFE_BURST`. Use it if that corruption reappears; on x86-64
@@ -617,7 +625,7 @@ These are Basilisk policy, not CPU behaviour. They belong in the new
 - Warm reset via `setjmp`/`longjmp`, and `cpu_engine_reset_peripherals()`.
 - The boot SP/PC/SR (`CPU_ENGINE_BOOT_*`) set after `m68k_pulse_reset`.
 - JIT settings, as config passed to `uae_cpu_create`: `jit` → `jit_enabled`,
-  `jitcachesize` → `jit_cache_size`, `jitfpu` → `jit_fpu`, plus
+  `jitcachesize` → `jit_cache_size`, `jitfpu` → `jit_fpu`, `jitdirect` →
   `jit_direct_memory`. `jit_fpu` only takes effect with `jit_direct_memory`
   and `fpu_softfloat = false`.
 - Low-heap and ROM-header diagnostic dumps (`cockatrice_m68k_low_heap_fault`,

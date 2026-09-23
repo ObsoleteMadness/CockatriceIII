@@ -24,6 +24,7 @@ struct TestEngineConfig {
 	const char *id;      /* "musashi", "uae", "m68k_rs" */
 	bool jit;
 	bool jitfpu;
+	bool jitdirect;      /* uae: jit_direct_memory (inline RAM/ROM access) */
 	const char *label;   /* printed in CHECK messages, e.g. "uae+jit" */
 };
 
@@ -49,11 +50,12 @@ bool test_engine_matches(const char *filter, const TestEngineConfig *cfg);
  *   id: Engine identifier ("musashi", "uae", or "m68k_rs").
  *   jit: True to enable UseJIT (Musashi ignores this).
  *   jitfpu: True to enable UseJITFPU when JIT is enabled.
+ *   jitdirect: True to enable UseJITDirect when JIT is enabled.
  *
  * Returns:
  *   true if the engine was selected and init() succeeded.
  */
-bool activate_cpu_engine(const char *id, bool jit, bool jitfpu = false);
+bool activate_cpu_engine(const char *id, bool jit, bool jitfpu = false, bool jitdirect = false);
 
 /*
  * Locates dist/Quadra800.rom (or QUADRA_ROM / TEST_REPO_ROOT).

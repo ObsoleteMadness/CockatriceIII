@@ -230,6 +230,175 @@ static PVOID s_veh = NULL;
 #endif
 
 /*
+ * ROM write guard.
+ *
+ * A real Macintosh ignores writes to ROM, and so does every engine that
+ * reaches ROM through an accessor. A JIT that accesses memory inline (the uae
+ * engine with jitdirect) cannot tell ROM from RAM at run time: it compiles a
+ * store inline because the first execution hit RAM, and a later execution of
+ * the same instruction against a ROM-resident structure (a driver header, for
+ * instance) then writes straight into Host_Mem_Base. Mac OS does exactly this,
+ * and one such byte turned a ROM BEQ.S into a BEQ.W during boot.
+ *
+ * The guard maps the ROM pages read-only on the host while the guest runs, so
+ * such a store faults and the JIT's own fault handler completes it through the
+ * ROM bank, which drops it.
+ *
+ * Host code still patches ROM at run time (VideoDriverOpen and the video
+ * cscSwitchMode path rewrite the declaration ROM), always from inside a host
+ * call on the CPU thread or from another thread. Rather than unprotect around
+ * every EmulOp, the guard unlocks lazily: a host write faults once, the
+ * fault handlers below make ROM writable and retry the store, and the
+ * outermost memory_host_call_leave() locks it again. A fault on the CPU thread
+ * outside a host call is guest code, and is left for the JIT.
+ */
+static bool s_rom_guard_armed = false;	/* ROM is to be read-only while the guest runs */
+static bool s_rom_readonly = false;		/* ROM pages are read-only right now */
+static int s_host_call_depth = 0;		/* Nesting of host calls on the CPU thread */
+#ifdef _WIN32
+static DWORD s_rom_guard_thread = 0;	/* CPU thread that armed the guard */
+#else
+static pthread_t s_rom_guard_thread;	/* CPU thread that armed the guard */
+#endif
+
+/*
+ * Returns the whole host pages covering [ROMBaseMac, ROMBaseMac + ROMSize).
+ *
+ * Arguments:
+ *   host: Receives the first byte of the first page.
+ *   bytes: Receives the page-rounded length.
+ *
+ * Returns:
+ *   false when there is no window or no ROM to protect.
+ */
+static bool memory_rom_pages(uint8 **host, size_t *bytes)
+{
+	if (!Host_Mem_Base || ROMSize == 0)
+		return false;
+	size_t page = memory_page_size();
+	uint64 start = (uint64)ROMBaseMac & ~((uint64)page - 1);
+	uint64 end = ((uint64)ROMBaseMac + ROMSize + page - 1) & ~((uint64)page - 1);
+	*host = Host_Mem_Base + start;
+	*bytes = (size_t)(end - start);
+	return true;
+}
+
+/*
+ * Makes the ROM pages read-only or read-write on the host.
+ *
+ * Arguments:
+ *   readonly: true to write-protect the ROM, false to allow host writes.
+ */
+static void memory_protect_rom_pages(bool readonly)
+{
+	uint8 *host;
+	size_t bytes;
+
+	if (!memory_rom_pages(&host, &bytes))
+		return;
+#ifdef _WIN32
+	DWORD old;
+	if (!VirtualProtect(host, bytes, readonly ? PAGE_READONLY : PAGE_READWRITE, &old))
+		return;
+#else
+	if (mprotect(host, bytes, readonly ? PROT_READ : (PROT_READ | PROT_WRITE)) != 0)
+		return;
+#endif
+	s_rom_readonly = readonly;
+}
+
+/*
+ * Arms or disarms the ROM write guard. Called by an engine on its CPU thread
+ * before the guest runs (armed) and when it stops or resets (disarmed), which
+ * also forgets any host call a reset longjmp skipped out of.
+ *
+ * Arguments:
+ *   armed: true to write-protect ROM while the guest runs.
+ */
+void memory_set_rom_write_guard(bool armed)
+{
+	s_rom_guard_armed = armed;
+	s_host_call_depth = 0;
+#ifdef _WIN32
+	s_rom_guard_thread = GetCurrentThreadId();
+#else
+	s_rom_guard_thread = pthread_self();
+#endif
+	memory_protect_rom_pages(armed);
+}
+
+/*
+ * Brackets a host call (an EmulOp) made from the CPU thread. Host code inside
+ * may write ROM; the outermost leave write-protects it again if a write
+ * unlocked it. Cheap when the guard is off or ROM was not touched.
+ */
+void memory_host_call_enter(void)
+{
+	s_host_call_depth++;
+}
+
+void memory_host_call_leave(void)
+{
+	if (s_host_call_depth > 0 && --s_host_call_depth == 0 && s_rom_guard_armed && !s_rom_readonly)
+		memory_protect_rom_pages(true);
+}
+
+/*
+ * Brackets guest code a host call runs through Execute68k. The guest is
+ * running again, so its ROM stores must fault to the JIT rather than unlock
+ * the ROM: the host-call nesting is set aside (re-protecting ROM if a host
+ * write had unlocked it) and restored afterwards.
+ *
+ * Returns (suspend) / Arguments (resume):
+ *   The host-call nesting to restore.
+ */
+int memory_host_call_suspend(void)
+{
+	int depth = s_host_call_depth;
+	s_host_call_depth = 0;
+	if (s_rom_guard_armed && !s_rom_readonly)
+		memory_protect_rom_pages(true);
+	return depth;
+}
+
+void memory_host_call_resume(int depth)
+{
+	s_host_call_depth = depth;
+}
+
+/*
+ * Lets a host write to guarded ROM through, from a fault handler.
+ *
+ * Arguments:
+ *   fault_addr: Faulting host address.
+ *
+ * Returns:
+ *   1 if the fault was a host write to the write-protected ROM and ROM is now
+ *   writable (retry the access), 0 if it is not this guard's fault - including
+ *   guest code on the CPU thread, which the JIT's handler owns.
+ */
+static int memory_try_unlock_rom_for_host(const void *fault_addr)
+{
+	uint8 *host;
+	size_t bytes;
+
+	if (!s_rom_guard_armed || !s_rom_readonly || !memory_rom_pages(&host, &bytes))
+		return 0;
+	const uint8 *p = (const uint8 *)fault_addr;
+	if (p < host || p >= host + bytes)
+		return 0;
+#ifdef _WIN32
+	bool cpu_thread = GetCurrentThreadId() == s_rom_guard_thread;
+#else
+	bool cpu_thread = pthread_equal(pthread_self(), s_rom_guard_thread) != 0;
+#endif
+	if (cpu_thread && s_host_call_depth <= 0)
+		return 0;
+	memory_protect_rom_pages(false);
+	return s_rom_readonly ? 0 : 1;
+}
+
+/*
  * Reads a single byte from the Z8530 Serial Communications Controller (SCC).
  *
  * Arguments:
@@ -545,6 +714,9 @@ void memory_set_flat_dummy_window(bool flat_dummy)
 void memory_reconfigure_window(void)
 {
 	memory_apply_window_policy();
+	/* The policy re-commits ROM read-write; keep the guard's protection. */
+	if (s_rom_readonly)
+		memory_protect_rom_pages(true);
 }
 
 /*
@@ -591,6 +763,8 @@ int memory_try_handle_guest_fault(const void *si_addr)
  */
 static void memory_unix_fault(int sig, siginfo_t *info, void *ucontext)
 {
+	if (info && memory_try_unlock_rom_for_host(info->si_addr))
+		return;
 	if (info)
 		memory_try_handle_guest_fault(info->si_addr);
 
@@ -641,6 +815,9 @@ static LONG CALLBACK memory_veh(PEXCEPTION_POINTERS info)
 	if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
 		return EXCEPTION_CONTINUE_SEARCH;
 	const void *addr = (const void *)info->ExceptionRecord->ExceptionInformation[1];
+	/* ExceptionInformation[0] is 1 for a write. */
+	if (info->ExceptionRecord->ExceptionInformation[0] == 1 && memory_try_unlock_rom_for_host(addr))
+		return EXCEPTION_CONTINUE_EXECUTION;
 	memory_try_handle_guest_fault(addr);
 	return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -697,8 +874,11 @@ void memory_init(void)
 	ROMBaseHost = Host_Mem_Base + ROMBaseMac;
 	MacFrameBaseHost = Host_Mem_Base + MacFrameBaseMac;
 
-	/* Refresh the mapping policy and committed ranges on repeated init calls. */
+	/* Refresh the mapping policy and committed ranges on repeated init calls.
+	 * That re-commits ROM read-write, which a later engine start re-guards. */
 	memory_apply_window_policy();
+	s_rom_readonly = false;
+	s_rom_guard_armed = false;
 
 	if (old_rom_host && old_rom_host != ROMBaseHost && ROMSize > 0)
 		memmove(ROMBaseHost, old_rom_host, ROMSize);
@@ -729,6 +909,9 @@ void memory_exit(void)
 	MacFrameBaseHost = NULL;
 	s_nmapped = 0;
 	s_guard_depth = 0;
+	s_rom_guard_armed = false;
+	s_rom_readonly = false;
+	s_host_call_depth = 0;
 }
 
 /*

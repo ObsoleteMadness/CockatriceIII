@@ -58,6 +58,7 @@ prefs_desc common_prefs_items[] = {
 	{"cpu_emulator", TYPE_STRING, false}, // CPU emulator backend (musashi | uae | m68k_rs)
 	{"jit", TYPE_BOOLEAN, false},		// Enable JIT compilation
 	{"jitfpu", TYPE_BOOLEAN, false},	// Enable JIT for FPU instructions
+	{"jitdirect", TYPE_BOOLEAN, false},	// Let translated code access RAM/ROM/framebuffer inline (uae)
 	{"jitcachesize", TYPE_INT32, false}, // JIT translation cache size in KB
 	{"m68k_rs_fastmem", TYPE_STRING, false}, // m68k-rs fastmem mode (off | ram | multi | legacy)
 	{"fpu", TYPE_BOOLEAN, false},		// Enable FPU emulation (main.cpp)
@@ -110,6 +111,7 @@ void PrefsInit(void)
 	PrefsAddString("cpu_emulator", "musashi"); // musashi | uae | m68k_rs
 	PrefsAddBool("jit", false);
 	PrefsAddBool("jitfpu", false);
+	PrefsAddBool("jitdirect", false);
 	PrefsAddInt32("jitcachesize", 16384);	// MAX_JIT_CACHE; smaller caches thrash on Mac OS 8
 	PrefsAddString("m68k_rs_fastmem", "off");
 	PrefsAddBool("fpu", false);		// 68040LC

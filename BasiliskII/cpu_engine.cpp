@@ -80,6 +80,7 @@ static const CPUEngine *s_active_engine = &musashi_cpu_engine;
 // Global JIT preference flags
 bool UseJIT = false;
 bool UseJITFPU = false;
+bool UseJITDirect = false;
 uint32 JITCacheSize = 2048;
 
 // Execution return flag stack for supporting nested Execute68k / Execute68kTrap calls
@@ -818,6 +819,7 @@ bool Init680x0(void)
 	// Read JIT configuration flags
 	UseJIT = PrefsFindBool("jit");
 	UseJITFPU = PrefsFindBool("jitfpu");
+	UseJITDirect = PrefsFindBool("jitdirect");
 	int32 cachesize = PrefsFindInt32("jitcachesize");
 	if (cachesize > 0)
 		JITCacheSize = (uint32)cachesize;
@@ -829,9 +831,10 @@ bool Init680x0(void)
 		UseJIT = false;
 	}
 
-	// JIT FPU compilation requires general JIT to be enabled
+	// JIT FPU compilation and direct memory access both require the JIT
 	if (!UseJIT) {
 		UseJITFPU = false;
+		UseJITDirect = false;
 	}
 
 	// Initialize the active CPU engine

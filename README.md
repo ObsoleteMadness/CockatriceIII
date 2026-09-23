@@ -197,7 +197,7 @@ graph TD
 ### Available CPU Engines
 
 1. **`musashi`** (Default): Portable, cycle-accurate C interpreter (Musashi 4.5+), hardcoded to 68040 in this port. No translator — the `jit`/`jitfpu` prefs are ignored on this engine.
-2. **`uae`**: [uae-portable-cpu](https://github.com/ObsoleteMadness/uae-portable-cpu), a GPL-2 WinUAE-derived 680x0 core vendored at `BasiliskII/vendor/uae-portable-cpu` and driven through its public `uae_cpu_*` API — cycle-accurate interpreter, or with `jit true` its ARM64/x86-64 compemu JIT — with SoftFloat 68881/68882/68040 FPU. Follows Apple's W^X rule on Apple Silicon (one `MAP_JIT` region toggled with `pthread_jit_write_protect_np`). It replaced the GPL-3 Amiberry engine and took over the `uae` engine id, so existing prefs files keep working. Its JIT currently runs in handler mode rather than direct memory; see the comment in `BasiliskII/cpu/uae_cpu_glue.cpp` for what is and isn't understood about that.
+2. **`uae`**: [uae-portable-cpu](https://github.com/ObsoleteMadness/uae-portable-cpu), a GPL-2 WinUAE-derived 680x0 core vendored at `BasiliskII/vendor/uae-portable-cpu` and driven through its public `uae_cpu_*` API — cycle-accurate interpreter, or with `jit true` its ARM64/x86-64 compemu JIT — with SoftFloat 68881/68882/68040 FPU. Follows Apple's W^X rule on Apple Silicon (one `MAP_JIT` region toggled with `pthread_jit_write_protect_np`). It replaced the GPL-3 Amiberry engine and took over the `uae` engine id, so existing prefs files keep working. By default its JIT calls the memory handlers for every access; `jitdirect true` lets translated code access RAM, ROM and the framebuffer inline, which is where the remaining speed is. In that mode the ROM pages are write-protected on the host while the guest runs, so a translated store that reaches ROM is dropped (as on real hardware) instead of patching it — see the comments in `BasiliskII/cpu/uae_cpu_glue.cpp` and `memory_set_rom_write_guard()` in `BasiliskII/memory.cpp`.
 3. **`m68k_rs`**: [m68k-rs](https://github.com/benletchford/m68k-rs), a Rust 680x0 core vendored as a static library (`BasiliskII/vendor/m68k-rs`, glued in via `BasiliskII/cpu/m68k_rs_glue.cpp`). Runs as a cycle-accurate interpreter by default; `jit true` switches it to a decoded-op batch executor with an optional direct-RAM "fastmem" window (`m68k_rs_fastmem`). Requires Rust 1.93+ to build (`cargo`, see [docs/cpu-engine-m68k-rs.md](docs/cpu-engine-m68k-rs.md)); passes the same 68k opcode-battery test suite as Musashi (118/122 checks — four Musashi BCD/CHK2/CMP2 fixtures are intentionally skipped due to modeling differences).
 
 ### Configuration
@@ -213,7 +213,8 @@ If none exists, defaults are written to the per-user location. A relative `rom` 
 ```text
 cpu_emulator uae      # Options: musashi (default), uae, m68k_rs
 jit true              # Enable JIT/batch execution (uae, m68k_rs only; ignored by musashi)
-jitfpu true           # Also JIT-compile FPU instructions (requires jit true)
+jitdirect true        # uae only: translated code accesses RAM/ROM/framebuffer inline (requires jit true)
+jitfpu true           # Also JIT-compile FPU instructions (requires jit true; uae also needs jitdirect true)
 jitcachesize 8192     # JIT/translation cache size in KB (default: 2048 KB)
 m68k_rs_fastmem off   # m68k_rs only: off (default) | ram | multi | legacy direct-RAM window
 ```
@@ -298,7 +299,8 @@ New preference keys added on this branch, on top of the existing BasiliskII set 
 |-----|------|---------|--------|
 | `cpu_emulator` | string | `musashi` | Active 680x0 engine: `musashi`, `uae`, or `m68k_rs`. See [Multi-Engine 680x0 CPU Architecture](#multi-engine-680x0-cpu-architecture). |
 | `jit` | bool | `false` | Enable JIT / batch execution. No effect on `musashi`. |
-| `jitfpu` | bool | `false` | Also JIT-compile FPU instructions. Requires `jit true`; forced off otherwise. |
+| `jitdirect` | bool | `false` | `uae` only: translated code reads and writes RAM, ROM and the framebuffer inline instead of calling the memory handlers (`jit_direct_memory`). Requires `jit true`; forced off otherwise. ROM is write-protected on the host while the guest runs. |
+| `jitfpu` | bool | `false` | Also JIT-compile FPU instructions. Requires `jit true`; forced off otherwise. On `uae` it only takes effect with `jitdirect true`. |
 | `jitcachesize` | int32 | `2048` | JIT/translation cache size, in KB. |
 | `m68k_rs_fastmem` | string | `off` | `m68k_rs` only: `off`, `ram`, `multi`, or `legacy` direct-RAM window. |
 | `dump_memory` | bool | `false` | On an unhandled guest System Error, write a binary RAM snapshot to `dump_file` before halting. Engine-independent. |
