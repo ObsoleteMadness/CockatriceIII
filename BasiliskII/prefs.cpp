@@ -355,40 +355,10 @@ void LoadPrefsFromStream(FILE *f)
 {
 	char line[2048];
 	while(fgets(line, sizeof(line), f)) {
-		// Read line
-		int len = strlen(line);
-		if (len == 0)
+		// Split "keyword value # comment"; blank and comment lines are skipped.
+		char *keyword, *value;
+		if (!PrefsParseLine(line, &keyword, &value))
 			continue;
-
-		// Strip the line ending and any trailing whitespace. Trimming only the
-		// final '\n' left a '\r' on every value from a CRLF (Windows-edited)
-		// file, so "rom Quadra800.rom" named "Quadra800.rom\r" and booleans
-		// compared unequal to "true".
-		while (len > 0 && isspace((unsigned char)line[len-1]))
-			line[--len] = 0;
-
-		// Comments begin with "#" or ";"
-		if (line[0] == '#' || line[0] == ';')
-			continue;
-
-		// Kill short lines
-		if(strlen(line)<1)
-			continue;
-
-		// Terminate string after keyword
-		char *p = line;
-		while (*p && !isspace((unsigned char)*p)) p++;
-		// A keyword with no value ends at the terminator; skip the line.
-		if (*p == 0)
-			continue;
-		*p++ = 0;
-
-		// Skip whitespace until value
-		while (isspace(*p)) p++;
-		if (*p == 0)
-			continue;
-		char *keyword = line;
-		char *value = p;
 		int32 i = atol(value);
 
 		// Look for keyword first in common item list, then in platform specific list

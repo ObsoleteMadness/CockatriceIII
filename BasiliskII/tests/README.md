@@ -15,7 +15,7 @@ ctest --test-dir build --output-on-failure           # everything
 
 ## What gates and what does not
 
-`-L gate` is the eleven `basilisk_*` suites. They are required to pass.
+`-L gate` is the twelve `basilisk_*` suites. They are required to pass.
 
 `-L cpu` is `cpu_tests`, which is **reported rather than gated**. It currently
 has 16 known failures: four opcode fixtures (`abcd`, `sbcd`, `chk2`, `cmp2`)
@@ -78,6 +78,13 @@ post-boot traps. It runs every case on all engine configurations, because the
 one thing the dispatcher must get right — *which* hooked trap it was entered
 for — is derived from the guest PC, and the engines do not agree on what the PC
 is at EmulOp time. `--engine <id>` narrows it.
+
+`basilisk_prefs_test` drives `PrefsParseLine()`
+([prefs_parse.cpp](../prefs_parse.cpp)), the line syntax of `CockatriceIII_Prefs`:
+trailing `#`/`;` comments, a `#` kept inside a path, values with spaces, CRLF
+endings, and the blank, comment and keyword-only lines that are skipped. The
+syntax itself is documented in
+[docs/CockatriceIII_Prefs.md](../../docs/CockatriceIII_Prefs.md#syntax).
 
 ## Sanitizers
 

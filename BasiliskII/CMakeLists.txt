@@ -116,6 +116,7 @@ endif()
 set(COCKATRICE_CORE_SOURCES
     main.cpp
     prefs.cpp
+    prefs_parse.cpp
     rom_patches.cpp
     slot_rom.cpp
     rsrc_patches.cpp
