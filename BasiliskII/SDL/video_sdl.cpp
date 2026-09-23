@@ -33,11 +33,11 @@ static int keycode_table[256];		// X keycode -> Mac keycode translation table
 static uint8 s_saved_palette[256 * 3];
 static bool s_have_palette = false;
 static bool s_in_mode_switch = false;
-// SDL_SetVideoMode posts VIDEORESIZE; swallow those so a menu/preset switch
-// is not immediately re-queued as a drag-resize of the same window.
-static int s_swallow_resize = 0;
-
-static const Uint32 kVideoSDLFlags = (SDL_SWSURFACE | SDL_HWPALETTE | SDL_RESIZABLE);
+// No SDL_HWPALETTE: sdl12-compat never records it on the surface, and on
+// Windows it recreates the window on every SDL_SetVideoMode whose flags differ
+// from the surface's, which dropped the Win32 menu bar on each mode change.
+// Palettes are set with SDL_SetColors either way.
+static const Uint32 kVideoSDLFlags = (SDL_SWSURFACE | SDL_RESIZABLE);
 
 // Global variables
 static int32 frame_skip;
@@ -110,7 +110,12 @@ void video_set_palette(uint8 *pal)
 }
 
 /*
- * Reads the host desktop size that SDL 1.2 will use for window coordinates.
+ * Reads the largest window content size the host can show.
+ *
+ * On Windows that is the desktop work area (the screen without the taskbar)
+ * less the frame, title bar and menu bar of a normal window, so the largest
+ * Video preset still fits once the menu is attached. Elsewhere it is the
+ * desktop size SDL 1.2 reports.
  *
  * Arguments:
  *   width, height: Out-parameters; set to VIDEO_MAX_* if the query fails.
@@ -119,11 +124,54 @@ static void query_host_desktop(int *width, int *height)
 {
 	*width = VIDEO_MAX_WIDTH;
 	*height = VIDEO_MAX_HEIGHT;
+#if defined(WIN32) || defined(_WIN32)
+	RECT work;
+	if (SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0)) {
+		// A zero-size client rect grows by exactly the non-client parts
+		RECT frame = { 0, 0, 0, 0 };
+		AdjustWindowRectEx(&frame, WS_OVERLAPPEDWINDOW, TRUE /* bMenu */, 0);
+		int w = (work.right - work.left) - (frame.right - frame.left);
+		int h = (work.bottom - work.top) - (frame.bottom - frame.top);
+		if (w > 0 && h > 0) {
+			*width = w;
+			*height = h;
+			return;
+		}
+	}
+#endif
 	const SDL_VideoInfo *info = SDL_GetVideoInfo();
 	if (info && info->current_w > 0 && info->current_h > 0) {
 		*width = info->current_w;
 		*height = info->current_h;
 	}
+}
+
+/*
+ * Attaches the host menu bar to the SDL window after an SDL_SetVideoMode().
+ *
+ * On Windows the menu is part of SDL's own window, which a mode change may
+ * replace, so this runs after every mode set; MenuBar_Init() re-attaches the
+ * bar and the WM_COMMAND hook to a new window and keeps the client area at the
+ * mode size. The other hosts have an application-level menu bar that only
+ * needs setting up once.
+ *
+ * Arguments:
+ *   first: True for the first mode set, from VideoInit().
+ */
+static void attach_host_menu(bool first)
+{
+#if defined(WIN32) || defined(_WIN32)
+	(void)first;
+	SDL_SysWMinfo wminfo;
+	SDL_VERSION(&wminfo.version);
+	if (SDL_GetWMInfo(&wminfo) && wminfo.window)
+		MenuBar_Init((void *)wminfo.window);
+	else
+		printf("VID: SDL_GetWMInfo failed; Win32 menu bar not attached\n");
+#else
+	if (first)
+		MenuBar_Init(NULL);
+#endif
 }
 
 bool VideoInit(bool classic)
@@ -225,18 +273,7 @@ D(bug(" init_window w%d,h%d d%d\n",width,height,depth));
         // No focus event arrives if the pointer already sits over the window
         SDL_ShowCursor(hide_cursor ? SDL_DISABLE : SDL_ENABLE);
         SDL_WM_SetCaption(VERSION_STRING,VERSION_STRING);
-#if defined(WIN32) || defined(_WIN32)
-	{
-		SDL_SysWMinfo wminfo;
-		SDL_VERSION(&wminfo.version);
-		if (SDL_GetWMInfo(&wminfo) && wminfo.window)
-			MenuBar_Init((void *)wminfo.window);
-		else
-			printf("VID: SDL_GetWMInfo failed; Win32 menu bar not attached\n");
-	}
-#else
-	MenuBar_Init(NULL);
-#endif
+	attach_host_menu(true);
 //SDL
 
                 int bytes_per_row = width;
@@ -416,8 +453,7 @@ bool Video_SwitchToModeDepth(int width, int height, int mode)
 		SDL_ShowCursor(hide_cursor ? SDL_DISABLE : SDL_ENABLE);
 		if (s_have_palette)
 			video_set_palette(s_saved_palette);
-		// Cocoa/SDL 1.2 posts VIDEORESIZE for this same size; ignore it
-		s_swallow_resize = 3;
+		attach_host_menu(false);
 	}
 
 	// Newly revealed (or re-packed) pixels would otherwise show leftover VRAM
@@ -599,6 +635,12 @@ void doevents(void)
  SDL_Event event;
 	int mb,x,y;
 int emul_suspended=0;
+	/* A mode set can post several resizes at once: Cocoa repeats the new size,
+	   and on Windows attaching the menu bar shrinks the client area before
+	   the window is grown back. Acting on each would queue a guest mode switch
+	   to a size that no longer applies, so only the final one is used. */
+	bool resize_pending = false;
+	int resize_w = 0, resize_h = 0;
     while(SDL_PollEvent(&event))
     {
         switch (event.type) {
@@ -684,18 +726,12 @@ int emul_suspended=0;
 	ADBMouseMoved(event.motion.x, event.motion.y);
 	break;
 
-	case SDL_VIDEORESIZE: {
-		if (s_swallow_resize > 0) {
-			s_swallow_resize--;
-			break;
-		}
-		int width = event.resize.w;
-		int height = event.resize.h;
-		clamp_mode_size(&width, &height);
-		if ((uint32)width != VideoMonitor.x || (uint32)height != VideoMonitor.y)
-			Toolbox_NotifyScreenResized((int16)width, (int16)height);
+	case SDL_VIDEORESIZE:
+		// Only the last resize of a batch counts (see below)
+		resize_pending = true;
+		resize_w = event.resize.w;
+		resize_h = event.resize.h;
 		break;
-	}
 
 	case SDL_ACTIVEEVENT:
 		if (hide_cursor && (event.active.state & SDL_APPMOUSEFOCUS))
@@ -714,6 +750,13 @@ int emul_suspended=0;
 	break;
 	}//end switch
    }//end while
+
+	// Ask the guest for the window's final size unless it already has it
+	if (resize_pending) {
+		clamp_mode_size(&resize_w, &resize_h);
+		if ((uint32)resize_w != VideoMonitor.x || (uint32)resize_h != VideoMonitor.y)
+			Toolbox_NotifyScreenResized((int16)resize_w, (int16)resize_h);
+	}
 }
 
 

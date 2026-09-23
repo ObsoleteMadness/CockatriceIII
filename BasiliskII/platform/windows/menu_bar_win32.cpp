@@ -189,18 +189,27 @@ static LRESULT CALLBACK MenuSubclassWndProc(HWND hwnd, UINT msg, WPARAM wParam, 
 }
 
 /*
- *  Adjust outer window size so that adding the menu bar does not shrink
- *  the SDL client drawing surface.
+ *  Grow the window so its client area is client_w x client_h with the menu
+ *  bar attached.
+ *
+ *  SetMenu() keeps the outer window size, so attaching the bar takes its
+ *  height out of the client area and SDL would scale the Mac screen into the
+ *  smaller space. A maximized window cannot grow: its client area stays
+ *  smaller, and the resize SDL reports for it lets the guest switch to a mode
+ *  that fits.
+ *
+ *  Arguments:
+ *    hwnd              : SDL's window.
+ *    client_w, client_h: client size SDL set before the menu was attached.
  */
-static void AdjustWindowForMenu(HWND hwnd)
+static void AdjustWindowForMenu(HWND hwnd, int client_w, int client_h)
 {
-	RECT rcClient;
-	if (!GetClientRect(hwnd, &rcClient))
+	if (IsZoomed(hwnd) || IsIconic(hwnd))
 		return;
 
 	DWORD style = (DWORD)GetWindowLong(hwnd, GWL_STYLE);
 	DWORD exStyle = (DWORD)GetWindowLong(hwnd, GWL_EXSTYLE);
-	RECT rcAdjust = rcClient;
+	RECT rcAdjust = { 0, 0, client_w, client_h };
 
 	AdjustWindowRectEx(&rcAdjust, style, TRUE /* bMenu */, exStyle);
 	int newWidth = rcAdjust.right - rcAdjust.left;
@@ -209,21 +218,48 @@ static void AdjustWindowForMenu(HWND hwnd)
 	SetWindowPos(hwnd, NULL, 0, 0, newWidth, newHeight, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
 
+/*
+ *  Attach the menu bar to SDL's window, or re-attach it after a video mode
+ *  change. Safe to call after every SDL_SetVideoMode().
+ *
+ *  sdl12-compat may destroy the window and create a new one on a mode change
+ *  (it does so whenever the requested flags differ from the surface's).
+ *  Destroying the window also destroyed the menu attached to it and the
+ *  WM_COMMAND hook, so a new window gets both again. A window that still has
+ *  our bar needs nothing: SDL sized it knowing the menu is there.
+ *
+ *  Arguments:
+ *    native_window_handle : SDL's HWND from SDL_GetWMInfo(), or NULL.
+ */
 void MenuBar_Init(void *native_window_handle)
 {
 	if (!native_window_handle)
 		return;
+	HWND hwnd = (HWND)native_window_handle;
 
-	g_hwnd = (HWND)native_window_handle;
+	if (hwnd == g_hwnd && g_hmenu && GetMenu(hwnd) == g_hmenu)
+		return;
 
-	// Subclass window procedure to capture WM_COMMAND
-	g_prev_wndproc = (WNDPROC)SetWindowLongPtr(g_hwnd, GWLP_WNDPROC, (LONG_PTR)MenuSubclassWndProc);
+	if (hwnd != g_hwnd) {
+		/* The old window, if it is gone, took its menu with it */
+		if (g_hwnd && !IsWindow(g_hwnd))
+			g_hmenu = NULL;
+		g_hwnd = hwnd;
+		// Subclass window procedure to capture WM_COMMAND
+		g_prev_wndproc = (WNDPROC)SetWindowLongPtr(g_hwnd, GWLP_WNDPROC, (LONG_PTR)MenuSubclassWndProc);
+	}
+
+	// The size SDL gave the window before it had a menu is the size to keep
+	RECT rcClient;
+	if (!GetClientRect(g_hwnd, &rcClient))
+		SetRectEmpty(&rcClient);
 
 	/* VideoInit() has already queried the desktop and rebuilt the presets by
 	   the time SDL hands us a window, so the Video menu is generated from the
 	   real screen size without asking Win32 for it. */
 	rebuild_menu_bar();
-	AdjustWindowForMenu(g_hwnd);
+	if (rcClient.right > 0 && rcClient.bottom > 0)
+		AdjustWindowForMenu(g_hwnd, rcClient.right, rcClient.bottom);
 
 	MenuBar_UpdateAll();
 }
