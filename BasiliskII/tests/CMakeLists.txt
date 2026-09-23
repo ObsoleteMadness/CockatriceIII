@@ -65,6 +65,14 @@ endif()
 if(COCKATRICE_ENABLE_M68K_RS)
     target_link_libraries(cockatrice_test_core PUBLIC m68k_rs)
 endif()
+if(WIN32)
+    # The same system libraries as the app: Winsock for the LToUDP and slirp
+    # code, and what the m68k-rs Rust standard library imports. They follow
+    # m68k_rs here because GNU ld resolves archives in a single pass.
+    target_link_libraries(cockatrice_test_core PUBLIC
+        ws2_32 iphlpapi comdlg32 user32 ntdll userenv bcrypt pthread
+        -static-libgcc -static-libstdc++)
+endif()
 
 if(NOT MSVC)
     target_compile_options(cockatrice_test_core PUBLIC -Wall -Wextra -Wno-unused -g)
@@ -99,12 +107,6 @@ function(cockatrice_add_test name)
                     ${CMAKE_CURRENT_SOURCE_DIR}/../platform/darwin/entitlements.plist
                     $<TARGET_FILE:${name}>
             VERBATIM)
-    elseif(WIN32)
-        # The same system libraries as the app: Winsock for the LToUDP and
-        # slirp code, and what the m68k-rs Rust standard library needs.
-        target_link_libraries(${name} PRIVATE
-            ws2_32 iphlpapi comdlg32 user32 ntdll userenv bcrypt pthread
-            -static-libgcc -static-libstdc++)
     elseif(UNIX)
         target_link_libraries(${name} PRIVATE pthread m ${CMAKE_DL_LIBS})
     endif()

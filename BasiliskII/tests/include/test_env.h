@@ -58,6 +58,20 @@ bool test_engine_matches(const char *filter, const TestEngineConfig *cfg);
 bool activate_cpu_engine(const char *id, bool jit, bool jitfpu = false, bool jitdirect = false);
 
 /*
+ * Builds a path for a scratch file in the host's temporary directory.
+ *
+ * /tmp does not exist on Windows, so tests that write disk images must not
+ * hard-code it.
+ *
+ * Arguments:
+ *   leaf: File name to place in the temporary directory.
+ *
+ * Returns:
+ *   The full path, valid until the next call (a static buffer).
+ */
+const char *test_temp_path(const char *leaf);
+
+/*
  * Locates dist/Quadra800.rom (or QUADRA_ROM / TEST_REPO_ROOT).
  *
  * Returns:

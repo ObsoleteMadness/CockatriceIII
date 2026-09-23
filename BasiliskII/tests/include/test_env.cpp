@@ -376,3 +376,24 @@ void test_install_disk_trap_stubs(uint32 heap_addr, uint32 heap_size)
 	WriteMacInt32(0x28, handler);
 	WriteMacInt32(0x308, 0); /* empty drive queue for FindFreeDriveNumber */
 }
+
+const char *test_temp_path(const char *leaf)
+{
+	static char path[1024];
+#ifdef _WIN32
+	// GetTempPathA returns the directory with its trailing backslash
+	char dir[MAX_PATH + 1];
+	DWORD n = GetTempPathA(sizeof(dir), dir);
+	if (n == 0 || n > sizeof(dir))
+		snprintf(dir, sizeof(dir), ".\\");
+	snprintf(path, sizeof(path), "%s%s", dir, leaf);
+#else
+	// Honour TMPDIR as mkstemp users would, falling back to /tmp
+	const char *dir = getenv("TMPDIR");
+	if (!dir || !*dir)
+		dir = "/tmp";
+	size_t len = strlen(dir);
+	snprintf(path, sizeof(path), "%s%s%s", dir, (len && dir[len - 1] == '/') ? "" : "/", leaf);
+#endif
+	return path;
+}
