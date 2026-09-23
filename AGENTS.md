@@ -51,7 +51,7 @@ cmake --build build -j8
 ctest --test-dir build -L gate --output-on-failure
 ```
 
-`-L gate` (the thirteen `basilisk_*` suites) must pass. `-L cpu` is engine
+`-L gate` (the fourteen `basilisk_*` suites) must pass. `-L cpu` is engine
 accuracy and is reported rather than gated — see
 [BasiliskII/tests/README.md](BasiliskII/tests/README.md).
 

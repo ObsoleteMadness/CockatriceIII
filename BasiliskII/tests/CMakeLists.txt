@@ -128,7 +128,8 @@ foreach(t
     basilisk_scc_test
     basilisk_disk_test
     basilisk_prefs_test
-    basilisk_blit_test)
+    basilisk_blit_test
+    basilisk_romguard_test)
     cockatrice_add_test(${t} basilisk/${t}.cpp)
     # The Basilisk suites are the gate: these are required to pass.
     set_tests_properties(${t} PROPERTIES LABELS gate)

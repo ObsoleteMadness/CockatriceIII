@@ -15,7 +15,7 @@ ctest --test-dir build --output-on-failure           # everything
 
 ## What gates and what does not
 
-`-L gate` is the thirteen `basilisk_*` suites. They are required to pass.
+`-L gate` is the fourteen `basilisk_*` suites. They are required to pass.
 
 `-L cpu` is `cpu_tests`, which is **reported rather than gated**. It currently
 has 5 known failures: the `cmp2` opcode fixture in each of the five UAE
@@ -101,6 +101,13 @@ into the host window's pixels on every redraw: the 1/2/4-bit expansion tables,
 the 15-bit colour table for 16-bit mode and the 32-bit byte swap. Each is
 compared pixel for pixel with the per-pixel loop it replaced, with rows that end
 part way through a byte, and with guard bytes after each row.
+
+`basilisk_romguard_test` covers the ROM write guard that `jitdirect` relies
+on (`memory_set_rom_write_guard()` in [memory.cpp](../memory.cpp)): a host
+write to guarded ROM inside an EmulOp must go through, and a guest store the
+JIT translated against RAM and then aimed at ROM must be dropped without
+hanging. It runs on the five uae configurations, so CI checks the fault
+handling of every host (POSIX signals, Windows vectored exceptions).
 
 ## Sanitizers
 
