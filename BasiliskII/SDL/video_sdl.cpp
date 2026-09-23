@@ -31,6 +31,8 @@ static int keycode_table[256];		// X keycode -> Mac keycode translation table
 
 // Last palette, reapplied after SDL_SetVideoMode recreates the surface
 static uint8 s_saved_palette[256 * 3];
+// The palette as host pixels of the 32-bit surface, for the indexed modes
+static uint32 s_palette_pixels[256];
 static bool s_have_palette = false;
 static bool s_in_mode_switch = false;
 // No SDL_HWPALETTE: sdl12-compat never records it on the surface, and on
@@ -99,6 +101,15 @@ void video_set_palette(uint8 *pal)
 	if (!SDLscreen)
 		return;
 
+	// Indexed Mac modes are drawn to the 32-bit surface through this table
+	if (SDLscreen->format->BytesPerPixel == 4) {
+		for (int i = 0; i < 256; i++)
+			s_palette_pixels[i] = SDL_MapRGB(SDLscreen->format, pal[i * 3 + 0],
+			                                 pal[i * 3 + 1], pal[i * 3 + 2]);
+		return;
+	}
+
+	// Classic mode still draws to an 8-bit palettized surface
 	SDL_Color colors[256];
 	for (int i = 0; i < 256; i++) {
 		colors[i].r = pal[i * 3 + 0];
@@ -184,10 +195,13 @@ bool VideoInit(bool classic)
 
 	classic_mode = classic;
 	D(bug(" VideoInit %d\n",classic));
+	/* The host surface is 32-bit for every colour Mac mode: sdl12-compat keeps
+	   a reused window's surface format, so a surface of the Mac's depth would
+	   not follow the guest's depth changes. Classic stays on its 1-bit path. */
 	if (classic)
 		depth = 1;
 	else
-		depth = 8;	/* 8-bit colour; the guest default */
+		depth = 32;
 
 	if (SDL_Init(SDL_INIT_VIDEO) < 0) {
 		printf("There was an issue with SDL trying to initalize video.\n");
@@ -239,8 +253,8 @@ bool VideoInit(bool classic)
 	InitFrameBufferMapping();
 	Video_NoteCurrentMode(width, height);
 
-	// Initialize default gray palette for 8-bit mode
-	if (!classic && depth == 8) {
+	// Initialize default gray palette for the guest's initial 8-bit mode
+	if (!classic) {
 		uint8 init_pal[256 * 3];
 		for (int i = 0; i < 256; i++) {
 			init_pal[i * 3 + 0] = 127;
@@ -276,8 +290,9 @@ D(bug(" init_window w%d,h%d d%d\n",width,height,depth));
 	attach_host_menu(true);
 //SDL
 
+                // The guest starts in 8-bit colour (1-bit on Classic)
                 int bytes_per_row = width;
-                switch (depth) {
+                switch (classic_mode ? 1 : 8) {
                         case 1:
                                 bytes_per_row *= 1;
 				bytes_per_pixel=1;
@@ -314,28 +329,36 @@ set_video_monitor(width, height, bytes_per_row, (depth == 1) ? VMODE_1BIT : VMOD
 
 
 /*
- * Host SDL depth used to present a Mac VMODE_* framebuffer. 1/2/4-bit Mac
- * modes stay on an 8-bit palette surface and are expanded in the blit.
+ * Host SDL depth used to present a Mac VMODE_* framebuffer: 32-bit for every
+ * mode, with the indexed and 16-bit modes converted in the blit. A fixed
+ * depth means a Mac depth change never needs a new SDL surface, which
+ * sdl12-compat would not provide when it reuses the window.
+ *
+ * Arguments:
+ *   mac_mode: VMODE_* depth of the guest framebuffer (unused).
+ *
+ * Returns:
+ *   The SDL surface depth in bits.
  */
 static int host_depth_for_mode(int mac_mode)
 {
-	switch (mac_mode) {
-		case VMODE_16BIT: return 16;
-		case VMODE_32BIT: return 32;
-		default:          return 8;
-	}
+	(void)mac_mode;
+	return 32;
 }
 
 /*
  * Packed host bytes per pixel for the SDL surface that presents mac_mode.
+ *
+ * Arguments:
+ *   mac_mode: VMODE_* depth of the guest framebuffer (unused).
+ *
+ * Returns:
+ *   4, matching host_depth_for_mode().
  */
 static int host_bytes_per_pixel(int mac_mode)
 {
-	switch (mac_mode) {
-		case VMODE_16BIT: return 2;
-		case VMODE_32BIT: return 4;
-		default:          return 1;
-	}
+	(void)mac_mode;
+	return 4;
 }
 
 /*
@@ -565,18 +588,24 @@ if(++skip_count>=frame_skip){
 	else
 	switch (VideoMonitor.mode) {
 		case VMODE_1BIT:
-			VideoBlit_ExpandIndexed(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
-			                        SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y, 1);
-			break;
 		case VMODE_2BIT:
-			VideoBlit_ExpandIndexed(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
-			                        SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y, 2);
-			break;
 		case VMODE_4BIT:
-			VideoBlit_ExpandIndexed(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
-			                        SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y, 4);
-			break;
-		case VMODE_8BIT:
+		case VMODE_8BIT: {
+			static const int kBits[] = { 1, 2, 4, 8 };
+			int bits = kBits[VideoMonitor.mode - VMODE_1BIT];
+			// Colour modes draw to the 32-bit surface through the palette
+			if (SDLscreen->format->BytesPerPixel == 4) {
+				VideoBlit_IndexedToPixels32(src_buf, VideoMonitor.bytes_per_row,
+				                            (uint8 *)SDLscreen->pixels, SDLscreen->pitch,
+				                            VideoMonitor.x, VideoMonitor.y, bits, s_palette_pixels);
+				break;
+			}
+			// An 8-bit palettized surface takes the indices themselves
+			if (bits < 8) {
+				VideoBlit_ExpandIndexed(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
+				                        SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y, bits);
+				break;
+			}
 			if (SDLscreen->pitch == (int)VideoMonitor.bytes_per_row)
 				memcpy(SDLscreen->pixels, src_buf, VideoMonitor.bytes_per_row * VideoMonitor.y);
 			else {
@@ -586,6 +615,7 @@ if(++skip_count>=frame_skip){
 					       VideoMonitor.bytes_per_row);
 			}
 			break;
+		}
 		case VMODE_16BIT:
 			// Mac 16-bit is big-endian 1-5-5-5; SDL is host 5-6-5 or 5-5-5
 			VideoBlit_RGB555BE(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,

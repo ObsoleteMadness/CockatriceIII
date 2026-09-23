@@ -71,6 +71,28 @@ void VideoBlit_ExpandIndexed(const uint8 *src, int src_bpr, uint8 *dst, int dst_
 	}
 }
 
+void VideoBlit_IndexedToPixels32(const uint8 *src, int src_bpr, uint8 *dst, int dst_pitch,
+                                 int width, int height, int bits, const uint32 *palette)
+{
+	for (int y = 0; y < height; y++) {
+		const uint8 *s = src + y * src_bpr;
+		uint32 *d = (uint32 *)(dst + y * dst_pitch);
+		if (bits == 8) {
+			// One palette lookup per byte
+			for (int x = 0; x < width; x++)
+				d[x] = palette[s[x]];
+			continue;
+		}
+		// Pixel x sits in byte x / per_byte, most significant bits first
+		const int per_byte = 8 / bits;
+		const int mask = (1 << bits) - 1;
+		for (int x = 0; x < width; x++) {
+			int shift = (per_byte - 1 - (x % per_byte)) * bits;
+			d[x] = palette[(s[x / per_byte] >> shift) & mask];
+		}
+	}
+}
+
 void VideoBlit_BuildRGB555Table(uint32 *table, uint32 (*map)(void *ctx, uint8 r, uint8 g, uint8 b),
                                 void *ctx)
 {

@@ -87,6 +87,53 @@ static void check_indexed(int bits, int width, int height)
 	free(dst);
 }
 
+/*
+ * Checks VideoBlit_IndexedToPixels32 at one depth and width: every pixel must
+ * be the palette entry of the index the per-pixel expansion would give.
+ *
+ * Arguments:
+ *   bits: 1, 2, 4 or 8.
+ *   width, height: Visible size; width may end mid-byte.
+ */
+static void check_indexed32(int bits, int width, int height)
+{
+	uint32 palette[256];
+	for (int i = 0; i < 256; i++)
+		palette[i] = 0x00010203u * (uint32)i ^ 0x00a5c3e1u;	// Distinct per entry
+
+	int src_bpr = (width * bits + 7) / 8 + 4;
+	int pitch = width * 4 + 16;
+	uint8 *src = (uint8 *)malloc(src_bpr * height);
+	uint8 *dst = (uint8 *)malloc(pitch * height);
+	fill_random(src, src_bpr * height, bits * 2000 + width);
+	memset(dst, kGuard, pitch * height);
+
+	VideoBlit_IndexedToPixels32(src, src_bpr, dst, pitch, width, height, bits, palette);
+
+	bool ok = true, guards = true;
+	int per_byte = 8 / bits, mask = (1 << bits) - 1;
+	for (int y = 0; y < height; y++) {
+		for (int x = 0; x < width; x++) {
+			int shift = (per_byte - 1 - (x % per_byte)) * bits;
+			uint32 want = palette[(src[y * src_bpr + x / per_byte] >> shift) & mask];
+			uint32 got;
+			memcpy(&got, dst + y * pitch + x * 4, 4);
+			if (got != want)
+				ok = false;
+		}
+		if (!guard_intact(dst + y * pitch, width * 4, pitch))
+			guards = false;
+	}
+
+	char msg[112];
+	snprintf(msg, sizeof(msg), "%d-bit %dx%d to 32-bit matches the palette of each index", bits, width, height);
+	CHECK(ok, msg);
+	snprintf(msg, sizeof(msg), "%d-bit %dx%d to 32-bit writes nothing past the visible width", bits, width, height);
+	CHECK(guards, msg);
+	free(src);
+	free(dst);
+}
+
 // Host channel layout used for the 15-bit table checks
 struct TestFormat {
 	int rshift, gshift, bshift;	// Bit position of each channel
@@ -213,6 +260,10 @@ int main(void)
 	for (int bits = 1; bits <= 4; bits *= 2)
 		for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++)
 			check_indexed(bits, widths[i], 3);
+
+	for (int bits = 1; bits <= 8; bits *= 2)
+		for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++)
+			check_indexed32(bits, widths[i], 3);
 
 	TestFormat rgb565 = {11, 5, 0, 3, 2, 3};
 	TestFormat rgb555 = {10, 5, 0, 3, 3, 3};

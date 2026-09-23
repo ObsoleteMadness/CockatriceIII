@@ -29,6 +29,26 @@ void VideoBlit_ExpandIndexed(const uint8 *src, int src_bpr, uint8 *dst, int dst_
                              int width, int height, int bits);
 
 /*
+ * Converts 1, 2, 4 or 8-bit indexed Mac pixels (most significant pixel first)
+ * to 32-bit host pixels through the current palette.
+ *
+ * The host surface is 32-bit for every Mac depth, so a depth change never
+ * needs a new SDL surface (sdl12-compat keeps the old surface's format when
+ * it reuses the window).
+ *
+ * Arguments:
+ *   src, src_bpr: Mac framebuffer and its bytes per row.
+ *   dst, dst_pitch: 32-bit host surface and its bytes per row.
+ *   width, height: Pixels to convert; width need not be a multiple of the
+ *     pixels per byte.
+ *   bits: Mac pixel depth, 1, 2, 4 or 8.
+ *   palette: Host pixel for each of the 256 palette entries (only the first
+ *     2^bits are used).
+ */
+void VideoBlit_IndexedToPixels32(const uint8 *src, int src_bpr, uint8 *dst, int dst_pitch,
+                                 int width, int height, int bits, const uint32 *palette);
+
+/*
  * Converts big-endian x-1-5-5-5 Mac pixels through a 32768-entry table of
  * host pixel values (see VideoBlit_BuildRGB555Table).
  *
