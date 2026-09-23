@@ -99,6 +99,12 @@ function(cockatrice_add_test name)
                     ${CMAKE_CURRENT_SOURCE_DIR}/../platform/darwin/entitlements.plist
                     $<TARGET_FILE:${name}>
             VERBATIM)
+    elseif(WIN32)
+        # The same system libraries as the app: Winsock for the LToUDP and
+        # slirp code, and what the m68k-rs Rust standard library needs.
+        target_link_libraries(${name} PRIVATE
+            ws2_32 iphlpapi comdlg32 user32 ntdll userenv bcrypt pthread
+            -static-libgcc -static-libstdc++)
     elseif(UNIX)
         target_link_libraries(${name} PRIVATE pthread m ${CMAKE_DL_LIBS})
     endif()

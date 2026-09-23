@@ -96,7 +96,7 @@ extern void slirp_tic(void);	//to keep slirp happy
 
 static void crash_handler(int sig, siginfo_t *info, void *ucontext)
 {
-	printf("\n*** CRASH SIGNAL %d (%s) at faulting address %p ***\n", sig, sys_siglist[sig], info->si_addr);
+	printf("\n*** CRASH SIGNAL %d (%s) at faulting address %p ***\n", sig, strsignal(sig), info->si_addr);
 #if defined(__APPLE__) && defined(__arm64__)
 	ucontext_t *uc = (ucontext_t *)ucontext;
 	if (uc) {
