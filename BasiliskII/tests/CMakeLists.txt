@@ -143,11 +143,10 @@ cockatrice_add_test(cpu_tests
 # The CPU suite is reported rather than gated, matching the make-era
 # run_all.sh, which failed the build on it only under STRICT_CPU=1.
 #
-# It has 12 known failures: four opcode fixtures (abcd, sbcd, chk2, cmp2)
-# across each of the three UAE engine configurations. Those are real accuracy
+# It has 20 known failures: four opcode fixtures (abcd, sbcd, chk2, cmp2)
+# across each of the five UAE engine configurations. Those are real accuracy
 # gaps in the UAE core rather than test-harness problems -- Musashi and m68k-rs
-# pass the same fixtures -- and are documented in README.md and
-# EMU68_BOOT_PROGRESS.md.
+# pass the same fixtures -- and are documented in tests/README.md.
 #
 #   ctest -L gate   # must stay green
 #   ctest -L cpu    # engine accuracy, informational

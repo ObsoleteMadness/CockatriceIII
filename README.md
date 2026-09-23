@@ -10,6 +10,7 @@ developed against the Quadra 800 ROM running System 7.5–8.1).
 
 Compared with Cockatrice III:
 
+- **Multiple CPU Options**: choose from Mushashi, UAE and m68k-rs CPU emulators.
 - **High-performance JIT** on x86-64 and AArch64 hosts, built on the
   [uae-portable-cpu](https://github.com/ObsoleteMadness/uae-portable-cpu) core, with an optional
   direct-memory mode (`jitdirect`).
@@ -159,7 +160,7 @@ The original Basilisk II and Cockatrice release notes are in [README.old](README
 ## Credits
 
 - **Basilisk II** by Christian Bauer et al.
-- **Cockatrice** and **Cockatrice III** by Jason Stevens (neozeed), with contributions including
+- **Cockatrice** and **Cockatrice III** by neozeed, with contributions including
   rakslice's SDL audio fixes.
 - **Musashi** 680x0 emulator by Karl Stenerud.
 - **uae-portable-cpu**, derived from the UAE/WinUAE CPU core and JIT (Bernd Schmidt, Toni Wilen
