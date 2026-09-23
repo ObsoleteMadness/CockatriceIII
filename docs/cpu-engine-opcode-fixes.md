@@ -8,11 +8,13 @@ and **Emu68**, as tracked in `BasiliskII/docs/TODO`.
 
 | Command | What it runs |
 |---------|--------------|
-| `cd BasiliskII/tests && ./cpu_tests --engine uae` | UAE interpreter + `uae+jit` + `uae+jit+jitfpu` (358 checks) |
-| `cd BasiliskII/tests && ./cpu_tests --engine emu68` | Emu68 JIT engine (109 checks) |
-| `cd BasiliskII/tests && ./cpu_tests --engine musashi` | Reference baseline (122 checks) |
+| `./build/BasiliskII/tests/cpu_tests --engine uae` | UAE interpreter + `uae+jit` + `uae+jit+jitfpu` + `uae+jit+direct` + `uae+jit+direct+jitfpu` |
+| `./build/BasiliskII/tests/cpu_tests --engine musashi` | Reference baseline (136 checks) |
 
-Opcode images live in `BasiliskII/Musashi/test/`. Each image is loaded at guest
+(The `emu68` engine referenced by the rest of this document has since been
+retired, as has the Amiberry tree the UAE fixes below were applied to.)
+
+Opcode images live in `BasiliskII/vendor/musashi/test/`. Each image is loaded at guest
 `0x10000`, executed via `Execute68k()`, and checked against `pass_reg` /
 `fail_reg` at `0x100004` / `0x100000`. Hang-prone tests run in forked children
 with a 30s timeout (`run_isolated()` in `tests/include/test_harness.h`).
@@ -247,7 +249,7 @@ corrupting the next guest jump/call into uninitialized heap.
 **Fix:** snapshot full D/A/SR/PC before nested `Execute68k` / `Execute68kTrap`,
 copy nested results into the caller's `M68kRegisters *r`, then restore the outer
 snapshot into the CPU. Implemented in:
-- `Musashi/musashi_glue.cpp`
+- `cpu/musashi_glue.cpp`
 - `amiberry/amiberry_glue.cpp`
 - `Emu68/emu68_glue.cpp`
 - `syn68k/syn68k_glue.cpp`
@@ -279,8 +281,8 @@ neighboring covered entries for `EMIT_*` function and flag metadata.
 Regenerate hosted translator output after editing upstream LINE0:
 
 ```bash
-# from BasiliskII build — prep_translator.py copies upstream → Musashi/emu68_gen
-make -C BasiliskII/OSX64   # or your platform makefile
+# from BasiliskII build — prep_translator.py copies upstream → vendor/musashi/emu68_gen
+cmake --build build -j8
 ```
 
 ### 2. `M68K_EXEC_RETURN (0x7100)` inside JIT blocks
@@ -365,10 +367,11 @@ Generated `cpuemu_*_test.cpp` files are **not** in WinUAE git; `vendor-uae-cpute
 fetches Amiberry’s pre-built gencpu `CPU_TEST=1` outputs and applies hosted patches
 (`nzcv` flags, TCHAR shims via `amiberry/hosted/tchar.h`).
 
-```bash
-BasiliskII/scripts/vendor-uae-cputest.sh
-make -C BasiliskII/tests uae_cputest syn68k_battery cpu_tests
-```
+> **Removed.** The WinUAE cputest harness went with the Amiberry tree:
+> `vendor-uae-cputest.sh` and `tests/cpu/cpu_uae_cputest.cpp` no longer exist.
+> uae-portable-cpu ships its own opcode suites, and the Musashi `.bin` battery
+> in `tests/cpu/` still runs across every engine. This section is kept as a
+> record of how that harness was wired.
 
 `cpu_tests --engine uae` runs the `CockatriceSmoke` preset; `cpu_tests --engine syn68k`
 runs the syn68k native CRC battery (`10000 -notnative`, 15-minute timeout).

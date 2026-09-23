@@ -1,3 +1,20 @@
+BUILDING COCKATRICE III
+=======================
+
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+  cmake --build build -j8
+  ctest --test-dir build -L gate --output-on-failure
+
+64-bit only, on macOS, Windows and Linux (AMD64 and ARM64 each), all using
+SDL 1.2 (sdl12-compat is fine). You also need a C/C++17 toolchain, and cargo
+for the m68k-rs engine (-DCOCKATRICE_ENABLE_M68K_RS=OFF to skip it).
+See README.md for the full build and packaging notes.
+
+The rest of this file is Basilisk II's original installation document, kept
+for reference. It describes platforms Cockatrice III does not build (BeOS,
+AmigaOS, X11) and an autotools source layout this tree no longer has.
+
+
 BASILISK II INSTALLATION INSTRUCTIONS
 =====================================
 

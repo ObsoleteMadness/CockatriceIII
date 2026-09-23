@@ -30,6 +30,5 @@ void test_rom_snippets(const char *engine);
 void test_rom_patch_apply(const char *engine);
 void test_rom_patch_execute(const char *engine);
 void test_interrupt_stress(const char *engine);
-void test_uae_cputest_smoke(const char *engine);
 
 #endif

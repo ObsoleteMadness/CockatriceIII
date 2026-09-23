@@ -33,6 +33,38 @@ When debugging CPU engine opcode battery failures or `Execute68k` / `0x7100`
 handling, read [docs/cpu-engine-opcode-fixes.md](docs/cpu-engine-opcode-fixes.md)
 for the UAE and Emu68 fixes already landed (syn68k is still open).
 
+When porting a CPU core or adding a hook to any engine, read
+[docs/uae-portable-cpu-host-hooks.md](docs/uae-portable-cpu-host-hooks.md).
+It lists every host hook Cockatrice relies on (EmulOp traps, nested
+Execute68k, emulated clock, MMU-less Line-F, bus faults, JIT invalidation)
+with Musashi evidence and the status in uae-portable-cpu. The Amiberry tree
+it refers to has since been removed: `BasiliskII/vendor/uae-portable-cpu`
+(GPL-2) replaced it and took over the `uae` engine id.
+
+## Building
+
+CMake only, 64-bit only, SDL on all three hosts:
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j8
+ctest --test-dir build -L gate --output-on-failure
+```
+
+`-L gate` (the fourteen `basilisk_*` suites) must pass. `-L cpu` is engine
+accuracy and is reported rather than gated — see
+[BasiliskII/tests/README.md](BasiliskII/tests/README.md).
+
+When adding, renaming or reordering anything in the **host menu bar**, edit
+`build_model()` in `BasiliskII/SDL/menu_model.cpp` and nothing else. That file is
+the single description of the menus, their labels, shortcuts, enable rules and
+actions; `platform/darwin/sdlmain.m`, `platform/windows/menu_bar_win32.cpp` and
+`platform/linux/menu_bar_linux.cpp` only translate it into NSMenu / HMENU /
+GtkMenu calls and hand the row's `command_id` back to `MenuModel_Invoke()`.
+Adding a native menu call in a platform file is how the ports drifted apart
+before; don't. The guest's own (Mac OS Toolbox) menus are a separate concern and
+still live in `bridge/darwin/macos_menu_bridge.mm` and `toolbox_menu.cpp`.
+
 When planning or implementing a **Classic in-window menu bar** (host-drawn
 menu strip + passthrough input, using toolbox trap hooks instead of native
 `NSMenu` sync), read

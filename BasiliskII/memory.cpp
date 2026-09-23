@@ -4,11 +4,22 @@
  *  Basilisk II (C) 1997-2008 Christian Bauer
  *  CockatriceIII Multi-Engine Architecture (C) 2026
  *
- *  Musashi, UAE, and m68k-rs share one 4GB virtual window
- *  (Host_Mem_Base) so Mac2HostAddr(addr) stays Host_Mem_Base + addr.
- *  Historic UAE kept the framebuffer and dummy NuBus slots out of the
- *  RAM translate; a RW-zero mmap of the whole 4GB made holes look like
- *  RAM (opcode 0x0000).
+ *  Musashi, UAE, and m68k-rs share one virtual window (Host_Mem_Base) so
+ *  Mac2HostAddr(addr) stays Host_Mem_Base + addr. On 64-bit hosts the window
+ *  covers the full 4GB Mac address space, with RAM/ROM/framebuffer at their
+ *  real hardware addresses (framebuffer at the NuBus slot-$A address
+ *  0xa0000000). Historic UAE kept the framebuffer and dummy NuBus slots out
+ *  of the RAM translate; a RW-zero mmap of the whole 4GB made holes look
+ *  like RAM (opcode 0x0000).
+ *
+ *  A 32-bit host (Win32/i686) cannot reserve 4GB: SIZE_T is 32-bit there, and
+ *  a 32-bit process doesn't have 4GB of free contiguous VA regardless. There,
+ *  RAM/ROM/framebuffer are instead laid out contiguously starting at Mac
+ *  address 0 (see SDL/main_sdl.cpp), matching upstream BasiliskII's
+ *  DIRECT_ADDRESSING scheme -- classic Mac OS discovers the framebuffer from
+ *  the declaration-ROM bytes video.cpp patches at runtime, not from a fixed
+ *  hardware address, so it doesn't need to sit at the real slot-$A address.
+ *  See memory_compute_window_size().
  *
  *  The window is reserved PROT_NONE / PAGE_NOACCESS (Wine/QEMU style)
  *  and only RAM, ROM, and the real framebuffer bytes are committed.
@@ -49,6 +60,15 @@
 // Global 4GB Flat Host Memory Window Base Pointer
 uint8 *Host_Mem_Base = NULL;
 
+// See cpu_emulation.h: fixed NuBus slot-$A address on 64-bit hosts, computed
+// dynamically right after RAM+ROM on Win32/i686 (SDL/main_sdl.cpp).
+uint32 MacFrameBaseMac = 0xa0000000;
+
+// Size of the host VA window actually reserved behind Host_Mem_Base. Equal to
+// the full 4GB on 64-bit hosts; a small window on Win32/i686 (see
+// memory_compute_window_size()).
+static uint64 s_window_size = 0x100000000ULL;
+
 // Registered MMIO regions (see FindMMIORegion() in cpu_emulation.h)
 MMIORegion g_mmio_regions[MMIO_MAX_REGIONS];
 int g_mmio_region_count = 0;
@@ -78,6 +98,18 @@ static size_t memory_page_size(void);
 static void memory_note_range(uint32 start, uint32 end);
 static int memory_host_prot(int prot);
 static void memory_register_builtin_mmio(void);
+
+/*
+ * Size of the host VA window to reserve behind Host_Mem_Base.
+ *
+ * Every supported host is 64-bit, so the whole 4GB Mac address space is
+ * reserved outright, matching UAE's natmem-free direct addressing. RAM, ROM
+ * and the framebuffer therefore sit at their real hardware addresses.
+ */
+static uint64 memory_compute_window_size(void)
+{
+	return 0x100000000ULL;
+}
 
 /*
  * Registers a memory-mapped I/O region. See cpu_emulation.h for the intended
@@ -139,7 +171,7 @@ static void memory_apply_window_policy(void)
 
 	memory_register_builtin_mmio();
 
-	const uint64 window_size = 0x100000000ULL;
+	const uint64 window_size = s_window_size;
 	const int full_prot = s_flat_dummy_window
 		? (MEMORY_PROT_READ | MEMORY_PROT_WRITE)
 		: 0;
@@ -162,9 +194,11 @@ static void memory_apply_window_policy(void)
 
 	s_nmapped = 0;
 	if (s_flat_dummy_window) {
-		memory_note_range(0, 0xffffffffU);
-		printf("[MEM] flat 4GB RW dummy window at %p (page %zu)\n",
-		       (void *)Host_Mem_Base, memory_page_size());
+		uint32 mapped_end = (window_size >= 0x100000000ULL) ? 0xffffffffU : (uint32)window_size;
+		memory_note_range(0, mapped_end);
+		printf("[MEM] flat RW dummy window at %p, %llu MB (page %zu)\n",
+		       (void *)Host_Mem_Base, (unsigned long long)(window_size / (1024 * 1024)),
+		       memory_page_size());
 		fflush(stdout);
 		return;
 	}
@@ -179,8 +213,9 @@ static void memory_apply_window_policy(void)
 	if (MacFrameLayout != FLAYOUT_NONE && MacFrameSize > 0)
 		memory_commit_range(MacFrameBaseMac, MacFrameSize, MEMORY_PROT_READ | MEMORY_PROT_WRITE);
 
-	printf("[MEM] strict-hole 4GB PROT_NONE window at %p (page %zu)\n",
-	       (void *)Host_Mem_Base, memory_page_size());
+	printf("[MEM] strict-hole PROT_NONE window at %p, %llu MB (page %zu)\n",
+	       (void *)Host_Mem_Base, (unsigned long long)(window_size / (1024 * 1024)),
+	       memory_page_size());
 	fflush(stdout);
 }
 
@@ -193,6 +228,175 @@ static bool s_fault_signals_installed = false;
 #ifdef _WIN32
 static PVOID s_veh = NULL;
 #endif
+
+/*
+ * ROM write guard.
+ *
+ * A real Macintosh ignores writes to ROM, and so does every engine that
+ * reaches ROM through an accessor. A JIT that accesses memory inline (the uae
+ * engine with jitdirect) cannot tell ROM from RAM at run time: it compiles a
+ * store inline because the first execution hit RAM, and a later execution of
+ * the same instruction against a ROM-resident structure (a driver header, for
+ * instance) then writes straight into Host_Mem_Base. Mac OS does exactly this,
+ * and one such byte turned a ROM BEQ.S into a BEQ.W during boot.
+ *
+ * The guard maps the ROM pages read-only on the host while the guest runs, so
+ * such a store faults and the JIT's own fault handler completes it through the
+ * ROM bank, which drops it.
+ *
+ * Host code still patches ROM at run time (VideoDriverOpen and the video
+ * cscSwitchMode path rewrite the declaration ROM), always from inside a host
+ * call on the CPU thread or from another thread. Rather than unprotect around
+ * every EmulOp, the guard unlocks lazily: a host write faults once, the
+ * fault handlers below make ROM writable and retry the store, and the
+ * outermost memory_host_call_leave() locks it again. A fault on the CPU thread
+ * outside a host call is guest code, and is left for the JIT.
+ */
+static bool s_rom_guard_armed = false;	/* ROM is to be read-only while the guest runs */
+static bool s_rom_readonly = false;		/* ROM pages are read-only right now */
+static int s_host_call_depth = 0;		/* Nesting of host calls on the CPU thread */
+#ifdef _WIN32
+static DWORD s_rom_guard_thread = 0;	/* CPU thread that armed the guard */
+#else
+static pthread_t s_rom_guard_thread;	/* CPU thread that armed the guard */
+#endif
+
+/*
+ * Returns the whole host pages covering [ROMBaseMac, ROMBaseMac + ROMSize).
+ *
+ * Arguments:
+ *   host: Receives the first byte of the first page.
+ *   bytes: Receives the page-rounded length.
+ *
+ * Returns:
+ *   false when there is no window or no ROM to protect.
+ */
+static bool memory_rom_pages(uint8 **host, size_t *bytes)
+{
+	if (!Host_Mem_Base || ROMSize == 0)
+		return false;
+	size_t page = memory_page_size();
+	uint64 start = (uint64)ROMBaseMac & ~((uint64)page - 1);
+	uint64 end = ((uint64)ROMBaseMac + ROMSize + page - 1) & ~((uint64)page - 1);
+	*host = Host_Mem_Base + start;
+	*bytes = (size_t)(end - start);
+	return true;
+}
+
+/*
+ * Makes the ROM pages read-only or read-write on the host.
+ *
+ * Arguments:
+ *   readonly: true to write-protect the ROM, false to allow host writes.
+ */
+static void memory_protect_rom_pages(bool readonly)
+{
+	uint8 *host;
+	size_t bytes;
+
+	if (!memory_rom_pages(&host, &bytes))
+		return;
+#ifdef _WIN32
+	DWORD old;
+	if (!VirtualProtect(host, bytes, readonly ? PAGE_READONLY : PAGE_READWRITE, &old))
+		return;
+#else
+	if (mprotect(host, bytes, readonly ? PROT_READ : (PROT_READ | PROT_WRITE)) != 0)
+		return;
+#endif
+	s_rom_readonly = readonly;
+}
+
+/*
+ * Arms or disarms the ROM write guard. Called by an engine on its CPU thread
+ * before the guest runs (armed) and when it stops or resets (disarmed), which
+ * also forgets any host call a reset longjmp skipped out of.
+ *
+ * Arguments:
+ *   armed: true to write-protect ROM while the guest runs.
+ */
+void memory_set_rom_write_guard(bool armed)
+{
+	s_rom_guard_armed = armed;
+	s_host_call_depth = 0;
+#ifdef _WIN32
+	s_rom_guard_thread = GetCurrentThreadId();
+#else
+	s_rom_guard_thread = pthread_self();
+#endif
+	memory_protect_rom_pages(armed);
+}
+
+/*
+ * Brackets a host call (an EmulOp) made from the CPU thread. Host code inside
+ * may write ROM; the outermost leave write-protects it again if a write
+ * unlocked it. Cheap when the guard is off or ROM was not touched.
+ */
+void memory_host_call_enter(void)
+{
+	s_host_call_depth++;
+}
+
+void memory_host_call_leave(void)
+{
+	if (s_host_call_depth > 0 && --s_host_call_depth == 0 && s_rom_guard_armed && !s_rom_readonly)
+		memory_protect_rom_pages(true);
+}
+
+/*
+ * Brackets guest code a host call runs through Execute68k. The guest is
+ * running again, so its ROM stores must fault to the JIT rather than unlock
+ * the ROM: the host-call nesting is set aside (re-protecting ROM if a host
+ * write had unlocked it) and restored afterwards.
+ *
+ * Returns (suspend) / Arguments (resume):
+ *   The host-call nesting to restore.
+ */
+int memory_host_call_suspend(void)
+{
+	int depth = s_host_call_depth;
+	s_host_call_depth = 0;
+	if (s_rom_guard_armed && !s_rom_readonly)
+		memory_protect_rom_pages(true);
+	return depth;
+}
+
+void memory_host_call_resume(int depth)
+{
+	s_host_call_depth = depth;
+}
+
+/*
+ * Lets a host write to guarded ROM through, from a fault handler.
+ *
+ * Arguments:
+ *   fault_addr: Faulting host address.
+ *
+ * Returns:
+ *   1 if the fault was a host write to the write-protected ROM and ROM is now
+ *   writable (retry the access), 0 if it is not this guard's fault - including
+ *   guest code on the CPU thread, which the JIT's handler owns.
+ */
+static int memory_try_unlock_rom_for_host(const void *fault_addr)
+{
+	uint8 *host;
+	size_t bytes;
+
+	if (!s_rom_guard_armed || !s_rom_readonly || !memory_rom_pages(&host, &bytes))
+		return 0;
+	const uint8 *p = (const uint8 *)fault_addr;
+	if (p < host || p >= host + bytes)
+		return 0;
+#ifdef _WIN32
+	bool cpu_thread = GetCurrentThreadId() == s_rom_guard_thread;
+#else
+	bool cpu_thread = pthread_equal(pthread_self(), s_rom_guard_thread) != 0;
+#endif
+	if (cpu_thread && s_host_call_depth <= 0)
+		return 0;
+	memory_protect_rom_pages(false);
+	return s_rom_readonly ? 0 : 1;
+}
 
 /*
  * Reads a single byte from the Z8530 Serial Communications Controller (SCC).
@@ -510,26 +714,30 @@ void memory_set_flat_dummy_window(bool flat_dummy)
 void memory_reconfigure_window(void)
 {
 	memory_apply_window_policy();
+	/* The policy re-commits ROM read-write; keep the guard's protection. */
+	if (s_rom_readonly)
+		memory_protect_rom_pages(true);
 }
 
 /*
  * Converts a host fault inside the 4GB window into a longjmp to the CPU loop.
  *
  * Arguments:
- *   si_addr: Faulting host address from siginfo or ExceptionInformation[1].
+ *   fault_addr: Faulting host address from siginfo (not named si_addr,
+ *     which glibc defines as a macro) or ExceptionInformation[1].
  *
  * Returns:
  *   0 if the fault is not a guarded guest hole (caller should crash-dump).
- *   Does not return when a CPU run loop is armed and si_addr is an unmapped
+ *   Does not return when a CPU run loop is armed and fault_addr is an unmapped
  *   Macintosh address — siglongjmp resumes that loop to inject vector 2.
  */
-int memory_try_handle_guest_fault(const void *si_addr)
+int memory_try_handle_guest_fault(const void *fault_addr)
 {
-	if (s_guard_depth <= 0 || !Host_Mem_Base || !si_addr)
+	if (s_guard_depth <= 0 || !Host_Mem_Base || !fault_addr)
 		return 0;
 
-	const uint8 *p = (const uint8 *)si_addr;
-	if (p < Host_Mem_Base || p >= Host_Mem_Base + 0x100000000ULL)
+	const uint8 *p = (const uint8 *)fault_addr;
+	if (p < Host_Mem_Base || p >= Host_Mem_Base + s_window_size)
 		return 0;
 
 	uint32 guest = (uint32)(p - Host_Mem_Base);
@@ -556,6 +764,8 @@ int memory_try_handle_guest_fault(const void *si_addr)
  */
 static void memory_unix_fault(int sig, siginfo_t *info, void *ucontext)
 {
+	if (info && memory_try_unlock_rom_for_host(info->si_addr))
+		return;
 	if (info)
 		memory_try_handle_guest_fault(info->si_addr);
 
@@ -606,6 +816,9 @@ static LONG CALLBACK memory_veh(PEXCEPTION_POINTERS info)
 	if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
 		return EXCEPTION_CONTINUE_SEARCH;
 	const void *addr = (const void *)info->ExceptionRecord->ExceptionInformation[1];
+	/* ExceptionInformation[0] is 1 for a write. */
+	if (info->ExceptionRecord->ExceptionInformation[0] == 1 && memory_try_unlock_rom_for_host(addr))
+		return EXCEPTION_CONTINUE_EXECUTION;
 	memory_try_handle_guest_fault(addr);
 	return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -626,16 +839,18 @@ static LONG CALLBACK memory_veh(PEXCEPTION_POINTERS info)
 void memory_init(void)
 {
 	if (!Host_Mem_Base) {
+		s_window_size = memory_compute_window_size();
 #ifdef _WIN32
+		SIZE_T reserve_bytes = (SIZE_T)s_window_size;
 		if (s_flat_dummy_window) {
-			Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, 0x100000000ULL, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+			Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, reserve_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 		} else {
-			Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, 0x100000000ULL, MEM_RESERVE, PAGE_NOACCESS);
+			Host_Mem_Base = (uint8 *)VirtualAlloc(NULL, reserve_bytes, MEM_RESERVE, PAGE_NOACCESS);
 		}
 		if (Host_Mem_Base && !s_veh)
 			s_veh = AddVectoredExceptionHandler(1, memory_veh);
 #else
-		Host_Mem_Base = (uint8 *)mmap(NULL, 0x100000000ULL,
+		Host_Mem_Base = (uint8 *)mmap(NULL, (size_t)s_window_size,
 					      s_flat_dummy_window ? (PROT_READ | PROT_WRITE) : PROT_NONE,
 					      MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
 		if (Host_Mem_Base == MAP_FAILED)
@@ -648,7 +863,8 @@ void memory_init(void)
 	}
 
 	if (!Host_Mem_Base) {
-		printf("[MEM] FATAL: Failed to reserve 4GB host memory window!\n");
+		printf("[MEM] FATAL: Failed to reserve %llu MB host memory window!\n",
+		       (unsigned long long)(s_window_size / (1024 * 1024)));
 		fflush(stdout);
 		return;
 	}
@@ -659,8 +875,11 @@ void memory_init(void)
 	ROMBaseHost = Host_Mem_Base + ROMBaseMac;
 	MacFrameBaseHost = Host_Mem_Base + MacFrameBaseMac;
 
-	/* Refresh the mapping policy and committed ranges on repeated init calls. */
+	/* Refresh the mapping policy and committed ranges on repeated init calls.
+	 * That re-commits ROM read-write, which a later engine start re-guards. */
 	memory_apply_window_policy();
+	s_rom_readonly = false;
+	s_rom_guard_armed = false;
 
 	if (old_rom_host && old_rom_host != ROMBaseHost && ROMSize > 0)
 		memmove(ROMBaseHost, old_rom_host, ROMSize);
@@ -683,7 +902,7 @@ void memory_exit(void)
 	}
 	VirtualFree(Host_Mem_Base, 0, MEM_RELEASE);
 #else
-	munmap(Host_Mem_Base, 0x100000000ULL);
+	munmap(Host_Mem_Base, (size_t)s_window_size);
 #endif
 	Host_Mem_Base = NULL;
 	RAMBaseHost = NULL;
@@ -691,6 +910,9 @@ void memory_exit(void)
 	MacFrameBaseHost = NULL;
 	s_nmapped = 0;
 	s_guard_depth = 0;
+	s_rom_guard_armed = false;
+	s_rom_readonly = false;
+	s_host_call_depth = 0;
 }
 
 /*

@@ -31,6 +31,16 @@ The right design isn't a rewrite — it's formalizing what's already implicit, a
 
 **D. One shared JIT-host-support module**, e.g. `BasiliskII/jit_support/{jit_host.h, jit_host_darwin.cpp, jit_host_win32.cpp}`, owning W^X toggling (promote the existing correct thread-local `pthread_jit_write_protect_np` pattern from `compemu_support_arm.cpp` — don't reinvent it), icache/dcache flush, and JIT-buffer allocation. Both surviving JIT backends (UAE compemu, m68k-rs/Cranelift) call into it instead of each owning a private copy. This also gives the Cranelift integration a known-correct place to plug in rather than trusting `cranelift-jit`'s own memory manager to guess right under Hardened Runtime.
 
+> **Status: proposed, never adopted, now removed.** `BasiliskII/jit_support/`
+> was written and compiled by the old Makefiles, but nothing ever called it — no
+> source in the tree included `jit_host.h` or referenced `jit_host_*`. The
+> vendored CPU core keeps its own W^X and icache handling (`src/cpu/vm.c` and
+> the ARM64 compemu backends), and the Rust engine never referenced it either,
+> so it only ever produced unused objects. It also had no Linux implementation.
+> The directory has been deleted; recover it from git history if this design is
+> taken up, but treat it as a starting point rather than working code, since it
+> was never exercised.
+
 **E. `CPUEngine` capability flags.** Extend the struct with `mem_strategy` (from B) and a `tier` (`golden` vs `performance`) so the test harness and any future prefs UI encode the Musashi-is-truth / others-are-tradeoffs policy explicitly in code instead of by convention.
 
 ## 3. Gap-Closing Roadmap
@@ -55,5 +65,5 @@ Each phase is independently shippable; Phase 0 alone is a real simplification wi
 - `BasiliskII/rom_patches.cpp`, `BasiliskII/emul_op.cpp` — MMU-disable ROM patches, trap-based device dispatch
 - `BasiliskII/cpu_engine.cpp`/`.h` — `CPUEngine` vtable registry and engine selection
 - `BasiliskII/amiberry/src/jit/arm/compemu_support_arm.cpp`, `compemu_midfunc_arm64.cpp`, `codegen_arm64.cpp` — existing ARM64 JIT (W^X, icache flush, lazy flags, unaligned-access gate)
-- `BasiliskII/m68k_rs/m68k_rs_glue.cpp`, `BasiliskII/m68k_rs/include/cockatrice_m68k_rs.h` — callback vs. fastmem strategy, mapped-ranges cache
+- `BasiliskII/cpu/m68k_rs_glue.cpp`, `BasiliskII/cpu/m68k_rs/include/cockatrice_m68k_rs.h` — callback vs. fastmem strategy, mapped-ranges cache
 - `BasiliskII/Emu68/`, `BasiliskII/syn68k/` — dead backends to remove in Phase 0

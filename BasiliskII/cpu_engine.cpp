@@ -6,7 +6,7 @@
  *
  *  This file provides the central engine registry and global dispatchers
  *  routing Basilisk II CPU lifecycle calls, interrupts, and nested subroutine
- *  execution to the currently active CPU engine (Musashi, Amiberry/UAE, or m68k-rs).
+ *  execution to the currently active CPU engine (Musashi, UAE, or m68k-rs).
  */
 
 #include <stdio.h>
@@ -38,44 +38,49 @@ extern "C" uint32 cpu_engine_last_pc = 0;
 #define MAX_CPU_ENGINES 8
 
 // Which built-in engines this build actually links.  Musashi is the golden
-// path and is always present; Amiberry (interpreter + compemu JIT) and the
-// Rust m68k-rs core are optional because not every port builds them -- the
-// Windows/MinGW port ships Musashi only.  A port opts out by defining these
-// to 0 on the command line, and the registry below then simply holds fewer
+// path and is always present; the Rust m68k-rs core is optional so a port
+// without a usable Rust toolchain can still be built.  A port opts out by
+// defining this to 0, and the registry below then simply holds fewer
 // entries; nothing else in the file needs to know.
-#ifndef ENABLE_AMIBERRY_CPU
-#define ENABLE_AMIBERRY_CPU 1
-#endif
 #ifndef ENABLE_M68K_RS_CPU
 #define ENABLE_M68K_RS_CPU 1
+#endif
+// The vendored uae-portable-cpu core (BasiliskII/vendor/uae-portable-cpu),
+// the GPL-2 replacement for the GPL-3 Amiberry engine whose "uae" id it took
+// over.  Unlike the switch above this one is opt-in: a port has to build the
+// core's own CMake project and link the symbol-isolated archive, so
+// defaulting it on would break any port not yet taught to do that.
+#ifndef ENABLE_UAE_PORTABLE_CPU
+#define ENABLE_UAE_PORTABLE_CPU 0
 #endif
 
 // Forward declarations for built-in CPU engines
 extern const CPUEngine musashi_cpu_engine;
-#if ENABLE_AMIBERRY_CPU
-extern const CPUEngine amiberry_cpu_engine;
-#endif
 #if ENABLE_M68K_RS_CPU
 extern const CPUEngine m68k_rs_cpu_engine;
+#endif
+#if ENABLE_UAE_PORTABLE_CPU
+extern const CPUEngine uae_portable_cpu_engine;
 #endif
 
 // Engine registry state.  The initialiser and s_engine_count must agree, so
 // both are driven by the same ENABLE_* switches.
 static const CPUEngine *s_engines[MAX_CPU_ENGINES] = {
 	&musashi_cpu_engine,
-#if ENABLE_AMIBERRY_CPU
-	&amiberry_cpu_engine,
-#endif
 #if ENABLE_M68K_RS_CPU
-	&m68k_rs_cpu_engine
+	&m68k_rs_cpu_engine,
+#endif
+#if ENABLE_UAE_PORTABLE_CPU
+	&uae_portable_cpu_engine
 #endif
 };
-static int s_engine_count = 1 + ENABLE_AMIBERRY_CPU + ENABLE_M68K_RS_CPU;
+static int s_engine_count = 1 + ENABLE_M68K_RS_CPU + ENABLE_UAE_PORTABLE_CPU;
 static const CPUEngine *s_active_engine = &musashi_cpu_engine;
 
 // Global JIT preference flags
 bool UseJIT = false;
 bool UseJITFPU = false;
+bool UseJITDirect = false;
 uint32 JITCacheSize = 2048;
 
 // Execution return flag stack for supporting nested Execute68k / Execute68kTrap calls
@@ -529,6 +534,8 @@ void cpu_engine_reset_peripherals(void)
 {
 	MenuQueue_Reset();
 	InterruptFlags = 0;
+	// The VBL stub is in the heap being wiped; the 60 Hz interrupt waits for a new one
+	ForgetVBLHandler();
 	TimerReset();
 	EtherReset();
 	SCC_Reset();
@@ -769,11 +776,11 @@ static void EnsureEnginesRegistered(void)
 	// Re-register defaults if table is empty
 	if (s_engine_count == 0) {
 		RegisterCPUEngine(&musashi_cpu_engine);
-#if ENABLE_AMIBERRY_CPU
-		RegisterCPUEngine(&amiberry_cpu_engine);
-#endif
 #if ENABLE_M68K_RS_CPU
 		RegisterCPUEngine(&m68k_rs_cpu_engine);
+#endif
+#if ENABLE_UAE_PORTABLE_CPU
+		RegisterCPUEngine(&uae_portable_cpu_engine);
 #endif
 	}
 }
@@ -814,6 +821,7 @@ bool Init680x0(void)
 	// Read JIT configuration flags
 	UseJIT = PrefsFindBool("jit");
 	UseJITFPU = PrefsFindBool("jitfpu");
+	UseJITDirect = PrefsFindBool("jitdirect");
 	int32 cachesize = PrefsFindInt32("jitcachesize");
 	if (cachesize > 0)
 		JITCacheSize = (uint32)cachesize;
@@ -825,9 +833,10 @@ bool Init680x0(void)
 		UseJIT = false;
 	}
 
-	// JIT FPU compilation requires general JIT to be enabled
+	// JIT FPU compilation and direct memory access both require the JIT
 	if (!UseJIT) {
 		UseJITFPU = false;
+		UseJITDirect = false;
 	}
 
 	// Initialize the active CPU engine

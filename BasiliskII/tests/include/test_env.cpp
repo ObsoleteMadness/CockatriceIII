@@ -24,14 +24,34 @@
 extern "C" {
 int g_pass = 0;
 int g_fail = 0;
+
+#ifdef _WIN32
+/*
+ * Isolated-test bookkeeping for run_isolated() on Windows (see
+ * test_harness.h). A child started for one test finds its number in
+ * COCKATRICE_TEST_CASE; the parent has none and runs every test in a child.
+ */
+int g_isolated_case_next = 0;
+int g_isolated_case_target = getenv("COCKATRICE_TEST_CASE") ? atoi(getenv("COCKATRICE_TEST_CASE")) : -1;
+#endif
 }
 
 const TestEngineConfig kTestEngineConfigs[] = {
-	{ "musashi", false, false, "musashi" },
-	{ "m68k_rs", false, false, "m68k_rs" },
-	{ "uae",     false, false, "uae" },
-	{ "uae",     true,  false, "uae+jit" },
-	{ "uae",     true,  true,  "uae+jit+jitfpu" },
+	{ "musashi", false, false, false, "musashi" },
+#if defined(ENABLE_M68K_RS_CPU) && ENABLE_M68K_RS_CPU
+	{ "m68k_rs", false, false, false, "m68k_rs" },
+#endif
+#if defined(ENABLE_UAE_PORTABLE_CPU) && ENABLE_UAE_PORTABLE_CPU
+	/* The vendored uae-portable-cpu core, which owns the "uae" id since the
+	 * Amiberry engine was removed: interpreter, then the JIT through the
+	 * memory handlers and with direct memory access, each without and with
+	 * FPU translation. */
+	{ "uae",     false, false, false, "uae" },
+	{ "uae",     true,  false, false, "uae+jit" },
+	{ "uae",     true,  true,  false, "uae+jit+jitfpu" },
+	{ "uae",     true,  false, true,  "uae+jit+direct" },
+	{ "uae",     true,  true,  true,  "uae+jit+direct+jitfpu" },
+#endif
 };
 const int kTestEngineConfigCount = (int)(sizeof(kTestEngineConfigs) / sizeof(kTestEngineConfigs[0]));
 
@@ -182,7 +202,7 @@ void PrefsReplaceInt32(const char *name, int32 val)
 	test_prefs_set_int32(name, val);
 }
 
-bool activate_cpu_engine(const char *id, bool jit, bool jitfpu)
+bool activate_cpu_engine(const char *id, bool jit, bool jitfpu, bool jitdirect)
 {
 	const CPUEngine *cur = GetActiveCPUEngine();
 	if (cur && cur->exit)
@@ -197,6 +217,7 @@ bool activate_cpu_engine(const char *id, bool jit, bool jitfpu)
 
 	UseJIT = jit;
 	UseJITFPU = (jit && jitfpu);
+	UseJITDirect = (jit && jitdirect);
 	JITCacheSize = 8192;
 	CPUType = 4;
 	FPUType = 1;
@@ -364,4 +385,25 @@ void test_install_disk_trap_stubs(uint32 heap_addr, uint32 heap_size)
 
 	WriteMacInt32(0x28, handler);
 	WriteMacInt32(0x308, 0); /* empty drive queue for FindFreeDriveNumber */
+}
+
+const char *test_temp_path(const char *leaf)
+{
+	static char path[1024];
+#ifdef _WIN32
+	// GetTempPathA returns the directory with its trailing backslash
+	char dir[MAX_PATH + 1];
+	DWORD n = GetTempPathA(sizeof(dir), dir);
+	if (n == 0 || n > sizeof(dir))
+		snprintf(dir, sizeof(dir), ".\\");
+	snprintf(path, sizeof(path), "%s%s", dir, leaf);
+#else
+	// Honour TMPDIR as mkstemp users would, falling back to /tmp
+	const char *dir = getenv("TMPDIR");
+	if (!dir || !*dir)
+		dir = "/tmp";
+	size_t len = strlen(dir);
+	snprintf(path, sizeof(path), "%s%s%s", dir, (len && dir[len - 1] == '/') ? "" : "/", leaf);
+#endif
+	return path;
 }

@@ -44,9 +44,9 @@ int main(int argc, char **argv)
 		if (!test_engine_matches(filter, cfg))
 			continue;
 
-		printf("\n=== CPU engine: %s (id=%s jit=%s jitfpu=%s) ===\n",
+		printf("\n=== CPU engine: %s (id=%s jit=%s jitfpu=%s jitdirect=%s) ===\n",
 		       cfg->label, cfg->id, cfg->jit ? "true" : "false",
-		       cfg->jitfpu ? "true" : "false");
+		       cfg->jitfpu ? "true" : "false", cfg->jitdirect ? "true" : "false");
 
 		const CPUEngine *engine_info = GetCPUEngine(cfg->id);
 		if (engine_info) {
@@ -58,7 +58,7 @@ int main(int argc, char **argv)
 		char init_msg[160];
 		snprintf(init_msg, sizeof(init_msg), "activate_cpu_engine('%s', jit=%s) succeeded",
 		         cfg->id, cfg->jit ? "true" : "false");
-		bool ok = activate_cpu_engine(cfg->id, cfg->jit, cfg->jitfpu);
+		bool ok = activate_cpu_engine(cfg->id, cfg->jit, cfg->jitfpu, cfg->jitdirect);
 		CHECK(ok, init_msg);
 		if (!ok)
 			continue;
@@ -101,11 +101,6 @@ int main(int argc, char **argv)
 		    strcmp(cfg->id, "m68k_rs") == 0) {
 			snprintf(label, sizeof(label), "[%s] fpu", cfg->label);
 			run_isolated(label, [cfg]() { test_fpu_execution(cfg->label); });
-		}
-
-		if (strcmp(cfg->id, "uae") == 0) {
-			snprintf(label, sizeof(label), "[%s] uae-cputest", cfg->label);
-			run_isolated(label, [cfg]() { test_uae_cputest_smoke(cfg->label); }, 120);
 		}
 
 		test_rom_snippets(cfg->label);

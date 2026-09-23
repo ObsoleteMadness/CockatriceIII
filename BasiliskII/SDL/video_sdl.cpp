@@ -16,6 +16,7 @@
 #include "version.h"
 #include "menu_bar.h"
 #include "toolbox_window.h"
+#include "video_blit.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -30,16 +31,19 @@ static int keycode_table[256];		// X keycode -> Mac keycode translation table
 
 // Last palette, reapplied after SDL_SetVideoMode recreates the surface
 static uint8 s_saved_palette[256 * 3];
+// The palette as host pixels of the 32-bit surface, for the indexed modes
+static uint32 s_palette_pixels[256];
 static bool s_have_palette = false;
 static bool s_in_mode_switch = false;
-// SDL_SetVideoMode posts VIDEORESIZE; swallow those so a menu/preset switch
-// is not immediately re-queued as a drag-resize of the same window.
-static int s_swallow_resize = 0;
-
-static const Uint32 kVideoSDLFlags = (SDL_SWSURFACE | SDL_HWPALETTE | SDL_RESIZABLE);
+// No SDL_HWPALETTE: sdl12-compat never records it on the surface, and on
+// Windows it recreates the window on every SDL_SetVideoMode whose flags differ
+// from the surface's, which dropped the Win32 menu bar on each mode change.
+// Palettes are set with SDL_SetColors either way.
+static const Uint32 kVideoSDLFlags = (SDL_SWSURFACE | SDL_RESIZABLE);
 
 // Global variables
 static int32 frame_skip;
+static bool hide_cursor = true;
 static int32 skip_count=0;
 static int32 quitcount=0;
 static int32 bytes_per_pixel;
@@ -97,6 +101,15 @@ void video_set_palette(uint8 *pal)
 	if (!SDLscreen)
 		return;
 
+	// Indexed Mac modes are drawn to the 32-bit surface through this table
+	if (SDLscreen->format->BytesPerPixel == 4) {
+		for (int i = 0; i < 256; i++)
+			s_palette_pixels[i] = SDL_MapRGB(SDLscreen->format, pal[i * 3 + 0],
+			                                 pal[i * 3 + 1], pal[i * 3 + 2]);
+		return;
+	}
+
+	// Classic mode still draws to an 8-bit palettized surface
 	SDL_Color colors[256];
 	for (int i = 0; i < 256; i++) {
 		colors[i].r = pal[i * 3 + 0];
@@ -108,7 +121,12 @@ void video_set_palette(uint8 *pal)
 }
 
 /*
- * Reads the host desktop size that SDL 1.2 will use for window coordinates.
+ * Reads the largest window content size the host can show.
+ *
+ * On Windows that is the desktop work area (the screen without the taskbar)
+ * less the frame, title bar and menu bar of a normal window, so the largest
+ * Video preset still fits once the menu is attached. Elsewhere it is the
+ * desktop size SDL 1.2 reports.
  *
  * Arguments:
  *   width, height: Out-parameters; set to VIDEO_MAX_* if the query fails.
@@ -117,11 +135,54 @@ static void query_host_desktop(int *width, int *height)
 {
 	*width = VIDEO_MAX_WIDTH;
 	*height = VIDEO_MAX_HEIGHT;
+#if defined(WIN32) || defined(_WIN32)
+	RECT work;
+	if (SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0)) {
+		// A zero-size client rect grows by exactly the non-client parts
+		RECT frame = { 0, 0, 0, 0 };
+		AdjustWindowRectEx(&frame, WS_OVERLAPPEDWINDOW, TRUE /* bMenu */, 0);
+		int w = (work.right - work.left) - (frame.right - frame.left);
+		int h = (work.bottom - work.top) - (frame.bottom - frame.top);
+		if (w > 0 && h > 0) {
+			*width = w;
+			*height = h;
+			return;
+		}
+	}
+#endif
 	const SDL_VideoInfo *info = SDL_GetVideoInfo();
 	if (info && info->current_w > 0 && info->current_h > 0) {
 		*width = info->current_w;
 		*height = info->current_h;
 	}
+}
+
+/*
+ * Attaches the host menu bar to the SDL window after an SDL_SetVideoMode().
+ *
+ * On Windows the menu is part of SDL's own window, which a mode change may
+ * replace, so this runs after every mode set; MenuBar_Init() re-attaches the
+ * bar and the WM_COMMAND hook to a new window and keeps the client area at the
+ * mode size. The other hosts have an application-level menu bar that only
+ * needs setting up once.
+ *
+ * Arguments:
+ *   first: True for the first mode set, from VideoInit().
+ */
+static void attach_host_menu(bool first)
+{
+#if defined(WIN32) || defined(_WIN32)
+	(void)first;
+	SDL_SysWMinfo wminfo;
+	SDL_VERSION(&wminfo.version);
+	if (SDL_GetWMInfo(&wminfo) && wminfo.window)
+		MenuBar_Init((void *)wminfo.window);
+	else
+		printf("VID: SDL_GetWMInfo failed; Win32 menu bar not attached\n");
+#else
+	if (first)
+		MenuBar_Init(NULL);
+#endif
 }
 
 bool VideoInit(bool classic)
@@ -134,10 +195,13 @@ bool VideoInit(bool classic)
 
 	classic_mode = classic;
 	D(bug(" VideoInit %d\n",classic));
+	/* The host surface is 32-bit for every colour Mac mode: sdl12-compat keeps
+	   a reused window's surface format, so a surface of the Mac's depth would
+	   not follow the guest's depth changes. Classic stays on its 1-bit path. */
 	if (classic)
 		depth = 1;
 	else
-		depth = 8;	/* 8-bit colour; the guest default */
+		depth = 32;
 
 	if (SDL_Init(SDL_INIT_VIDEO) < 0) {
 		printf("There was an issue with SDL trying to initalize video.\n");
@@ -189,8 +253,8 @@ bool VideoInit(bool classic)
 	InitFrameBufferMapping();
 	Video_NoteCurrentMode(width, height);
 
-	// Initialize default gray palette for 8-bit mode
-	if (!classic && depth == 8) {
+	// Initialize default gray palette for the guest's initial 8-bit mode
+	if (!classic) {
 		uint8 init_pal[256 * 3];
 		for (int i = 0; i < 256; i++) {
 			init_pal[i * 3 + 0] = 127;
@@ -211,31 +275,24 @@ D(bug(" init_window w%d,h%d d%d\n",width,height,depth));
         // Set absolute mouse mode
         ADBSetRelMouseMode(false);
 
-        // Read frame skip prefs
+        // Read frame skip prefs: redraw every frame_skip'th 60Hz tick
         frame_skip = PrefsFindInt32("frameskip");
-        if (frame_skip == 0)
+        if (frame_skip < 1)
                 frame_skip = 1;
+        hide_cursor = PrefsFindBool("hide_cursor");
 //SDL
         flags=kVideoSDLFlags;
         if (!(SDLscreen = SDL_SetVideoMode(width, height, depth, flags)))
         printf("VID: Couldn't set video mode: %s\n", SDL_GetError());
+        // No focus event arrives if the pointer already sits over the window
+        SDL_ShowCursor(hide_cursor ? SDL_DISABLE : SDL_ENABLE);
         SDL_WM_SetCaption(VERSION_STRING,VERSION_STRING);
-#if defined(WIN32) || defined(_WIN32)
-	{
-		SDL_SysWMinfo wminfo;
-		SDL_VERSION(&wminfo.version);
-		if (SDL_GetWMInfo(&wminfo) && wminfo.window)
-			MenuBar_Init((void *)wminfo.window);
-		else
-			printf("VID: SDL_GetWMInfo failed; Win32 menu bar not attached\n");
-	}
-#else
-	MenuBar_Init(NULL);
-#endif
+	attach_host_menu(true);
 //SDL
 
+                // The guest starts in 8-bit colour (1-bit on Classic)
                 int bytes_per_row = width;
-                switch (depth) {
+                switch (classic_mode ? 1 : 8) {
                         case 1:
                                 bytes_per_row *= 1;
 				bytes_per_pixel=1;
@@ -272,28 +329,36 @@ set_video_monitor(width, height, bytes_per_row, (depth == 1) ? VMODE_1BIT : VMOD
 
 
 /*
- * Host SDL depth used to present a Mac VMODE_* framebuffer. 1/2/4-bit Mac
- * modes stay on an 8-bit palette surface and are expanded in the blit.
+ * Host SDL depth used to present a Mac VMODE_* framebuffer: 32-bit for every
+ * mode, with the indexed and 16-bit modes converted in the blit. A fixed
+ * depth means a Mac depth change never needs a new SDL surface, which
+ * sdl12-compat would not provide when it reuses the window.
+ *
+ * Arguments:
+ *   mac_mode: VMODE_* depth of the guest framebuffer (unused).
+ *
+ * Returns:
+ *   The SDL surface depth in bits.
  */
 static int host_depth_for_mode(int mac_mode)
 {
-	switch (mac_mode) {
-		case VMODE_16BIT: return 16;
-		case VMODE_32BIT: return 32;
-		default:          return 8;
-	}
+	(void)mac_mode;
+	return 32;
 }
 
 /*
  * Packed host bytes per pixel for the SDL surface that presents mac_mode.
+ *
+ * Arguments:
+ *   mac_mode: VMODE_* depth of the guest framebuffer (unused).
+ *
+ * Returns:
+ *   4, matching host_depth_for_mode().
  */
 static int host_bytes_per_pixel(int mac_mode)
 {
-	switch (mac_mode) {
-		case VMODE_16BIT: return 2;
-		case VMODE_32BIT: return 4;
-		default:          return 1;
-	}
+	(void)mac_mode;
+	return 4;
 }
 
 /*
@@ -408,10 +473,10 @@ bool Video_SwitchToModeDepth(int width, int height, int mode)
 		}
 		SDLscreen = next;
 		depth = next_host;
+		SDL_ShowCursor(hide_cursor ? SDL_DISABLE : SDL_ENABLE);
 		if (s_have_palette)
 			video_set_palette(s_saved_palette);
-		// Cocoa/SDL 1.2 posts VIDEORESIZE for this same size; ignore it
-		s_swallow_resize = 3;
+		attach_host_menu(false);
 	}
 
 	// Newly revealed (or re-packed) pixels would otherwise show leftover VRAM
@@ -441,6 +506,71 @@ bool Video_SwitchToModeDepth(int width, int height, int mode)
 void VideoExit(void)
 {}
 
+/*
+ * SDL_MapRGB adapter for VideoBlit_BuildRGB555Table.
+ *
+ * Arguments:
+ *   ctx: The host SDL_PixelFormat.
+ *   r, g, b: 8-bit channels.
+ *
+ * Returns:
+ *   The host pixel value.
+ */
+static uint32 map_rgb_sdl(void *ctx, uint8 r, uint8 g, uint8 b)
+{
+	return SDL_MapRGB((SDL_PixelFormat *)ctx, r, g, b);
+}
+
+/*
+ * Returns the 15-bit Mac colour to host pixel table for fmt, rebuilding it
+ * when the host surface layout differs from the one it was built for (a
+ * mode switch may hand back a surface with a different format).
+ *
+ * Arguments:
+ *   fmt: Current host surface format.
+ *
+ * Returns:
+ *   32768 host pixel values, indexed by the low 15 bits of a Mac pixel.
+ */
+static const uint32 *rgb555_table_for(SDL_PixelFormat *fmt)
+{
+	static uint32 table[32768];
+	static uint32 key_r = 0, key_g = 0, key_b = 0, key_a = 0;
+	static int key_bpp = 0;
+
+	// Masks and depth fully determine what SDL_MapRGB returns for a direct surface
+	if (fmt->BytesPerPixel != key_bpp || fmt->Rmask != key_r || fmt->Gmask != key_g ||
+	    fmt->Bmask != key_b || fmt->Amask != key_a) {
+		VideoBlit_BuildRGB555Table(table, map_rgb_sdl, fmt);
+		key_bpp = fmt->BytesPerPixel;
+		key_r = fmt->Rmask;
+		key_g = fmt->Gmask;
+		key_b = fmt->Bmask;
+		key_a = fmt->Amask;
+	}
+	return table;
+}
+
+/*
+ * Tells whether a Mac 32-bit pixel can be copied to the host surface with a
+ * byte swap alone (host XRGB8888, no alpha, little-endian host).
+ *
+ * Arguments:
+ *   fmt: Current host surface format.
+ *
+ * Returns:
+ *   true if VideoBlit_XRGB8888BE produces what SDL_MapRGB would.
+ */
+static bool is_host_xrgb8888(const SDL_PixelFormat *fmt)
+{
+#ifdef WORDS_BIGENDIAN
+	return false;
+#else
+	return fmt->BytesPerPixel == 4 && fmt->Rmask == 0x00ff0000 && fmt->Gmask == 0x0000ff00 &&
+	       fmt->Bmask == 0x000000ff && fmt->Amask == 0;
+#endif
+}
+
 void VideoInterrupt(void)
 {
 int lx,ly=0;
@@ -452,40 +582,30 @@ if (++s_heartbeat_ticks % 60 == 0) {
 }
 #endif
 uint8 *src_buf = MacFrameBaseHost ? MacFrameBaseHost : the_buffer;
-if(skip_count++>frame_skip){
+if(++skip_count>=frame_skip){
 	if(classic_mode)
 		Mac2Host_memcpy(src_buf, 0x3fa700, VideoMonitor.bytes_per_row * VideoMonitor.y);
 	else
 	switch (VideoMonitor.mode) {
-		case VMODE_1BIT: {
-			// Expand 1-bit MSB-first Mac bits to 8-bit palette indices 0/1
-			for (ly = 0; ly < (int)VideoMonitor.y; ly++) {
-				const uint8 *src = src_buf + ly * VideoMonitor.bytes_per_row;
-				uint8 *dst = (uint8 *)SDLscreen->pixels + ly * SDLscreen->pitch;
-				for (lx = 0; lx < (int)VideoMonitor.x; lx++)
-					dst[lx] = (uint8)((src[lx >> 3] >> (7 - (lx & 7))) & 1);
+		case VMODE_1BIT:
+		case VMODE_2BIT:
+		case VMODE_4BIT:
+		case VMODE_8BIT: {
+			static const int kBits[] = { 1, 2, 4, 8 };
+			int bits = kBits[VideoMonitor.mode - VMODE_1BIT];
+			// Colour modes draw to the 32-bit surface through the palette
+			if (SDLscreen->format->BytesPerPixel == 4) {
+				VideoBlit_IndexedToPixels32(src_buf, VideoMonitor.bytes_per_row,
+				                            (uint8 *)SDLscreen->pixels, SDLscreen->pitch,
+				                            VideoMonitor.x, VideoMonitor.y, bits, s_palette_pixels);
+				break;
 			}
-			break;
-		}
-		case VMODE_2BIT: {
-			for (ly = 0; ly < (int)VideoMonitor.y; ly++) {
-				const uint8 *src = src_buf + ly * VideoMonitor.bytes_per_row;
-				uint8 *dst = (uint8 *)SDLscreen->pixels + ly * SDLscreen->pitch;
-				for (lx = 0; lx < (int)VideoMonitor.x; lx++)
-					dst[lx] = (uint8)((src[lx >> 2] >> (6 - ((lx & 3) * 2))) & 3);
+			// An 8-bit palettized surface takes the indices themselves
+			if (bits < 8) {
+				VideoBlit_ExpandIndexed(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
+				                        SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y, bits);
+				break;
 			}
-			break;
-		}
-		case VMODE_4BIT: {
-			for (ly = 0; ly < (int)VideoMonitor.y; ly++) {
-				const uint8 *src = src_buf + ly * VideoMonitor.bytes_per_row;
-				uint8 *dst = (uint8 *)SDLscreen->pixels + ly * SDLscreen->pitch;
-				for (lx = 0; lx < (int)VideoMonitor.x; lx++)
-					dst[lx] = (uint8)((src[lx >> 1] >> (4 - ((lx & 1) * 4))) & 0x0f);
-			}
-			break;
-		}
-		case VMODE_8BIT:
 			if (SDLscreen->pitch == (int)VideoMonitor.bytes_per_row)
 				memcpy(SDLscreen->pixels, src_buf, VideoMonitor.bytes_per_row * VideoMonitor.y);
 			else {
@@ -495,28 +615,22 @@ if(skip_count++>frame_skip){
 					       VideoMonitor.bytes_per_row);
 			}
 			break;
+		}
 		case VMODE_16BIT:
 			// Mac 16-bit is big-endian 1-5-5-5; SDL is host 5-6-5 or 5-5-5
-			for (ly = 0; ly < (int)VideoMonitor.y; ly++) {
-				const uint8 *src = src_buf + ly * VideoMonitor.bytes_per_row;
-				uint8 *dst = (uint8 *)SDLscreen->pixels + ly * SDLscreen->pitch;
-				for (lx = 0; lx < (int)VideoMonitor.x; lx++) {
-					uint16 p = (uint16)((src[0] << 8) | src[1]);
-					uint8 r = (uint8)(((p >> 10) & 0x1f) * 255 / 31);
-					uint8 g = (uint8)(((p >> 5) & 0x1f) * 255 / 31);
-					uint8 b = (uint8)((p & 0x1f) * 255 / 31);
-					uint32 pix = SDL_MapRGB(SDLscreen->format, r, g, b);
-					if (SDLscreen->format->BytesPerPixel == 2)
-						*(uint16 *)dst = (uint16)pix;
-					else
-						*(uint32 *)dst = pix;
-					src += 2;
-					dst += SDLscreen->format->BytesPerPixel;
-				}
-			}
+			VideoBlit_RGB555BE(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
+			                   SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y,
+			                   rgb555_table_for(SDLscreen->format),
+			                   SDLscreen->format->BytesPerPixel);
 			break;
 		case VMODE_32BIT:
 			// Mac 32-bit is 00 RR GG BB; memcpy onto LE SDL looks yellow (B=0)
+			if (is_host_xrgb8888(SDLscreen->format)) {
+				VideoBlit_XRGB8888BE(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
+				                     SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y);
+				break;
+			}
+			// Any other host layout: map each pixel through SDL
 			for (ly = 0; ly < (int)VideoMonitor.y; ly++) {
 				const uint8 *src = src_buf + ly * VideoMonitor.bytes_per_row;
 				uint8 *dst = (uint8 *)SDLscreen->pixels + ly * SDLscreen->pitch;
@@ -551,6 +665,12 @@ void doevents(void)
  SDL_Event event;
 	int mb,x,y;
 int emul_suspended=0;
+	/* A mode set can post several resizes at once: Cocoa repeats the new size,
+	   and on Windows attaching the menu bar shrinks the client area before
+	   the window is grown back. Acting on each would queue a guest mode switch
+	   to a size that no longer applies, so only the final one is used. */
+	bool resize_pending = false;
+	int resize_w = 0, resize_h = 0;
     while(SDL_PollEvent(&event))
     {
         switch (event.type) {
@@ -636,21 +756,15 @@ int emul_suspended=0;
 	ADBMouseMoved(event.motion.x, event.motion.y);
 	break;
 
-	case SDL_VIDEORESIZE: {
-		if (s_swallow_resize > 0) {
-			s_swallow_resize--;
-			break;
-		}
-		int width = event.resize.w;
-		int height = event.resize.h;
-		clamp_mode_size(&width, &height);
-		if ((uint32)width != VideoMonitor.x || (uint32)height != VideoMonitor.y)
-			Toolbox_NotifyScreenResized((int16)width, (int16)height);
+	case SDL_VIDEORESIZE:
+		// Only the last resize of a batch counts (see below)
+		resize_pending = true;
+		resize_w = event.resize.w;
+		resize_h = event.resize.h;
 		break;
-	}
 
 	case SDL_ACTIVEEVENT:
-		if (event.active.state & SDL_APPMOUSEFOCUS)
+		if (hide_cursor && (event.active.state & SDL_APPMOUSEFOCUS))
 			SDL_ShowCursor(event.active.gain ? SDL_DISABLE : SDL_ENABLE);
 		break;
 
@@ -666,6 +780,13 @@ int emul_suspended=0;
 	break;
 	}//end switch
    }//end while
+
+	// Ask the guest for the window's final size unless it already has it
+	if (resize_pending) {
+		clamp_mode_size(&resize_w, &resize_h);
+		if ((uint32)resize_w != VideoMonitor.x || (uint32)resize_h != VideoMonitor.y)
+			Toolbox_NotifyScreenResized((int16)resize_w, (int16)resize_h);
+	}
 }
 
 

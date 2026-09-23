@@ -24,6 +24,9 @@
 #include <stdlib.h>
 
 #include "prefs.h"
+#include "host_paths.h"
+
+#include <string>
 
 
 // Platform-specific preferences items
@@ -32,40 +35,55 @@ prefs_desc platform_prefs_items[] = {
 };
 
 
-// Prefs file name and path
+// Prefs file name; its directory is chosen by HostPaths (see host_paths.h).
 const char PREFS_FILE_NAME[] = "CockatriceIII_Prefs";
+
+// Full path of the prefs file that was loaded, so SavePrefs() writes back to
+// the same file. Empty until LoadPrefs() has run.
+static std::string prefs_path;
 
 
 /*
- *  Load preferences from settings file
+ *  Load preferences from the first prefs file on the host search path
+ *  (executable dir, macOS bundle Resources, then the per-user location).
+ *  When none exists, the defaults are written to the per-user location so
+ *  the next launch, and SavePrefs(), have a writable file to use.
  */
 
 void LoadPrefs(void)
 {
-	// Read preferences from settings file
-	FILE *f = fopen(PREFS_FILE_NAME, "r");
-	if (f != NULL) {
-
-		// Prefs file found, load settings
-		LoadPrefsFromStream(f);
-		fclose(f);
-
-	} else {
-
-		// No prefs file, save defaults
-		SavePrefs();
+	// Look for an existing prefs file in search order.
+	if (HostPaths_FindExisting(HOST_PATH_PREFS, PREFS_FILE_NAME, prefs_path)) {
+		FILE *f = fopen(prefs_path.c_str(), "r");
+		if (f != NULL) {
+			printf("Prefs: %s\n", prefs_path.c_str());
+			LoadPrefsFromStream(f);
+			fclose(f);
+			return;
+		}
 	}
+
+	// No prefs file: save defaults to the per-user location, which is
+	// writable (unlike a signed bundle or a system install directory).
+	prefs_path = HostPaths_UserPath(HOST_PATH_PREFS, PREFS_FILE_NAME);
+	printf("Prefs: none found, writing defaults to %s\n", prefs_path.c_str());
+	SavePrefs();
 }
 
 
 /*
- *  Save preferences to settings file
+ *  Save preferences back to the file LoadPrefs() used. Called before
+ *  LoadPrefs() (or if no per-user location exists), it falls back to the
+ *  per-user path, then to the bare name in the working directory.
  */
 
 void SavePrefs(void)
 {
+	if (prefs_path.empty())
+		prefs_path = HostPaths_UserPath(HOST_PATH_PREFS, PREFS_FILE_NAME);
+	const char *path = prefs_path.empty() ? PREFS_FILE_NAME : prefs_path.c_str();
 	FILE *f;
-	if ((f = fopen(PREFS_FILE_NAME, "w")) != NULL) {
+	if ((f = fopen(path, "w")) != NULL) {
 		SavePrefsToStream(f);
 		fclose(f);
 	}

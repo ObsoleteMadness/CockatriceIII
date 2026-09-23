@@ -17,27 +17,49 @@ int main(void)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	printf("=== basilisk_engine_test ===\n");
 
+	/* Musashi is always built in. The other two are optional
+	 * (-DCOCKATRICE_ENABLE_M68K_RS=OFF, -DCOCKATRICE_ENABLE_UAE=OFF), so the
+	 * expected count follows whatever this build actually links rather than a
+	 * hardcoded 3 -- otherwise a deliberately slimmed build fails the gate. */
+	const int expected_engines = 1
+#if defined(ENABLE_M68K_RS_CPU) && ENABLE_M68K_RS_CPU
+	    + 1
+#endif
+#if defined(ENABLE_UAE_PORTABLE_CPU) && ENABLE_UAE_PORTABLE_CPU
+	    + 1
+#endif
+	    ;
 	int count = GetRegisteredCPUEngineCount();
-	CHECK(count >= 3, "At least 3 CPU engines registered");
+	CHECK(count >= expected_engines, "Every built-in CPU engine registered");
 
 	const CPUEngine *musashi = GetCPUEngine("musashi");
 	CHECK(musashi != NULL && strcmp(musashi->id, "musashi") == 0, "Musashi CPU engine found");
-	const CPUEngine *m68k_rs = GetCPUEngine("m68k_rs");
-	CHECK(m68k_rs != NULL && strcmp(m68k_rs->id, "m68k_rs") == 0, "m68k-rs CPU engine found");
-	const CPUEngine *uae = GetCPUEngine("uae");
-	CHECK(uae != NULL && strcmp(uae->id, "uae") == 0, "Amiberry/UAE CPU engine found");
-
 	if (musashi)
 		CHECK(musashi->is_jit == false, "Musashi correctly flagged as non-JIT interpreter");
-	if (m68k_rs)
-		CHECK(m68k_rs->is_jit == false, "m68k-rs correctly flagged as non-JIT interpreter");
-
 	CHECK(SetActiveCPUEngine("musashi") == true, "SetActiveCPUEngine('musashi') succeeded");
 	CHECK(GetActiveCPUEngine() == musashi, "Active engine is Musashi");
+
+#if defined(ENABLE_M68K_RS_CPU) && ENABLE_M68K_RS_CPU
+	const CPUEngine *m68k_rs = GetCPUEngine("m68k_rs");
+	CHECK(m68k_rs != NULL && strcmp(m68k_rs->id, "m68k_rs") == 0, "m68k-rs CPU engine found");
+	if (m68k_rs)
+		CHECK(m68k_rs->is_jit == false, "m68k-rs correctly flagged as non-JIT interpreter");
 	CHECK(SetActiveCPUEngine("m68k_rs") == true, "SetActiveCPUEngine('m68k_rs') succeeded");
 	CHECK(GetActiveCPUEngine() == m68k_rs, "Active engine is m68k-rs");
-	CHECK(SetActiveCPUEngine("uae") == true, "SetActiveCPUEngine('uae') succeeded");
-	CHECK(GetActiveCPUEngine() == uae, "Active engine is Amiberry/UAE");
+#endif
+
+#if defined(ENABLE_UAE_PORTABLE_CPU) && ENABLE_UAE_PORTABLE_CPU
+	/* "uae" is the vendored uae-portable-cpu core, which took the id over when
+	 * the GPL-3 Amiberry engine was removed. */
+	const CPUEngine *uae = GetCPUEngine("uae");
+	CHECK(uae != NULL && strcmp(uae->id, "uae") == 0, "uae-portable-cpu engine found");
+	if (uae) {
+		CHECK(uae->invalidate_code != NULL, "uae-portable-cpu exposes code invalidation");
+		CHECK(SetActiveCPUEngine("uae") == true, "SetActiveCPUEngine('uae') succeeded");
+		CHECK(GetActiveCPUEngine() == uae, "Active engine is uae-portable-cpu");
+	}
+#endif
+
 	SetActiveCPUEngine("musashi");
 	CHECK(GetActiveCPUEngine() == musashi, "Switched back to Musashi engine");
 

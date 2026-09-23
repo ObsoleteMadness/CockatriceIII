@@ -1,23 +1,53 @@
 # Cockatrice III tests
 
-Build and run from this directory:
+Configure once from the repository root, then drive everything through CTest:
 
 ```
-make test          # Basilisk must pass; CPU is reported (may fail)
-make test-strict   # Fail on CPU failures too
-make test-basilisk
-make test-cpu
-./cpu_tests --engine musashi
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j8
+
+ctest --test-dir build -L gate --output-on-failure   # must pass
+ctest --test-dir build -L cpu  --output-on-failure   # engine accuracy, reported
+ctest --test-dir build --output-on-failure           # everything
+
+./build/BasiliskII/tests/cpu_tests --engine musashi  # fast iteration path
 ```
+
+## What gates and what does not
+
+`-L gate` is the fourteen `basilisk_*` suites. They are required to pass.
+
+`-L cpu` is `cpu_tests`, which is **reported rather than gated**. It currently
+has 5 known failures: the `cmp2` opcode fixture in each of the five UAE
+engine configurations (`uae`, `uae+jit`, `uae+jit+jitfpu`, `uae+jit+direct`,
+`uae+jit+direct+jitfpu`). That is a genuine accuracy gap in the UAE core, not a
+harness problem — Musashi passes all 136 of its checks and m68k-rs all 132 of
+its own against the same fixtures. (`abcd`, `sbcd` and `chk2` failed too until
+uae-portable-cpu's BCD and CHK2/CMP2 fixes.)
 
 ## Layout
 
-- `cpu/` — Musashi opcode battery plus instruction/FPU/exception/ROM-snippet tests, run on musashi, UAE, and m68k-rs. UAE also runs vendored [WinUAE cputest](../amiberry/cputest/README.md) smoke.
-- `basilisk/` — memory, engine registry, EmulOp, ROM patches, resource patches, SCSI, SCC, disk images.
+- `cpu/` — Musashi opcode battery plus instruction, FPU, exception and
+  ROM-snippet tests, run across musashi, uae (interpreter, JIT, JIT+FPU) and
+  m68k-rs.
+- `basilisk/` — memory, engine registry, EmulOp, ROM patches, resource patches,
+  SCSI, SCC, disk images.
 
-Hang-prone work is isolated with a **30 second** timeout (`run_isolated()` and `run_with_timeout.sh`). Override with `TEST_TIMEOUT`.
+Opcode images live in [`../vendor/musashi/test/`](../vendor/musashi/test). Hang-prone
+work is isolated by `run_isolated()` at 30 seconds, and CTest caps each suite at
+120 seconds so a wedged engine fails rather than hanging CI.
 
-ROM snippets load `dist/Quadra800.rom` (or `QUADRA_ROM`). Missing ROM skips those tests.
+`run_isolated()` runs each test in a `fork()`ed child, so a hang or crash fails
+only that test and its memory writes do not leak into the next. Windows has no
+`fork()`, so there the test binary starts itself again with
+`COCKATRICE_TEST_CASE=<n>`: the child repeats `main()`'s setup, runs only the
+n-th isolated test between two marker lines, and exits, and the parent forwards
+that output and adds the counts. Isolated tests must therefore be reached in the
+same order on every run. The repeated setup makes `cpu_tests` slower on Windows,
+where its CTest limit is 600 seconds.
+
+ROM snippets load `dist/Quadra800.rom` (or `QUADRA_ROM`). A missing ROM skips
+those tests.
 
 ## ROM and resource patches
 
@@ -27,7 +57,7 @@ matching the ROM, or lands somewhere new, fails as a one-line diff instead of a
 boot bomb. After an intentional change, regenerate and **read the diff**:
 
 ```
-REGEN_PATCH_MANIFEST=1 ./basilisk_patches_test
+REGEN_PATCH_MANIFEST=1 ./build/BasiliskII/tests/basilisk_patches_test
 ```
 
 `basilisk_rsrcpatch_test` drives `CheckLoad()` with synthetic resources built
@@ -35,7 +65,7 @@ from the Apple ROM source sequences (see
 [docs/rom-patches-vs-supermario.md](../../docs/rom-patches-vs-supermario.md)),
 plus boundary cases: resources shorter than a signature, signatures with too
 little run-up, empty and all-`0xFF` buffers. Every fixture is bracketed with
-guard bytes, so an out-of-bounds write is caught without ASAN too.
+guard bytes, so an out-of-bounds write is caught without ASan too.
 
 `basilisk_patchguard_test` proves the patch pass fails *loudly*. Each case
 corrupts a copy of the ROM so one locator misses, then asserts `PatchROM()`
@@ -53,19 +83,40 @@ are read from `GetPatchLog()`, so the two cannot drift apart.
 `basilisk_toolbox_test` covers the Toolbox/OS trap trampolines in
 [toolbox_traps.cpp](../toolbox_traps.cpp) — the RAM-trampoline mechanism
 (`_SetToolTrap` / `_SetOSTrapAddress`) that replaces ROM byte patches for
-post-boot traps. It runs every case on all five engine configurations, because
-the one thing the dispatcher must get right — *which* hooked trap it was
-entered for — is derived from the guest PC, and the engines do not agree on
-what the PC is at EmulOp time. `--engine <id>` narrows it.
+post-boot traps. It runs every case on all engine configurations, because the
+one thing the dispatcher must get right — *which* hooked trap it was entered
+for — is derived from the guest PC, and the engines do not agree on what the PC
+is at EmulOp time. `--engine <id>` narrows it.
+
+`basilisk_prefs_test` drives `PrefsParseLine()`
+([prefs_parse.cpp](../prefs_parse.cpp)), the line syntax of `CockatriceIII_Prefs`:
+trailing `#`/`;` comments, a `#` kept inside a path, values with spaces, CRLF
+endings, and the blank, comment and keyword-only lines that are skipped. The
+syntax itself is documented in
+[docs/CockatriceIII_Prefs.md](../../docs/CockatriceIII_Prefs.md#syntax).
+
+`basilisk_blit_test` checks the screen converters in
+[SDL/video_blit.cpp](../SDL/video_blit.cpp), which turn the Mac framebuffer
+into the host window's pixels on every redraw: the 1/2/4-bit expansion tables,
+the 15-bit colour table for 16-bit mode and the 32-bit byte swap. Each is
+compared pixel for pixel with the per-pixel loop it replaced, with rows that end
+part way through a byte, and with guard bytes after each row.
+
+`basilisk_romguard_test` covers the ROM write guard that `jitdirect` relies
+on (`memory_set_rom_write_guard()` in [memory.cpp](../memory.cpp)): a host
+write to guarded ROM inside an EmulOp must go through, and a guest store the
+JIT translated against RAM and then aimed at ROM must be dropped without
+hanging. It runs on the five uae configurations, so CI checks the fault
+handling of every host (POSIX signals, Windows vectored exceptions).
+
+## Sanitizers
 
 ```
-ASAN=1 make test-basilisk      # AddressSanitizer + UBSan
+cmake -S . -B build-asan -DCOCKATRICE_TEST_ASAN=ON
+cmake --build build-asan -j8
+ctest --test-dir build-asan -L gate --output-on-failure
 ```
 
-Run the patch tests under ASAN after touching either patch file: the failure
+Run the patch tests under ASan after touching either patch file: the failure
 mode there is out-of-bounds writes and unsigned-underflow scans, which a plain
 build can miss entirely.
-
-A full `make test` CPU pass can take a while: each hung engine is isolated at 30s per test/image rather than wedging the suite. `./cpu_tests --engine musashi` is the fast iteration path.
-
-Opcode images stay in `BasiliskII/Musashi/test/`. Native Musashi `make test` in that tree still runs `test_driver` / `test_fpu`.

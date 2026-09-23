@@ -1,0 +1,3 @@
+[submodule "BasiliskII/vendor/uae-portable-cpu"]
+	path = BasiliskII/vendor/uae-portable-cpu
+	url = https://github.com/ObsoleteMadness/uae-portable-cpu

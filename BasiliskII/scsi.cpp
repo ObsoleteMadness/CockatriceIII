@@ -33,6 +33,7 @@
 #include "prefs.h"
 #include "user_strings.h"
 #include "scsi.h"
+#include "cpu_engine.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -386,6 +387,14 @@ int16 SCSIComplete(uint32 timeout, uint32 message, uint32 stat)
 	uint16 scsi_stat = 0;
 	bool success = scsi_send_cmd(sg_total_length, reading, sg_index, sg_ptr, sg_len, &scsi_stat, timeout);
 	WriteMacInt16(stat, scsi_stat);
+
+	// A read drops executable code (boot blocks, drivers, INITs) straight into
+	// guest RAM without the CPU seeing the writes. A JIT engine has to be told,
+	// or it can run a stale translation of whatever held those addresses before.
+	if (success && reading) {
+		for (int i = 0; i < sg_index; i++)
+			cpu_engine_invalidate_code(Host2MacAddr(sg_ptr[i]), sg_len[i]);
+	}
 
 	SCSI_LOG("[SCSI-MGR] SCSIComplete: Target %d -> Status 0x%02X (%s), Msg 0x00, TotalData %u bytes, Success %d\n",
 	         target_id, scsi_stat, (scsi_stat == 0) ? "STAT_GOOD" : ((scsi_stat == 2) ? "STAT_CHECK_CONDITION" : "STAT_OTHER"),

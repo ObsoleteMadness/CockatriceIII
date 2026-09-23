@@ -9,6 +9,7 @@
 #include <assert.h>
 #include "test_harness.h"
 #include "test_env.h"
+#include <string>
 #include "sysdeps.h"
 #include "cpu_emulation.h"
 #include "cpu_engine.h"
@@ -37,7 +38,8 @@ int main(void)
 	SCSIInit();
 	g_scsi_debug = false;
 
-	const char *img_path = "/tmp/cockatrice_scsi_test.img";
+	std::string img_path_s = test_temp_path("cockatrice_scsi_test.img");
+	const char *img_path = img_path_s.c_str();
 	write_blank_image(img_path, 128);
 	bool attached = SCSI_Attach(0, img_path);
 	CHECK(attached, "SCSI_Attach to Target 0");
@@ -137,7 +139,8 @@ int main(void)
 
 	/* Advanced unaligned multi-block */
 	SCSIInit();
-	const char *img2 = "/tmp/cockatrice_scsi_adv_test.img";
+	std::string img2_s = test_temp_path("cockatrice_scsi_adv_test.img");
+	const char *img2 = img2_s.c_str();
 	write_blank_image(img2, 64);
 	CHECK(SCSI_Attach(0, img2), "Attach disk image for advanced SCSI tests");
 	CHECK(SCSIGet() == 0, "SCSIGet for advance tests");

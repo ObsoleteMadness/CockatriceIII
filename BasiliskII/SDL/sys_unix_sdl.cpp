@@ -41,11 +41,25 @@ _syscall5(int, _llseek, uint, fd, ulong, hi, ulong, lo, loff_t *, res, uint, wh)
 #else
 #include <sys/types.h>
 #include <sys/unistd.h>
+/*
+ * Stand-in for the old Linux _llseek syscall wrapper, which glibc does not
+ * declare. off_t is 64-bit on every supported host, so the two halves are
+ * recombined and passed to lseek(); refusing a non-zero high half, as this
+ * used to, made every access beyond 4 GB of a disk image fail.
+ *
+ * Arguments:
+ *   fd: File to seek.
+ *   hi, lo: High and low 32 bits of the offset (lo may carry all 64).
+ *   res: Receives the resulting position.
+ *   wh: SEEK_SET, SEEK_CUR or SEEK_END.
+ *
+ * Returns:
+ *   0 on success, -1 on error.
+ */
 static int _llseek(uint fd, ulong hi, ulong lo, loff_t *res, uint wh)
 {
-	if (hi)
-		return -1;
-	*res = lseek(fd, lo, wh);
+	off_t offset = (off_t)(((uint64_t)hi << 32) | (uint32_t)lo);
+	*res = lseek(fd, offset, wh);
 	if (*res == -1)
 		return -1;
 	return 0;
@@ -68,8 +82,9 @@ static int _llseek(uint fd, ulong hi, ulong lo, loff_t *res, uint wh)
 #include "debug.h"
 
 
-// File handles are pointers to these structures
-struct file_handle {
+// File handles are pointers to these structures (not named file_handle,
+// which glibc's <fcntl.h> declares for name_to_handle_at)
+struct sys_file_handle {
 	char *name;		// Copy of device/file name
 	int fd;
 	bool is_file;		// Flag: plain file or /dev/something?
@@ -87,9 +102,9 @@ struct file_handle {
 };
 
 // File handle of first floppy drive (for SysMountFirstFloppy())
-static file_handle *first_floppy = NULL;
+static sys_file_handle *first_floppy = NULL;
 
-static void Sys_find_hfs_partition(file_handle *fh);
+static void Sys_find_hfs_partition(sys_file_handle *fh);
 
 
 /*
@@ -294,7 +309,7 @@ void *Sys_open(const char *name, bool read_only)
 		fd = open(name, O_RDONLY|O_BINARY);
 	}
 	if (fd >= 0) {
-		file_handle *fh = new file_handle;
+		sys_file_handle *fh = new sys_file_handle;
 		fh->name = strdup(name);
 		fh->fd = fd;
 		fh->is_file = is_file;
@@ -365,7 +380,7 @@ void *Sys_open(const char *name, bool read_only)
 
 void Sys_close(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return;
 
@@ -383,7 +398,7 @@ void Sys_close(void *arg)
 
 size_t Sys_read(void *arg, void *buffer, loff_t offset, size_t length)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return 0;
 
@@ -409,7 +424,7 @@ size_t Sys_read(void *arg, void *buffer, loff_t offset, size_t length)
 
 size_t Sys_write(void *arg, void *buffer, loff_t offset, size_t length)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return 0;
 
@@ -434,7 +449,7 @@ size_t Sys_write(void *arg, void *buffer, loff_t offset, size_t length)
 
 loff_t SysGetFileSize(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return true;
 
@@ -460,7 +475,7 @@ loff_t SysGetFileSize(void *arg)
 
 void SysEject(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return;
 
@@ -494,7 +509,7 @@ void SysEject(void *arg)
 
 bool SysFormat(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return false;
 
@@ -509,7 +524,7 @@ bool SysFormat(void *arg)
 
 bool SysIsReadOnly(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return true;
 
@@ -530,7 +545,7 @@ bool SysIsReadOnly(void *arg)
 
 bool SysIsFixedDisk(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return true;
 
@@ -549,7 +564,7 @@ bool SysIsFixedDisk(void *arg)
 
 bool SysIsDiskInserted(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return false;
 
@@ -588,7 +603,7 @@ bool SysIsDiskInserted(void *arg)
 
 void SysPreventRemoval(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return;
 
@@ -605,7 +620,7 @@ void SysPreventRemoval(void *arg)
 
 void SysAllowRemoval(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return;
 
@@ -622,7 +637,7 @@ void SysAllowRemoval(void *arg)
 
 bool SysCDReadTOC(void *arg, uint8 *toc)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return false;
 
@@ -755,7 +770,7 @@ bool SysCDReadTOC(void *arg, uint8 *toc)
 
 bool SysCDGetPosition(void *arg, uint8 *pos)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return false;
 
@@ -818,7 +833,7 @@ bool SysCDGetPosition(void *arg, uint8 *pos)
 
 bool SysCDPlay(void *arg, uint8 start_m, uint8 start_s, uint8 start_f, uint8 end_m, uint8 end_s, uint8 end_f)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return false;
 
@@ -853,7 +868,7 @@ bool SysCDPlay(void *arg, uint8 start_m, uint8 start_s, uint8 start_f, uint8 end
 
 bool SysCDPause(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return false;
 
@@ -874,7 +889,7 @@ bool SysCDPause(void *arg)
 
 bool SysCDResume(void *arg)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return false;
 
@@ -895,7 +910,7 @@ bool SysCDResume(void *arg)
 
 bool SysCDStop(void *arg, uint8 lead_out_m, uint8 lead_out_s, uint8 lead_out_f)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return false;
 
@@ -916,7 +931,7 @@ bool SysCDStop(void *arg, uint8 lead_out_m, uint8 lead_out_s, uint8 lead_out_f)
 
 bool SysCDScan(void *arg, uint8 start_m, uint8 start_s, uint8 start_f, bool reverse)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return false;
 
@@ -931,7 +946,7 @@ bool SysCDScan(void *arg, uint8 start_m, uint8 start_s, uint8 start_f, bool reve
 
 void SysCDSetVolume(void *arg, uint8 left, uint8 right)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return;
 
@@ -957,7 +972,7 @@ void SysCDSetVolume(void *arg, uint8 left, uint8 right)
 
 void SysCDGetVolume(void *arg, uint8 &left, uint8 &right)
 {
-	file_handle *fh = (file_handle *)arg;
+	sys_file_handle *fh = (sys_file_handle *)arg;
 	if (!fh)
 		return;
 
@@ -983,7 +998,7 @@ void SysCDGetVolume(void *arg, uint8 &left, uint8 &right)
  *  Find HFS partition, set info->start_byte (0 = no HFS partition)
  */
 
-static void Sys_find_hfs_partition(file_handle *fh)
+static void Sys_find_hfs_partition(sys_file_handle *fh)
 {
         fh->start_byte = 0;
         uint8 *map = new uint8[512];

@@ -53,11 +53,13 @@ prefs_desc common_prefs_items[] = {
 	{"bootdriver", TYPE_INT16, false},	// Boot driver number (main.cpp)
 	{"ramsize", TYPE_INT32, false},		// Size of Mac RAM in bytes (main_*.cpp)
 	{"frameskip", TYPE_INT32, false},	// Number of frames to skip in refreshed video modes (video_*.cpp)
+	{"hide_cursor", TYPE_BOOLEAN, false},	// Hide the host mouse cursor over the emulator window (video_sdl.cpp)
 	{"modelid", TYPE_INT32, false},		// Mac Model ID (Gestalt Model ID minus 6) (rom_patches.cpp)
 	{"cpu", TYPE_INT32, false},			// Unused: CPU is hardcoded to 68040 (main.cpp). Kept for prefs-file compatibility.
 	{"cpu_emulator", TYPE_STRING, false}, // CPU emulator backend (musashi | uae | m68k_rs)
 	{"jit", TYPE_BOOLEAN, false},		// Enable JIT compilation
 	{"jitfpu", TYPE_BOOLEAN, false},	// Enable JIT for FPU instructions
+	{"jitdirect", TYPE_BOOLEAN, false},	// Let translated code access RAM/ROM/framebuffer inline (uae)
 	{"jitcachesize", TYPE_INT32, false}, // JIT translation cache size in KB
 	{"m68k_rs_fastmem", TYPE_STRING, false}, // m68k-rs fastmem mode (off | ram | multi | legacy)
 	{"fpu", TYPE_BOOLEAN, false},		// Enable FPU emulation (main.cpp)
@@ -105,12 +107,14 @@ void PrefsInit(void)
 	PrefsAddInt16("bootdrive", 0);
 	PrefsAddInt32("ramsize", 64 * 1024 * 1024);
 	PrefsAddInt32("frameskip", 2);
+	PrefsAddBool("hide_cursor", true);
 	PrefsAddInt32("modelid", 29);	// Quadra 800
 	PrefsAddInt32("cpu", 4);		// Unused: CPU is hardcoded to 68040 (main.cpp)
 	PrefsAddString("cpu_emulator", "musashi"); // musashi | uae | m68k_rs
 	PrefsAddBool("jit", false);
 	PrefsAddBool("jitfpu", false);
-	PrefsAddInt32("jitcachesize", 2048);
+	PrefsAddBool("jitdirect", false);
+	PrefsAddInt32("jitcachesize", 16384);	// MAX_JIT_CACHE; smaller caches thrash on Mac OS 8
 	PrefsAddString("m68k_rs_fastmem", "off");
 	PrefsAddBool("fpu", false);		// 68040LC
 	PrefsAddBool("nocdrom", false);
@@ -353,31 +357,10 @@ void LoadPrefsFromStream(FILE *f)
 {
 	char line[2048];
 	while(fgets(line, sizeof(line), f)) {
-		// Read line
-		int len = strlen(line);
-		if (len == 0)
+		// Split "keyword value # comment"; blank and comment lines are skipped.
+		char *keyword, *value;
+		if (!PrefsParseLine(line, &keyword, &value))
 			continue;
-		line[len-1] = 0;
-
-		// Comments begin with "#" or ";"
-		if (line[0] == '#' || line[0] == ';')
-			continue;
-
-		// Kill short lines
-		if(strlen(line)<1)
-			continue;
-
-		// Terminate string after keyword
-		char *p = line;
-		while (!isspace(*p)) p++;
-		*p++ = 0;
-
-		// Skip whitespace until value
-		while (isspace(*p)) p++;
-		if (*p == 0)
-			continue;
-		char *keyword = line;
-		char *value = p;
 		int32 i = atol(value);
 
 		// Look for keyword first in common item list, then in platform specific list

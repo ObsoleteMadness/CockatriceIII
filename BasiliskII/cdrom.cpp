@@ -38,6 +38,7 @@
 #include "prefs.h"
 #include "cdrom.h"
 #include "scsi.h"
+#include "cpu_engine.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -481,6 +482,10 @@ int16 CDROMPrime(uint32 pb, uint32 dce)
 			} else
 				return readErr;
 		}
+
+		// The block just read may be guest code; tell the CPU engine so a JIT
+		// cannot execute a stale translation of the previous contents.
+		cpu_engine_invalidate_code(ReadMacInt32(pb + ioBuffer), (uint32)actual);
 	} else
 		return wPrErr;
 

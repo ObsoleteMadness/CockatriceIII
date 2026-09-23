@@ -1050,6 +1050,20 @@ uint32 GetVBLHandlerStub(uint32 *original)
 }
 
 /*
+ *  Forgets the installed VBL handler on a warm reset.
+ *
+ *  The stub was allocated in the System heap, which the reset wipes, and until
+ *  InstallDrivers() installs a new one the host must not raise the 60 Hz
+ *  interrupt (see one_tickbbbb()).
+ */
+
+void ForgetVBLHandler(void)
+{
+	vbl_handler_stub = 0;
+	vbl_original_vector = 0;
+}
+
+/*
  *  Validate a jVBLInt vector and work out where the ROM handler continues.
  *
  *  Split out from the installer so it can be exercised offline: it is the part

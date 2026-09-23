@@ -2,13 +2,13 @@
  *  cpu_engine.h - Unified 680x0 CPU Engine Abstraction Layer
  *
  *  CockatriceIII Multi-Engine Architecture
- *  Supports: Musashi (C core), Amiberry/UAE (680x0 + JIT), m68k-rs (Rust)
+ *  Supports: Musashi (C core), UAE (680x0 + JIT), m68k-rs (Rust)
  *
  *  (C) 2026 CockatriceIII Project
  *
  *  This header defines the abstract CPUEngine dispatch table and global
  *  registration API used by Cockatrice III to support multiple swappable
- *  680x0 CPU emulation cores (Musashi, Amiberry/UAE, m68k-rs).
+ *  680x0 CPU emulation cores (Musashi, UAE, m68k-rs).
  */
 
 #ifndef CPU_ENGINE_H
@@ -322,7 +322,6 @@ uint32 cpu_engine_write_exec_return_frame(uint32 sp, uint32 *ret_addr_out);
 
 /* Built-in Engine Instances */
 extern const CPUEngine musashi_cpu_engine;
-extern const CPUEngine amiberry_cpu_engine;
 extern const CPUEngine m68k_rs_cpu_engine;
 
 #ifdef __cplusplus

@@ -237,7 +237,7 @@ int main(int argc, char **argv)
 		if (!test_engine_matches(filter, &cfg))
 			continue;
 		printf("---- %s ----\n", cfg.label);
-		if (!activate_cpu_engine(cfg.id, cfg.jit, cfg.jitfpu)) {
+		if (!activate_cpu_engine(cfg.id, cfg.jit, cfg.jitfpu, cfg.jitdirect)) {
 			CHECK_ENG(false, cfg.label, "activate engine");
 			continue;
 		}

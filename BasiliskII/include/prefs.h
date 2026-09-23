@@ -33,6 +33,7 @@ extern void LoadPrefs(void);
 extern void SavePrefs(void);
 
 extern void LoadPrefsFromStream(FILE *f);
+extern bool PrefsParseLine(char *line, char **keyword, char **value);	// prefs_parse.cpp
 extern void SavePrefsToStream(FILE *f);
 
 // Public preferences access functions

@@ -12,6 +12,7 @@
 #include <assert.h>
 #include "test_harness.h"
 #include "test_env.h"
+#include <string>
 #include "sysdeps.h"
 #include "cpu_emulation.h"
 #include "cpu_engine.h"
@@ -26,7 +27,8 @@ int main(void)
 	printf("=== basilisk_disk_test ===\n");
 	CHECK(activate_cpu_engine("musashi", false), "activate musashi");
 
-	const char *img = "/tmp/cockatrice_disk_test.img";
+	std::string img_s = test_temp_path("cockatrice_disk_test.img");
+	const char *img = img_s.c_str();
 	FILE *fp = fopen(img, "wb");
 	assert(fp);
 	uint8 sector[512];

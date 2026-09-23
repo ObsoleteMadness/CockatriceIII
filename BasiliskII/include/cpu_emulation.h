@@ -67,7 +67,10 @@ extern uint32 ROMBaseMac;		// ROM base (Mac address space)
 extern uint8 *ROMBaseHost;		// ROM base (host address space)
 extern uint32 ROMSize;			// Size of ROM
 
-const uint32 MacFrameBaseMac = 0xa0000000;
+// NuBus super-slot $A address (0xa0000000). Every supported host is 64-bit,
+// where reserving the full 4GB flat window is cheap, so the framebuffer sits
+// at its real hardware address.
+extern uint32 MacFrameBaseMac;
 extern uint8 *MacFrameBaseHost;	// Frame buffer base (host address space)
 extern uint32 MacFrameSize;		// Size of frame buffer
 extern int MacFrameLayout;		// Frame buffer layout (see defines below)
@@ -98,8 +101,13 @@ extern memory_fault_jmp_buf *memory_guard_enter(void);
 extern void memory_guard_leave(void);
 extern void memory_guard_clear(void);
 extern uint32 memory_guest_fault_addr(void);
-extern int memory_try_handle_guest_fault(const void *si_addr);
+extern int memory_try_handle_guest_fault(const void *fault_addr);
 extern void memory_raise_guest_fault(uint32 addr);
+extern void memory_set_rom_write_guard(bool armed);
+extern void memory_host_call_enter(void);
+extern void memory_host_call_leave(void);
+extern int memory_host_call_suspend(void);
+extern void memory_host_call_resume(int depth);
 
 // SCC helper functions for memory-mapped I/O trapping
 extern uint32 scc_bget(uint32 addr);
@@ -359,6 +367,7 @@ extern bool Init680x0(void);
 extern void Exit680x0(void);
 extern bool UseJIT;
 extern bool UseJITFPU;
+extern bool UseJITDirect;		// uae JIT: inline RAM/ROM/framebuffer access (jit_direct_memory)
 extern uint32 JITCacheSize;
 
 // 680x0 emulation functions
