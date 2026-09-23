@@ -235,7 +235,8 @@ target_include_directories(CockatriceIII PRIVATE
 if(WIN32)
     # Vendored libpcap headers; the library itself is dlopen'd at runtime.
     target_include_directories(CockatriceIII PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/platform/windows)
+        ${CMAKE_CURRENT_SOURCE_DIR}/platform/windows
+        ${CMAKE_CURRENT_SOURCE_DIR}/platform/windows/pcap)
 endif()
 
 target_compile_definitions(CockatriceIII PRIVATE

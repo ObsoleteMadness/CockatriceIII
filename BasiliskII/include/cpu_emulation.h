@@ -101,7 +101,7 @@ extern memory_fault_jmp_buf *memory_guard_enter(void);
 extern void memory_guard_leave(void);
 extern void memory_guard_clear(void);
 extern uint32 memory_guest_fault_addr(void);
-extern int memory_try_handle_guest_fault(const void *si_addr);
+extern int memory_try_handle_guest_fault(const void *fault_addr);
 extern void memory_raise_guest_fault(uint32 addr);
 extern void memory_set_rom_write_guard(bool armed);
 extern void memory_host_call_enter(void);

@@ -723,19 +723,20 @@ void memory_reconfigure_window(void)
  * Converts a host fault inside the 4GB window into a longjmp to the CPU loop.
  *
  * Arguments:
- *   si_addr: Faulting host address from siginfo or ExceptionInformation[1].
+ *   fault_addr: Faulting host address from siginfo (not named si_addr,
+ *     which glibc defines as a macro) or ExceptionInformation[1].
  *
  * Returns:
  *   0 if the fault is not a guarded guest hole (caller should crash-dump).
- *   Does not return when a CPU run loop is armed and si_addr is an unmapped
+ *   Does not return when a CPU run loop is armed and fault_addr is an unmapped
  *   Macintosh address — siglongjmp resumes that loop to inject vector 2.
  */
-int memory_try_handle_guest_fault(const void *si_addr)
+int memory_try_handle_guest_fault(const void *fault_addr)
 {
-	if (s_guard_depth <= 0 || !Host_Mem_Base || !si_addr)
+	if (s_guard_depth <= 0 || !Host_Mem_Base || !fault_addr)
 		return 0;
 
-	const uint8 *p = (const uint8 *)si_addr;
+	const uint8 *p = (const uint8 *)fault_addr;
 	if (p < Host_Mem_Base || p >= Host_Mem_Base + s_window_size)
 		return 0;
 
