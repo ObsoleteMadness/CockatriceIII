@@ -40,6 +40,7 @@ static const Uint32 kVideoSDLFlags = (SDL_SWSURFACE | SDL_HWPALETTE | SDL_RESIZA
 
 // Global variables
 static int32 frame_skip;
+static bool hide_cursor = true;
 static int32 skip_count=0;
 static int32 quitcount=0;
 static int32 bytes_per_pixel;
@@ -211,14 +212,17 @@ D(bug(" init_window w%d,h%d d%d\n",width,height,depth));
         // Set absolute mouse mode
         ADBSetRelMouseMode(false);
 
-        // Read frame skip prefs
+        // Read frame skip prefs: redraw every frame_skip'th 60Hz tick
         frame_skip = PrefsFindInt32("frameskip");
-        if (frame_skip == 0)
+        if (frame_skip < 1)
                 frame_skip = 1;
+        hide_cursor = PrefsFindBool("hide_cursor");
 //SDL
         flags=kVideoSDLFlags;
         if (!(SDLscreen = SDL_SetVideoMode(width, height, depth, flags)))
         printf("VID: Couldn't set video mode: %s\n", SDL_GetError());
+        // No focus event arrives if the pointer already sits over the window
+        SDL_ShowCursor(hide_cursor ? SDL_DISABLE : SDL_ENABLE);
         SDL_WM_SetCaption(VERSION_STRING,VERSION_STRING);
 #if defined(WIN32) || defined(_WIN32)
 	{
@@ -408,6 +412,7 @@ bool Video_SwitchToModeDepth(int width, int height, int mode)
 		}
 		SDLscreen = next;
 		depth = next_host;
+		SDL_ShowCursor(hide_cursor ? SDL_DISABLE : SDL_ENABLE);
 		if (s_have_palette)
 			video_set_palette(s_saved_palette);
 		// Cocoa/SDL 1.2 posts VIDEORESIZE for this same size; ignore it
@@ -452,7 +457,7 @@ if (++s_heartbeat_ticks % 60 == 0) {
 }
 #endif
 uint8 *src_buf = MacFrameBaseHost ? MacFrameBaseHost : the_buffer;
-if(skip_count++>frame_skip){
+if(++skip_count>=frame_skip){
 	if(classic_mode)
 		Mac2Host_memcpy(src_buf, 0x3fa700, VideoMonitor.bytes_per_row * VideoMonitor.y);
 	else
@@ -650,7 +655,7 @@ int emul_suspended=0;
 	}
 
 	case SDL_ACTIVEEVENT:
-		if (event.active.state & SDL_APPMOUSEFOCUS)
+		if (hide_cursor && (event.active.state & SDL_APPMOUSEFOCUS))
 			SDL_ShowCursor(event.active.gain ? SDL_DISABLE : SDL_ENABLE);
 		break;
 
