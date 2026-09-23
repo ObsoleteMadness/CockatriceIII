@@ -18,7 +18,8 @@
 # SDL comes from the same MSYS2 packages CI installs (mingw64 or clangarm64),
 # cached in .cross-win/<arch>. The build goes to build-win-<arch>; --package
 # stages the exe, the DLLs it needs and dist/'s prefs, XPRAM and ROM in
-# build-win-<arch>/package, ready to copy to a Windows machine.
+# build-win-<arch>/package, ready to copy to a Windows machine. A rebuild
+# replaces only the exe and DLLs there, so edited prefs survive.
 #
 # Cross builds cannot run the code generators (build68k, gencpu, m68kmake):
 # they are built for Windows. Their output is plain C that does not depend on
@@ -254,12 +255,13 @@ fi
 if [ "$DO_PACKAGE" -eq 1 ]; then
 	PKG="$BUILD_DIR/package"
 	echo "==> package -> $PKG"
-	rm -rf "$PKG"
+	# Replace the program, but keep the prefs, XPRAM and ROM a previous run
+	# left there: they are the user's settings and the guest's PRAM
 	mkdir -p "$PKG"
+	rm -f "$PKG"/*.exe "$PKG"/*.dll
 	cp "$BUILD_DIR/BasiliskII/CockatriceIII.exe" "$PKG/"
-	cp "$ROOT/dist/CockatriceIII_Prefs" "$PKG/"
-	for f in CockatriceIII_XPRAM Quadra800.rom; do
-		if [ -f "$ROOT/dist/$f" ]; then cp "$ROOT/dist/$f" "$PKG/"; fi
+	for f in CockatriceIII_Prefs CockatriceIII_XPRAM Quadra800.rom; do
+		if [ -f "$ROOT/dist/$f" ] && [ ! -f "$PKG/$f" ]; then cp "$ROOT/dist/$f" "$PKG/"; fi
 	done
 	# sdl12-compat's SDL.dll loads SDL2.dll at run time, so it is not an import
 	cp "$SDL_PREFIX/bin/SDL.dll" "$SDL_PREFIX/bin/SDL2.dll" "$PKG/"
