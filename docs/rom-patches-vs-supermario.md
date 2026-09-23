@@ -21,6 +21,77 @@ called out per entry.
 
 ---
 
+## 0. Overview: how Cockatrice patches the ROM
+
+Basilisk II boots a real Mac ROM image rather than emulating one, so hardware probes that would
+hang or crash against nothing are patched out and a handful of routines are redirected to host
+code (`EmulOp()`, `0x71xx`). That happens in two passes:
+
+1. **ROM patches** (`PatchROM()` → `patch_rom_32()` / `patch_rom_classic()` in
+   [BasiliskII/rom_patches.cpp](../BasiliskII/rom_patches.cpp)) mutate the loaded ROM image once,
+   before `Start680x0()` runs any 68k code.
+2. **Resource patches** (`CheckLoad()` in [BasiliskII/rsrc_patches.cpp](../BasiliskII/rsrc_patches.cpp))
+   run every time the System loads a ROM/System resource, via a stub spliced into the ROM's own
+   `jCheckLoad` hook (`$07F0`) — this is how patches reach System-file code that doesn't ship in
+   the ROM at all (Time Manager, ADB, SCSI, Sound, LocalTalk).
+
+The 64-bit port reworked both passes for safety and traceability, largely by cross-referencing
+the SuperMario sources to find out what each patched routine actually does. The rest of this
+document is the per-patch mapping; [basilisk-ii-boot-and-patch.md](basilisk-ii-boot-and-patch.md)
+has the end-to-end boot call graph.
+
+### Fail loudly instead of silently corrupting memory
+
+- Every ROM patch attempt is recorded and printed (`[ROM-PATCH] name @ offset` or `MISSED`), and
+  every resource patch likewise (`[RSRC-PATCH] ...`); both logs are flushed immediately after
+  each line instead of sitting in a block-buffered `stdout` that could be lost if the process died
+  before exit.
+- The handful of ROM patches that target a bare fixed offset (`0x1142`, `0x1b8f4`, `0x9bc4`,
+  `0xa296`, `0xb2c6a`, `0xb2d2e`, `0x5b78`, …) verify the instruction bytes they expect to
+  overwrite first, and fail with a named `VERIFY FAILED` instead of scribbling over unrelated code
+  when a ROM's layout doesn't match.
+- Trap-table lookups (`find_rom_trap()`) return 0 for both "trap not implemented" and "trap not
+  found" — every required call site goes through `require_rom_trap()`, which treats a miss as
+  a hard failure instead of writing a patch over the ROM header.
+- Two fixed-offset resource patches with no signature to search for (`'sift'`/`'thng' -16563`,
+  the Sound Manager audio-component patches, and `'ltlk' 0`) used to write unconditionally; a
+  truncated resource meant a heap overwrite past the end of its handle rather than a missed patch.
+  They now check the resource size first and log a miss instead.
+- Two real out-of-bounds scans were found and fixed under AddressSanitizer: `find_rsrc_data()`
+  underflowed its unsigned bound when a resource was shorter than the signature being searched
+  for, and `patch_idle_time()` could scan before the start of its buffer.
+
+### Preferring Apple's own install mechanisms over raw byte patches
+
+Where SuperMario shows a documented, ROM-version-independent way to install something, Cockatrice
+uses it instead of guessing a byte offset — but only where the timing allows it (see §3):
+
+- **`InstallRuntimeTraps()`** installs `Microseconds`, `PowerOff`, and `ADBOp` at runtime via
+  `_SetOSTrapAddress` from a small stub block allocated in the System heap — the same
+  `leaResident` / `_SetTrapAddress` idiom Apple's own Time Manager patch uses — rather than
+  overwriting the ROM's copy of each trap. This only works for traps confirmed, by instrumenting a
+  real boot, to not be called before `InstallDrivers()` runs (the trap dispatcher has to exist
+  first). `BlockMove`, `InsTime`, `SCSIDispatch`, and `CheckLoad` are called earlier and must
+  remain ROM patches.
+- **`InstallVBLHandler()`** takes over the 60 Hz VBL interrupt through the ROM's own `jVBLInt`
+  vector (`Lvl1DT+4`, low-memory `$196`) instead of overwriting a hardcoded ROM offset. The ROM
+  continuation address is read out of the vector the ROM itself installed, rather than assumed,
+  and the site is byte-verified before anything is written. The VIA1 level-1 dispatcher at
+  `0x9bc4` is still a forced byte patch — Cockatrice has no emulated VIA1 to compute a real
+  IFR/IER pending-interrupt mask from, so the value has to be hardcoded regardless of mechanism.
+
+### Golden-manifest regression coverage
+
+- `basilisk_patches_test` (`BasiliskII/tests`) replays the ROM patch pass and checks it against a
+  fixture manifest (`tests/basilisk/fixtures/quadra800_patches.txt`); that manifest has itself
+  been cross-checked against a real Musashi boot to `HasMacStarted` (57 of 59 records identical,
+  two expected differences documented in §8).
+- `basilisk_rsrcpatch_test` links the real `CheckLoad()` into the test suite (it was previously
+  stubbed out entirely) and drives it with synthetic resources built from the actual Apple ROM
+  source sequences, run under AddressSanitizer.
+
+---
+
 ## 1. Navigating the tree
 
 ```
