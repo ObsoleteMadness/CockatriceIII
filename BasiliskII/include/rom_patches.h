@@ -123,6 +123,12 @@ const RuntimeTrapStub *GetRuntimeTrapStubs(int *count);
 uint32 GetVBLHandlerStub(uint32 *original);
 
 /*
+ * Forgets the installed VBL handler, for a warm reset: the stub lived in the
+ * System heap the reset wipes, and InstallDrivers() installs a new one.
+ */
+void ForgetVBLHandler(void);
+
+/*
  *  Validate a jVBLInt vector and work out where the ROM handler continues.
  *
  *  Exposed so the offline tests can cover it: this is the check that replaced

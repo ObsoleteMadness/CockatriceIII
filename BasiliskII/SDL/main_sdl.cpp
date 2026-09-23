@@ -364,8 +364,15 @@ static void one_tickbbbb(...)
 	// Trigger 60Hz interrupt
 	if (ROMVersion != ROM_VERSION_CLASSIC || HasMacStarted()) {
 		cpu_engine_note_tick();
-		SetInterruptFlag(INTFLAG_60HZ);
-		TriggerInterrupt();
+		/* Only the VBL stub InstallDrivers() puts into jVBLInt runs the IRQ
+		   EmulOp that acknowledges this interrupt. Raised before that, the
+		   ROM's own VBL handler takes it, never clears INTFLAG_60HZ, and the
+		   guest services the still-pending interrupt forever (seen on a
+		   Windows ARM64 VM, where the first tick beat InstallDrivers). */
+		if (ROMVersion == ROM_VERSION_CLASSIC || GetVBLHandlerStub(NULL) != 0) {
+			SetInterruptFlag(INTFLAG_60HZ);
+			TriggerInterrupt();
+		}
 		slirp_tic();
 		LocalTalkTick();
 	}

@@ -534,6 +534,8 @@ void cpu_engine_reset_peripherals(void)
 {
 	MenuQueue_Reset();
 	InterruptFlags = 0;
+	// The VBL stub is in the heap being wiped; the 60 Hz interrupt waits for a new one
+	ForgetVBLHandler();
 	TimerReset();
 	EtherReset();
 	SCC_Reset();
