@@ -8,6 +8,10 @@
  * Hang-prone work (Execute68k, opcode images, ROM snippets) must go through
  * run_isolated(): a child that exceeds TEST_DEFAULT_TIMEOUT seconds is killed
  * and reported as a failure so the parent can continue.
+ *
+ * Windows has no fork(), so there run_isolated() runs the test in-process
+ * under a watchdog thread: a hang ends the whole suite with a failure message
+ * instead of one case, and a test's memory writes are not rolled back.
  */
 
 #ifndef TEST_HARNESS_H
@@ -22,9 +26,19 @@
 #include <string.h>
 #include <stdint.h>
 #include <signal.h>
+#include <errno.h>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <unistd.h>
 #include <sys/wait.h>
-#include <errno.h>
+#endif
 #if defined(__APPLE__)
 #include <sys/ucontext.h>
 #endif
@@ -45,6 +59,36 @@ extern int g_fail;
 }
 #endif
 
+#ifdef _WIN32
+/*
+ * Prints the exception code and address of an unhandled host exception, then
+ * exits. Guest bus faults are handled earlier by the emulator's vectored
+ * handler, so only real crashes reach this filter.
+ *
+ * Arguments:
+ *   info: Exception record and context from Windows.
+ *
+ * Returns:
+ *   Does not return.
+ */
+static LONG WINAPI test_crash_filter(EXCEPTION_POINTERS *info)
+{
+	printf("\n*** CRASH: exception 0x%08lx at address %p ***\n",
+	       (unsigned long)info->ExceptionRecord->ExceptionCode,
+	       info->ExceptionRecord->ExceptionAddress);
+	fflush(stdout);
+	_exit(1);
+	return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/*
+ * Installs the unhandled-exception filter used by every test binary.
+ */
+static void test_install_crash_handler(void)
+{
+	SetUnhandledExceptionFilter(test_crash_filter);
+}
+#else
 /*
  * Prints a crash dump then exits.
  *
@@ -84,6 +128,7 @@ static void test_install_crash_handler(void)
 	sigaction(SIGBUS, &sa, NULL);
 	sigaction(SIGILL, &sa, NULL);
 }
+#endif /* _WIN32 */
 
 #define CHECK(expr, msg) do { \
 	if (expr) { \
@@ -114,7 +159,70 @@ static void test_install_crash_handler(void)
  *   fn: Test body. May call CHECK/CHECK_ENG.
  *   timeout_sec: Wall time before SIGALRM; 0 uses TEST_DEFAULT_TIMEOUT.
  */
-#ifdef __cplusplus
+#if defined(__cplusplus) && defined(_WIN32)
+/* Label and limit of the test the watchdog is guarding. */
+struct test_watchdog_args {
+	const char *name;
+	int timeout_sec;
+	HANDLE done;	// Signalled when the test returns
+};
+
+/*
+ * Watchdog thread: if the test has not signalled done within its timeout,
+ * reports the hang as a failure and ends the process, since the stuck thread
+ * cannot be stopped safely.
+ *
+ * Arguments:
+ *   param: A test_watchdog_args.
+ *
+ * Returns:
+ *   0 when the test finished in time.
+ */
+static DWORD WINAPI test_watchdog(LPVOID param)
+{
+	test_watchdog_args *args = (test_watchdog_args *)param;
+	if (WaitForSingleObject(args->done, (DWORD)args->timeout_sec * 1000) == WAIT_OBJECT_0)
+		return 0;
+	printf("  [FAIL] %s: timed out after %ds -- possible infinite loop; stopping the suite\n",
+	       args->name, args->timeout_sec);
+	printf("\nResults: %d passed, %d failed\n", g_pass, g_fail + 1);
+	fflush(stdout);
+	_exit(1);
+	return 1;
+}
+
+/*
+ * Runs fn in-process under a watchdog (Windows has no fork()).
+ *
+ * Arguments:
+ *   name: Label printed on timeout.
+ *   fn: Test body. May call CHECK/CHECK_ENG.
+ *   timeout_sec: Wall time before the watchdog fires; 0 uses TEST_DEFAULT_TIMEOUT.
+ */
+template<typename Fn>
+static void run_isolated(const char *name, Fn fn, int timeout_sec = TEST_DEFAULT_TIMEOUT)
+{
+	if (timeout_sec <= 0)
+		timeout_sec = TEST_DEFAULT_TIMEOUT;
+
+	test_watchdog_args args = { name, timeout_sec, CreateEventA(NULL, TRUE, FALSE, NULL) };
+	HANDLE thread = args.done ? CreateThread(NULL, 0, test_watchdog, &args, 0, NULL) : NULL;
+
+	// Match the POSIX child, which starts from an empty translation cache
+	cpu_engine_invalidate_code(0, ~0u);
+	fn();
+	fflush(stdout);
+
+	// Stop the watchdog before args goes out of scope
+	if (thread) {
+		SetEvent(args.done);
+		WaitForSingleObject(thread, INFINITE);
+		CloseHandle(thread);
+	}
+	if (args.done)
+		CloseHandle(args.done);
+}
+#elif defined(__cplusplus)
 template<typename Fn>
 static void run_isolated(const char *name, Fn fn, int timeout_sec = TEST_DEFAULT_TIMEOUT)
 {
