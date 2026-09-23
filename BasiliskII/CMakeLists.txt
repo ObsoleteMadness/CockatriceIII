@@ -150,6 +150,7 @@ set(COCKATRICE_SDL_SOURCES
     SDL/main_sdl.cpp
     SDL/sys_unix_sdl.cpp
     SDL/video_sdl.cpp
+    SDL/video_blit.cpp
     SDL/audio_sdl.cpp
     SDL/sdl_pcap.cpp
     SDL/menu_bar.cpp

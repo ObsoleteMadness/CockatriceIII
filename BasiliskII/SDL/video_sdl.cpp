@@ -16,6 +16,7 @@
 #include "version.h"
 #include "menu_bar.h"
 #include "toolbox_window.h"
+#include "video_blit.h"
 
 #define DEBUG 0
 #include "debug.h"
@@ -441,6 +442,71 @@ bool Video_SwitchToModeDepth(int width, int height, int mode)
 void VideoExit(void)
 {}
 
+/*
+ * SDL_MapRGB adapter for VideoBlit_BuildRGB555Table.
+ *
+ * Arguments:
+ *   ctx: The host SDL_PixelFormat.
+ *   r, g, b: 8-bit channels.
+ *
+ * Returns:
+ *   The host pixel value.
+ */
+static uint32 map_rgb_sdl(void *ctx, uint8 r, uint8 g, uint8 b)
+{
+	return SDL_MapRGB((SDL_PixelFormat *)ctx, r, g, b);
+}
+
+/*
+ * Returns the 15-bit Mac colour to host pixel table for fmt, rebuilding it
+ * when the host surface layout differs from the one it was built for (a
+ * mode switch may hand back a surface with a different format).
+ *
+ * Arguments:
+ *   fmt: Current host surface format.
+ *
+ * Returns:
+ *   32768 host pixel values, indexed by the low 15 bits of a Mac pixel.
+ */
+static const uint32 *rgb555_table_for(SDL_PixelFormat *fmt)
+{
+	static uint32 table[32768];
+	static uint32 key_r = 0, key_g = 0, key_b = 0, key_a = 0;
+	static int key_bpp = 0;
+
+	// Masks and depth fully determine what SDL_MapRGB returns for a direct surface
+	if (fmt->BytesPerPixel != key_bpp || fmt->Rmask != key_r || fmt->Gmask != key_g ||
+	    fmt->Bmask != key_b || fmt->Amask != key_a) {
+		VideoBlit_BuildRGB555Table(table, map_rgb_sdl, fmt);
+		key_bpp = fmt->BytesPerPixel;
+		key_r = fmt->Rmask;
+		key_g = fmt->Gmask;
+		key_b = fmt->Bmask;
+		key_a = fmt->Amask;
+	}
+	return table;
+}
+
+/*
+ * Tells whether a Mac 32-bit pixel can be copied to the host surface with a
+ * byte swap alone (host XRGB8888, no alpha, little-endian host).
+ *
+ * Arguments:
+ *   fmt: Current host surface format.
+ *
+ * Returns:
+ *   true if VideoBlit_XRGB8888BE produces what SDL_MapRGB would.
+ */
+static bool is_host_xrgb8888(const SDL_PixelFormat *fmt)
+{
+#ifdef WORDS_BIGENDIAN
+	return false;
+#else
+	return fmt->BytesPerPixel == 4 && fmt->Rmask == 0x00ff0000 && fmt->Gmask == 0x0000ff00 &&
+	       fmt->Bmask == 0x000000ff && fmt->Amask == 0;
+#endif
+}
+
 void VideoInterrupt(void)
 {
 int lx,ly=0;
@@ -457,34 +523,18 @@ if(skip_count++>frame_skip){
 		Mac2Host_memcpy(src_buf, 0x3fa700, VideoMonitor.bytes_per_row * VideoMonitor.y);
 	else
 	switch (VideoMonitor.mode) {
-		case VMODE_1BIT: {
-			// Expand 1-bit MSB-first Mac bits to 8-bit palette indices 0/1
-			for (ly = 0; ly < (int)VideoMonitor.y; ly++) {
-				const uint8 *src = src_buf + ly * VideoMonitor.bytes_per_row;
-				uint8 *dst = (uint8 *)SDLscreen->pixels + ly * SDLscreen->pitch;
-				for (lx = 0; lx < (int)VideoMonitor.x; lx++)
-					dst[lx] = (uint8)((src[lx >> 3] >> (7 - (lx & 7))) & 1);
-			}
+		case VMODE_1BIT:
+			VideoBlit_ExpandIndexed(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
+			                        SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y, 1);
 			break;
-		}
-		case VMODE_2BIT: {
-			for (ly = 0; ly < (int)VideoMonitor.y; ly++) {
-				const uint8 *src = src_buf + ly * VideoMonitor.bytes_per_row;
-				uint8 *dst = (uint8 *)SDLscreen->pixels + ly * SDLscreen->pitch;
-				for (lx = 0; lx < (int)VideoMonitor.x; lx++)
-					dst[lx] = (uint8)((src[lx >> 2] >> (6 - ((lx & 3) * 2))) & 3);
-			}
+		case VMODE_2BIT:
+			VideoBlit_ExpandIndexed(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
+			                        SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y, 2);
 			break;
-		}
-		case VMODE_4BIT: {
-			for (ly = 0; ly < (int)VideoMonitor.y; ly++) {
-				const uint8 *src = src_buf + ly * VideoMonitor.bytes_per_row;
-				uint8 *dst = (uint8 *)SDLscreen->pixels + ly * SDLscreen->pitch;
-				for (lx = 0; lx < (int)VideoMonitor.x; lx++)
-					dst[lx] = (uint8)((src[lx >> 1] >> (4 - ((lx & 1) * 4))) & 0x0f);
-			}
+		case VMODE_4BIT:
+			VideoBlit_ExpandIndexed(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
+			                        SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y, 4);
 			break;
-		}
 		case VMODE_8BIT:
 			if (SDLscreen->pitch == (int)VideoMonitor.bytes_per_row)
 				memcpy(SDLscreen->pixels, src_buf, VideoMonitor.bytes_per_row * VideoMonitor.y);
@@ -497,26 +547,19 @@ if(skip_count++>frame_skip){
 			break;
 		case VMODE_16BIT:
 			// Mac 16-bit is big-endian 1-5-5-5; SDL is host 5-6-5 or 5-5-5
-			for (ly = 0; ly < (int)VideoMonitor.y; ly++) {
-				const uint8 *src = src_buf + ly * VideoMonitor.bytes_per_row;
-				uint8 *dst = (uint8 *)SDLscreen->pixels + ly * SDLscreen->pitch;
-				for (lx = 0; lx < (int)VideoMonitor.x; lx++) {
-					uint16 p = (uint16)((src[0] << 8) | src[1]);
-					uint8 r = (uint8)(((p >> 10) & 0x1f) * 255 / 31);
-					uint8 g = (uint8)(((p >> 5) & 0x1f) * 255 / 31);
-					uint8 b = (uint8)((p & 0x1f) * 255 / 31);
-					uint32 pix = SDL_MapRGB(SDLscreen->format, r, g, b);
-					if (SDLscreen->format->BytesPerPixel == 2)
-						*(uint16 *)dst = (uint16)pix;
-					else
-						*(uint32 *)dst = pix;
-					src += 2;
-					dst += SDLscreen->format->BytesPerPixel;
-				}
-			}
+			VideoBlit_RGB555BE(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
+			                   SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y,
+			                   rgb555_table_for(SDLscreen->format),
+			                   SDLscreen->format->BytesPerPixel);
 			break;
 		case VMODE_32BIT:
 			// Mac 32-bit is 00 RR GG BB; memcpy onto LE SDL looks yellow (B=0)
+			if (is_host_xrgb8888(SDLscreen->format)) {
+				VideoBlit_XRGB8888BE(src_buf, VideoMonitor.bytes_per_row, (uint8 *)SDLscreen->pixels,
+				                     SDLscreen->pitch, VideoMonitor.x, VideoMonitor.y);
+				break;
+			}
+			// Any other host layout: map each pixel through SDL
 			for (ly = 0; ly < (int)VideoMonitor.y; ly++) {
 				const uint8 *src = src_buf + ly * VideoMonitor.bytes_per_row;
 				uint8 *dst = (uint8 *)SDLscreen->pixels + ly * SDLscreen->pitch;

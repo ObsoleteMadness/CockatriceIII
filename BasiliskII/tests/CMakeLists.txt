@@ -11,6 +11,7 @@ set(COCKATRICE_TEST_CORE_SOURCES
     include/test_sys.cpp
     ../memory.cpp
     ../prefs_parse.cpp
+    ../SDL/video_blit.cpp
     ../cpu_glue.cpp
     ../cpu_engine.cpp
     ../emul_op.cpp
@@ -118,7 +119,8 @@ foreach(t
     basilisk_scsi_test
     basilisk_scc_test
     basilisk_disk_test
-    basilisk_prefs_test)
+    basilisk_prefs_test
+    basilisk_blit_test)
     cockatrice_add_test(${t} basilisk/${t}.cpp)
     # The Basilisk suites are the gate: these are required to pass.
     set_tests_properties(${t} PROPERTIES LABELS gate)

@@ -15,7 +15,7 @@ ctest --test-dir build --output-on-failure           # everything
 
 ## What gates and what does not
 
-`-L gate` is the twelve `basilisk_*` suites. They are required to pass.
+`-L gate` is the thirteen `basilisk_*` suites. They are required to pass.
 
 `-L cpu` is `cpu_tests`, which is **reported rather than gated**. It currently
 has 20 known failures: four opcode fixtures (`abcd`, `sbcd`, `chk2`, `cmp2`)
@@ -85,6 +85,13 @@ trailing `#`/`;` comments, a `#` kept inside a path, values with spaces, CRLF
 endings, and the blank, comment and keyword-only lines that are skipped. The
 syntax itself is documented in
 [docs/CockatriceIII_Prefs.md](../../docs/CockatriceIII_Prefs.md#syntax).
+
+`basilisk_blit_test` checks the screen converters in
+[SDL/video_blit.cpp](../SDL/video_blit.cpp), which turn the Mac framebuffer
+into the host window's pixels on every redraw: the 1/2/4-bit expansion tables,
+the 15-bit colour table for 16-bit mode and the 32-bit byte swap. Each is
+compared pixel for pixel with the per-pixel loop it replaced, with rows that end
+part way through a byte, and with guard bytes after each row.
 
 ## Sanitizers
 
